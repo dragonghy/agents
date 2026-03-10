@@ -146,12 +146,12 @@ def cmd_up(args):
         sys.exit(1)
     preset_cfg = load_yaml(preset_path)
 
-    # 4. Verify agent templates exist
+    # 4. Verify agent templates exist (check .claude/agents/<template>.md)
     for agent_name, agent_info in preset_cfg.get("agents", {}).items():
         template = agent_info.get("template", agent_name) if isinstance(agent_info, dict) else agent_name
-        prompt = os.path.join(ROOT_DIR, "agents", template, "system_prompt.md")
-        if not os.path.isfile(prompt):
-            print(f"Error: agent template not found: {prompt}", file=sys.stderr)
+        agent_def = os.path.join(ROOT_DIR, ".claude", "agents", f"{template}.md")
+        if not os.path.isfile(agent_def):
+            print(f"Error: agent definition not found: {agent_def}", file=sys.stderr)
             sys.exit(1)
 
     # 5. Create Leantime project

@@ -143,10 +143,17 @@ ensure_session() {
 
 start_agent() {
   local agent="$1"
+  local agent_def="${ROOT_DIR}/.claude/agents/${agent}.md"
   local prompt_file="${ROOT_DIR}/agents/${agent}/system_prompt.md"
 
-  if [[ ! -f "$prompt_file" ]]; then
-    echo "  SKIP: $prompt_file not found"
+  # Prefer native agent definition, fall back to legacy system_prompt.md
+  local agent_flag=""
+  if [[ -f "$agent_def" ]]; then
+    agent_flag="--agent ${agent}"
+  elif [[ -f "$prompt_file" ]]; then
+    agent_flag="--append-system-prompt-file ${prompt_file}"
+  else
+    echo "  SKIP: no agent definition found for $agent"
     return
   fi
 
@@ -164,7 +171,7 @@ start_agent() {
     tmux kill-window -t "$TMUX_SESSION:$agent"
   fi
 
-  local cmd="cd ${ROOT_DIR}/agents/${agent} && claude --dangerously-skip-permissions --append-system-prompt-file ${prompt_file}${add_dir_flags}"
+  local cmd="cd ${ROOT_DIR}/agents/${agent} && claude --dangerously-skip-permissions ${agent_flag}${add_dir_flags}"
   if [[ -n "$sid" ]]; then
     cmd="${cmd} --resume ${sid}"
   fi

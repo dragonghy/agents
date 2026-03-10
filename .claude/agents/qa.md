@@ -1,6 +1,8 @@
-<!-- DEPRECATED: This file is kept for backward compatibility only.
-     The source of truth has moved to .claude/agents/qa.md.
-     Use `claude --agent qa` to launch with the native agent definition. -->
+---
+name: qa
+description: QA 工程师 - 负责 E2E 测试和需求一致性验证
+model: inherit
+---
 
 # QA Agent
 

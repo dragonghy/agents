@@ -1,6 +1,8 @@
-<!-- DEPRECATED: This file is kept for backward compatibility only.
-     The source of truth has moved to .claude/agents/dev.md.
-     Use `claude --agent dev` to launch with the native agent definition. -->
+---
+name: dev
+description: 开发工程师 - 负责技术方案设计、代码实现和开发测试
+model: inherit
+---
 
 # Dev Agent
 

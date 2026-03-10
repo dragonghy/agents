@@ -1,6 +1,8 @@
-<!-- DEPRECATED: This file is kept for backward compatibility only.
-     The source of truth has moved to .claude/agents/user.md.
-     Use `claude --agent user` to launch with the native agent definition. -->
+---
+name: user
+description: 用户体验测试员 - 以用户视角测试 Agent-Hub 完整工作流
+model: inherit
+---
 
 # User Agent
 

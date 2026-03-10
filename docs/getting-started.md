@@ -99,9 +99,9 @@ python3 setup-agents.py
 ```
 
 This creates the runtime workspace for each agent:
+- `.claude/agents/<instance>.md` — Instance-specific agent definition (from template)
 - `.mcp.json` — MCP server configuration
 - `.claude/skills/` — Symlinks to shared and role-specific skills
-- `system_prompt.md` — Role-specific system prompt
 - `team-roster.md` — Auto-generated team roster
 
 ## Step 5: Start the System

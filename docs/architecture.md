@@ -88,22 +88,27 @@ Agent (Claude Code) → agents-mcp-proxy → daemon SSE endpoint → FastMCP too
 
 ### Agent Templates
 
-Agent behavior is defined by templates in `agents/`:
+Agent behavior is defined using Claude Code's native agent definition format. Template definitions live in `.claude/agents/`:
 
 ```
+.claude/agents/
+├── product.md        # Product Manager agent definition (YAML frontmatter + system prompt)
+├── dev.md            # Developer agent definition
+├── qa.md             # QA Engineer agent definition
+└── user.md           # User Experience Tester agent definition
+
 agents/
-├── product/          # Product Manager template
-│   ├── system_prompt.md    # Role definition, workflow rules
+├── product/          # Product Manager template resources
 │   ├── CLAUDE.md           # Project-level instructions
 │   └── skills/             # Role-specific skills
-├── dev/              # Developer template
-├── qa/               # QA Engineer template
-├── user/             # User Experience Tester template
+├── dev/              # Developer template resources
+├── qa/               # QA Engineer template resources
+├── user/             # User Experience Tester template resources
 └── shared/           # Resources shared by all agents
     └── skills/       # Cross-role skills (leantime, daily-journal, etc.)
 ```
 
-When agents share a template (e.g., `dev-alex` and `dev-emma` both use `dev/`), `setup-agents.py` generates instance-specific workspaces with the agent's unique ID substituted into the system prompt.
+Each agent definition file uses YAML frontmatter for configuration (name, description, model) and Markdown body for the system prompt. When agents share a template (e.g., `dev-alex` and `dev-emma` both use `dev/`), `setup-agents.py` generates instance-specific agent definitions at `.claude/agents/<instance>.md` with the agent's unique ID substituted into the prompt.
 
 ## Communication Flow
 
@@ -179,10 +184,18 @@ agent-hub/
 ├── agent-config.py              # CLI helper for shell scripts
 ├── restart_all_agents.sh        # System startup script
 │
-├── agents/                      # Agent templates
-│   ├── product/                 #   Product Manager
-│   ├── dev/                     #   Developer
-│   ├── qa/                      #   QA Engineer
+├── .claude/agents/              # Native agent definitions (YAML frontmatter + prompt)
+│   ├── product.md               #   Product Manager (template, tracked)
+│   ├── dev.md                   #   Developer (template, tracked)
+│   ├── qa.md                    #   QA Engineer (template, tracked)
+│   ├── user.md                  #   User Experience Tester (template, tracked)
+│   ├── dev-alex.md              #   (generated) Instance definition
+│   └── ...                      #   (generated) Other instances
+│
+├── agents/                      # Agent resources and workspaces
+│   ├── product/                 #   Product Manager (CLAUDE.md, skills)
+│   ├── dev/                     #   Developer (CLAUDE.md, skills)
+│   ├── qa/                      #   QA Engineer (CLAUDE.md, skills)
 │   ├── user/                    #   User Experience Tester
 │   ├── shared/skills/           #   Shared skills
 │   ├── product-kevin/           #   (generated) Instance workspace

@@ -3,10 +3,12 @@
 
 Reads agents.yaml and sets up the runtime working directory for each agent:
   - .mcp.json (generated from MCP server config)
+  - .claude/agents/<instance>.md (native agent definition with YAML frontmatter)
   - .claude/skills/ (symlinks to shared + agent-specific skills)
   - agents/shared/team-roster.md (generated)
 
-Template files (system_prompt.md, CLAUDE.md) stay in agents/<name>/ as-is.
+Template agent definitions live in .claude/agents/<role>.md (tracked in git).
+Instance agent definitions are generated from templates with agent ID replacement.
 Agent-specific skill sources live in agents/<name>/skills/.
 Shared skill sources live in agents/shared/skills/.
 
@@ -140,15 +142,24 @@ def setup_skills(agent_name, agent_dir, source_agents_dir, base_name=None):
                         force_symlink(skill_src, os.path.join(skills_dir, skill_name))
 
 
-def generate_instance_prompt(agent_name, base_name, agent_dir, source_agents_dir):
-    """Generate system_prompt.md for a multi-instance agent from its template."""
-    template_path = os.path.join(source_agents_dir, base_name, "system_prompt.md")
+def generate_instance_agent(agent_name, base_name, source_dir, output_dir):
+    """Generate .claude/agents/<agent_name>.md from the template agent definition.
+
+    Reads the template from <source_dir>/.claude/agents/<base_name>.md,
+    replaces agent IDs and the YAML frontmatter name field, then writes
+    to <output_dir>/.claude/agents/<agent_name>.md.
+    """
+    template_path = os.path.join(source_dir, ".claude", "agents", f"{base_name}.md")
     if not os.path.isfile(template_path):
         return
 
     with open(template_path) as f:
         content = f.read()
 
+    # Update YAML frontmatter name field
+    content = content.replace(f"\nname: {base_name}\n", f"\nname: {agent_name}\n")
+
+    # Replace agent IDs in the body
     content = content.replace(f"agent:{base_name}`", f"agent:{agent_name}`")
     content = content.replace(f"agent:{base_name},", f"agent:{agent_name},")
     content = content.replace(f"agent:{base_name}\"", f"agent:{agent_name}\"")
@@ -161,7 +172,9 @@ def generate_instance_prompt(agent_name, base_name, agent_dir, source_agents_dir
         f"**你的 Leantime tag**: `agent:{agent_name}`",
     )
 
-    with open(os.path.join(agent_dir, "system_prompt.md"), "w") as f:
+    agents_defs_dir = os.path.join(output_dir, ".claude", "agents")
+    ensure_dir(agents_defs_dir)
+    with open(os.path.join(agents_defs_dir, f"{agent_name}.md"), "w") as f:
         f.write(content)
 
 
@@ -189,12 +202,12 @@ def generate_roster(cfg, agents_expanded, output_agents_dir):
         f.write("\n".join(lines) + "\n")
 
 
-def validate_agent(agent_name, agent_dir):
-    """Check that required template files exist."""
+def validate_agent(agent_name, source_dir):
+    """Check that agent definition file exists for a template agent."""
     issues = []
-    for required in ["system_prompt.md"]:
-        if not os.path.isfile(os.path.join(agent_dir, required)):
-            issues.append(f"  Missing: {required}")
+    agent_def = os.path.join(source_dir, ".claude", "agents", f"{agent_name}.md")
+    if not os.path.isfile(agent_def):
+        issues.append(f"  Missing: .claude/agents/{agent_name}.md")
     return issues
 
 
@@ -216,6 +229,19 @@ def setup_all(cfg, config_path, source_dir, output_dir):
         print(f"  source: {source_dir}")
         print(f"  output: {output_dir}")
 
+    # When scaffolding to a different dir, copy template agent definitions
+    if output_dir != source_dir:
+        source_agent_defs = os.path.join(source_dir, ".claude", "agents")
+        output_agent_defs = os.path.join(output_dir, ".claude", "agents")
+        if os.path.isdir(source_agent_defs):
+            ensure_dir(output_agent_defs)
+            for fname in sorted(os.listdir(source_agent_defs)):
+                if fname.endswith(".md"):
+                    shutil.copy2(
+                        os.path.join(source_agent_defs, fname),
+                        os.path.join(output_agent_defs, fname),
+                    )
+
     all_issues = {}
     for name, info in agents_expanded.items():
         base_name = info.get("_base_name", name)
@@ -225,20 +251,19 @@ def setup_all(cfg, config_path, source_dir, output_dir):
         ensure_dir(agent_dir)
 
         if is_instance:
-            generate_instance_prompt(name, base_name, agent_dir, source_agents_dir)
+            generate_instance_agent(name, base_name, source_dir, output_dir)
             template_claude = os.path.join(source_agents_dir, base_name, "CLAUDE.md")
             instance_claude = os.path.join(agent_dir, "CLAUDE.md")
             if os.path.isfile(template_claude) and not os.path.isfile(instance_claude):
                 shutil.copy2(template_claude, instance_claude)
         elif output_dir != source_dir:
-            # When scaffolding to a different dir, copy template files
-            for fname in ["system_prompt.md", "CLAUDE.md"]:
-                src = os.path.join(source_agents_dir, name, fname)
-                dst = os.path.join(agent_dir, fname)
-                if os.path.isfile(src):
-                    shutil.copy2(src, dst)
+            # When scaffolding to a different dir, copy CLAUDE.md
+            src = os.path.join(source_agents_dir, name, "CLAUDE.md")
+            dst = os.path.join(agent_dir, "CLAUDE.md")
+            if os.path.isfile(src):
+                shutil.copy2(src, dst)
         else:
-            issues = validate_agent(name, agent_dir)
+            issues = validate_agent(name, source_dir)
             if issues:
                 all_issues[name] = issues
 

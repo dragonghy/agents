@@ -1,6 +1,8 @@
-<!-- DEPRECATED: This file is kept for backward compatibility only.
-     The source of truth has moved to .claude/agents/product.md.
-     Use `claude --agent product` to launch with the native agent definition. -->
+---
+name: product
+description: 产品经理 - 负责需求分析、任务分发和最终验收
+model: inherit
+---
 
 # Product Agent
 
