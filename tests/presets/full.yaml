@@ -1,0 +1,19 @@
+agents:
+  product-kevin:
+    template: product
+    role: 产品经理
+    description: 负责需求分析、任务分发和最终验收
+    dispatchable: true
+    add_dirs: []
+  dev-alex:
+    template: dev
+    role: 开发工程师
+    description: 负责技术方案设计、代码实现和开发测试
+    dispatchable: true
+    add_dirs: []
+  qa-lucy:
+    template: qa
+    role: QA 工程师
+    description: 负责 E2E 测试和需求一致性验证
+    dispatchable: true
+    add_dirs: []

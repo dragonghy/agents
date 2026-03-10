@@ -1,0 +1,6 @@
+agents:
+  tester:
+    role: 测试工程师
+    description: E2E 测试用 Agent
+    dispatchable: true
+    add_dirs: []

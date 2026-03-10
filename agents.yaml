@@ -1,0 +1,98 @@
+tmux_session: agents
+
+leantime:
+  url: ${LEANTIME_URL:-http://localhost:9090}
+  api_key: ${LEANTIME_API_KEY}
+  project_id: 3
+  user_id: 1
+  user_email: ${LEANTIME_USER_EMAIL}
+
+# Daemon config: central agents-mcp process that all agents connect to via proxy.
+# Start daemon: uv run --directory services/agents-mcp agents-mcp --daemon --port 8765
+daemon:
+  host: 127.0.0.1
+  port: 8765
+
+# MCP servers spawned per-agent by Claude Code.
+# In daemon mode, agents use the proxy to connect to the central daemon.
+# In direct mode (daemon not configured), agents spawn the full server.
+mcp_servers:
+  agents:
+    command: uv
+    args:
+      - run
+      - --directory
+      - "{ROOT_DIR}/services/agents-mcp"
+      - agents-mcp-proxy
+
+# Daily journal: all agents write a work summary at the configured time.
+# Stagger avoids dispatching all agents simultaneously.
+daily_journal:
+  time: "01:00"
+  stagger_minutes: 5
+
+# Staleness detection: when an agent is idle but has in_progress tickets
+# older than threshold, dispatch with a targeted message to complete delivery.
+staleness:
+  threshold_minutes: 30
+
+# Agent name pool (pick from here when adding new agents).
+# Used: kevin, alex, lucy, emma, oliver, sophia
+name_pool: [noah, mia, liam, chloe, james, lily, ethan, grace, ryan, zoe, max, aria, sam, leo, ruby, finn, ivy]
+
+# Agent definitions.
+# Each agent has a unique human-name ID (e.g. qa-lucy, dev-alex).
+# 'template' points to the template directory under agents/<template>/.
+# To add another QA agent, just add a new entry like qa-david with template: qa.
+agents:
+  admin:
+    role: 管理员
+    description: 负责全局配置、Skill 管理和 Agent 重启
+    dispatchable: false
+    add_dirs:
+      - .
+  product-kevin:
+    template: product
+    role: 产品经理
+    description: 负责需求分析、任务分发和最终验收
+    dispatchable: true
+    add_dirs:
+      - ${VM_MCP_DIR}
+  dev-alex:
+    template: dev
+    role: 开发工程师
+    description: 负责技术方案设计、代码实现和开发测试
+    dispatchable: true
+    add_dirs:
+      - ${VM_MCP_DIR}
+  dev-emma:
+    template: dev
+    role: 开发工程师
+    description: 负责技术方案设计、代码实现和开发测试
+    dispatchable: true
+    add_dirs:
+      - ${VM_MCP_DIR}
+  qa-lucy:
+    template: qa
+    role: QA 工程师
+    description: 负责 E2E 测试和需求一致性验证
+    dispatchable: true
+    add_dirs:
+      - ${VM_MCP_DIR}
+  qa-oliver:
+    template: qa
+    role: QA 工程师
+    description: 负责 E2E 测试和需求一致性验证
+    dispatchable: true
+    add_dirs:
+      - ${VM_MCP_DIR}
+  user-sophia:
+    template: user
+    role: 用户体验测试员
+    description: 以用户视角使用 Agent-Hub，构思项目并在隔离环境中测试完整工作流
+    dispatchable: true
+    add_dirs:
+      - .
+    schedule:
+      interval_hours: 4
+      prompt: "定时唤醒：请继续你的用户测试工作。先用 get_inbox 检查是否有未读消息，再用 list_tickets 检查待办任务。然后检查是否有活跃测试环境（python3 tests/e2e_env.py list）。如果有，检查进度继续测试；如果没有，构思一个新项目并创建隔离环境开始测试。"
