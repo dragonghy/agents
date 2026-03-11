@@ -71,8 +71,10 @@ docs: add getting-started guide for new users
 
 - `services/agents-mcp/` — The core MCP daemon (Python). Start here for backend changes.
 - `services/agents-mcp/web/` — The Web UI (React + Vite + Tailwind).
-- `agents/` — Agent templates. Each subdirectory is a role template (product, dev, qa).
-- `agents/shared/` — Skills and resources shared across all agents.
+- `templates/` — Agent template resources (CLAUDE.md, skills). Each subdirectory is a role template.
+- `templates/shared/` — Skills shared across all agents (leantime, daily-journal, etc.).
+- `.claude/agents/` — Native agent definitions (YAML frontmatter + system prompt).
+- `agents/` — (generated, gitignored) Runtime agent workspaces created by `setup-agents.py`.
 - `tests/` — E2E test environment tooling.
 
 ## Reporting Issues

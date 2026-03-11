@@ -188,4 +188,4 @@ docker compose -f services/leantime/docker-compose.yml up -d
 
 - Read [Architecture](architecture.md) to understand how the system works
 - Check [CONTRIBUTING.md](../CONTRIBUTING.md) if you want to contribute
-- Explore the agent templates in `agents/` to customize agent behavior
+- Explore the agent templates in `templates/` and `.claude/agents/` to customize agent behavior

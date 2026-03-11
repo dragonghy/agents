@@ -8,14 +8,15 @@ allowed-tools: Bash, Write, Edit, Read, Glob
 
 ## 文件结构
 
-共享 Skill 放在 `agents/shared/skills/`。Agent 专属 Skill 放在 `agents/<name>/skills/`。
+共享 Skill 放在 `templates/shared/skills/`。Agent 专属 Skill 放在 `templates/<name>/skills/`。
 `setup-agents.py` 会自动将它们 symlink 到 `.claude/skills/`（运行时目录），无需手动创建 symlink。
 
 ```
-agents/
+templates/
 ├── shared/skills/<skill-name>/SKILL.md   ← 共享 skill 源文件
 ├── admin/skills/<skill-name>/SKILL.md    ← agent 专属 skill 源文件
-└── admin/.claude/skills/<skill-name>/    ← 自动生成的 symlink（gitignored）
+
+agents/admin/.claude/skills/<skill-name>/ ← 自动生成的 symlink（gitignored）
 ```
 
 ## 步骤
@@ -23,10 +24,10 @@ agents/
 ### 1. 创建共享 Skill
 
 ```bash
-mkdir -p agents/shared/skills/<skill-name>
+mkdir -p templates/shared/skills/<skill-name>
 ```
 
-在 `agents/shared/skills/<skill-name>/SKILL.md` 中编写 Skill 内容。
+在 `templates/shared/skills/<skill-name>/SKILL.md` 中编写 Skill 内容。
 
 文件必须以 YAML frontmatter 开头：
 
@@ -41,10 +42,10 @@ allowed-tools: tool1, tool2, tool3
 ### 2. 创建 Agent 专属 Skill
 
 ```bash
-mkdir -p agents/<agent>/skills/<skill-name>
+mkdir -p templates/<agent>/skills/<skill-name>
 ```
 
-在 `agents/<agent>/skills/<skill-name>/SKILL.md` 中编写 Skill 内容。
+在 `templates/<agent>/skills/<skill-name>/SKILL.md` 中编写 Skill 内容。
 
 ### 3. 重启 Agent
 

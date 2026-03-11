@@ -144,18 +144,12 @@ ensure_session() {
 start_agent() {
   local agent="$1"
   local agent_def="${ROOT_DIR}/.claude/agents/${agent}.md"
-  local prompt_file="${ROOT_DIR}/agents/${agent}/system_prompt.md"
 
-  # Prefer native agent definition, fall back to legacy system_prompt.md
-  local agent_flag=""
-  if [[ -f "$agent_def" ]]; then
-    agent_flag="--agent ${agent}"
-  elif [[ -f "$prompt_file" ]]; then
-    agent_flag="--append-system-prompt-file ${prompt_file}"
-  else
-    echo "  SKIP: no agent definition found for $agent"
+  if [[ ! -f "$agent_def" ]]; then
+    echo "  SKIP: no agent definition found at ${agent_def}"
     return
   fi
+  local agent_flag="--agent ${agent}"
 
   local sid
   sid="$(python3 "$CONFIG" get-session "$agent")"

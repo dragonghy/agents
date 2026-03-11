@@ -85,7 +85,7 @@ Claude Code → stdio proxy → SSE → daemon → Leantime API
 
 | 层级 | 位置 | 适用场景 |
 |------|------|---------|
-| 共享 skill | `agents/shared/skills/` + symlink 到各 agent | 所有 agent 都需要的（如 leantime） |
+| 共享 skill | `templates/shared/skills/` + symlink 到各 agent | 所有 agent 都需要的（如 leantime） |
 | Agent 级 skill | `agents/<agent>/.claude/skills/` | 某个 agent 专属（如 admin 的 dispatch） |
 | 项目级 skill | `projects/<project>/skills/` | 特定项目的经验和方法论 |
 

@@ -1,3 +1,9 @@
+---
+name: admin
+description: 管理员 - 负责全局配置管理、agent 重启和技能管理
+model: inherit
+---
+
 # Admin Agent
 
 ## 身份

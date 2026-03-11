@@ -9,8 +9,8 @@ Reads agents.yaml and sets up the runtime working directory for each agent:
 
 Template agent definitions live in .claude/agents/<role>.md (tracked in git).
 Instance agent definitions are generated from templates with agent ID replacement.
-Agent-specific skill sources live in agents/<name>/skills/.
-Shared skill sources live in agents/shared/skills/.
+Agent-specific skill sources live in templates/<name>/skills/.
+Shared skill sources live in templates/shared/skills/.
 
 Supports scaffolding to a custom output directory (for testing):
   python3 setup-agents.py --config test-agents.yaml --output-dir /tmp/test-env
@@ -31,7 +31,7 @@ def resolve_agents(cfg):
     """Resolve agent templates. Each agent is listed individually in config.
 
     If an agent has a 'template' field, it points to the template directory
-    under agents/<template>/. The template name is stored as '_base_name'.
+    under templates/<template>/. The template name is stored as '_base_name'.
     If no 'template' field, the agent name itself is the template.
     """
     resolved = {}
@@ -99,12 +99,12 @@ def generate_mcp_json(cfg, config_path, agent_dir, source_dir):
         f.write("\n")
 
 
-def setup_skills(agent_name, agent_dir, source_agents_dir, base_name=None):
+def setup_skills(agent_name, agent_dir, source_templates_dir, base_name=None):
     """Set up .claude/skills/ with symlinks to shared, agent-specific, and project-level skills."""
     skills_dir = os.path.join(agent_dir, ".claude", "skills")
     ensure_dir(skills_dir)
 
-    shared_skills_dir = os.path.join(source_agents_dir, "shared", "skills")
+    shared_skills_dir = os.path.join(source_templates_dir, "shared", "skills")
 
     # Remove stale symlinks
     if os.path.isdir(skills_dir):
@@ -121,7 +121,7 @@ def setup_skills(agent_name, agent_dir, source_agents_dir, base_name=None):
                 force_symlink(skill_src, os.path.join(skills_dir, skill_name))
 
     # Symlink agent-specific skills (from source template)
-    template_dir = os.path.join(source_agents_dir, base_name or agent_name)
+    template_dir = os.path.join(source_templates_dir, base_name or agent_name)
     agent_skills_dir = os.path.join(template_dir, "skills")
     if os.path.isdir(agent_skills_dir):
         for skill_name in sorted(os.listdir(agent_skills_dir)):
@@ -130,7 +130,7 @@ def setup_skills(agent_name, agent_dir, source_agents_dir, base_name=None):
                 force_symlink(skill_src, os.path.join(skills_dir, skill_name))
 
     # Symlink project-level skills (from projects/*/skills/)
-    source_dir = os.path.dirname(source_agents_dir)
+    source_dir = os.path.dirname(source_templates_dir)
     projects_dir = os.path.join(source_dir, "projects")
     if os.path.isdir(projects_dir):
         for project in sorted(os.listdir(projects_dir)):
@@ -220,7 +220,7 @@ def setup_all(cfg, config_path, source_dir, output_dir):
         source_dir: Where source files live (git repo root)
         output_dir: Where to write generated files (may differ from source for testing)
     """
-    source_agents_dir = os.path.join(source_dir, "agents")
+    source_templates_dir = os.path.join(source_dir, "templates")
     output_agents_dir = os.path.join(output_dir, "agents")
 
     agents_expanded = resolve_agents(cfg)
@@ -252,13 +252,13 @@ def setup_all(cfg, config_path, source_dir, output_dir):
 
         if is_instance:
             generate_instance_agent(name, base_name, source_dir, output_dir)
-            template_claude = os.path.join(source_agents_dir, base_name, "CLAUDE.md")
+            template_claude = os.path.join(source_templates_dir, base_name, "CLAUDE.md")
             instance_claude = os.path.join(agent_dir, "CLAUDE.md")
-            if os.path.isfile(template_claude) and not os.path.isfile(instance_claude):
+            if os.path.isfile(template_claude):
                 shutil.copy2(template_claude, instance_claude)
         elif output_dir != source_dir:
             # When scaffolding to a different dir, copy CLAUDE.md
-            src = os.path.join(source_agents_dir, name, "CLAUDE.md")
+            src = os.path.join(source_templates_dir, name, "CLAUDE.md")
             dst = os.path.join(agent_dir, "CLAUDE.md")
             if os.path.isfile(src):
                 shutil.copy2(src, dst)
@@ -268,7 +268,7 @@ def setup_all(cfg, config_path, source_dir, output_dir):
                 all_issues[name] = issues
 
         generate_mcp_json(cfg, config_path, agent_dir, source_dir)
-        setup_skills(name, agent_dir, source_agents_dir, base_name=base_name if is_instance else None)
+        setup_skills(name, agent_dir, source_templates_dir, base_name=base_name if is_instance else None)
 
         suffix = f" (instance of {base_name})" if is_instance else ""
         print(f"  {name}: OK{suffix}")
