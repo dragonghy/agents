@@ -115,6 +115,34 @@ def cmd_set_session(cfg, args):
     save_sessions(sessions)
 
 
+def cmd_detect_session(cfg, args):
+    """Detect latest session ID from Claude Code project files."""
+    agent = args.agent
+    agent_dir = os.path.join(ROOT_DIR, "agents", agent)
+    abs_path = os.path.abspath(agent_dir)
+    proj_name = "-" + abs_path.strip("/").replace("/", "-")
+    proj_dir = os.path.join(os.path.expanduser("~"), ".claude", "projects", proj_name)
+
+    # Follow symlinks in ~/.claude/projects/
+    if os.path.islink(proj_dir):
+        target = os.readlink(proj_dir)
+        if not os.path.isabs(target):
+            target = os.path.join(os.path.dirname(proj_dir), target)
+        proj_dir = target
+
+    if not os.path.isdir(proj_dir):
+        return
+
+    jsonl_files = [f for f in os.listdir(proj_dir) if f.endswith(".jsonl")]
+    if not jsonl_files:
+        return
+
+    jsonl_files.sort(
+        key=lambda f: os.path.getmtime(os.path.join(proj_dir, f)), reverse=True
+    )
+    print(jsonl_files[0].removesuffix(".jsonl"))
+
+
 def cmd_generate_roster(cfg, _args):
     agents = resolve_agents(cfg)
     lines = [
@@ -167,6 +195,9 @@ def main():
     p_ss.add_argument("agent")
     p_ss.add_argument("session_id")
 
+    p_ds = sub.add_parser("detect-session", help="Detect latest session ID from Claude project files")
+    p_ds.add_argument("agent")
+
     sub.add_parser("generate-roster", help="Generate team roster markdown")
 
     p_lt = sub.add_parser("leantime", help="Get leantime config field")
@@ -189,6 +220,7 @@ def main():
         "get-add-dirs": cmd_get_add_dirs,
         "get-session": cmd_get_session,
         "set-session": cmd_set_session,
+        "detect-session": cmd_detect_session,
         "generate-roster": cmd_generate_roster,
         "leantime": cmd_leantime,
         "tmux-session": cmd_tmux_session,

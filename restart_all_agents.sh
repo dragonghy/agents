@@ -141,6 +141,8 @@ ensure_session() {
   fi
 }
 
+AGENTS_NEEDING_SESSION=()
+
 start_agent() {
   local agent="$1"
   local agent_def="${ROOT_DIR}/.claude/agents/${agent}.md"
@@ -153,6 +155,11 @@ start_agent() {
 
   local sid
   sid="$(python3 "$CONFIG" get-session "$agent")"
+
+  # Track agents without session ID for post-startup capture
+  if [[ -z "$sid" ]]; then
+    AGENTS_NEEDING_SESSION+=("$agent")
+  fi
 
   # Build --add-dir flags
   local add_dir_flags=""
@@ -173,6 +180,26 @@ start_agent() {
   tmux new-window -t "$TMUX_SESSION" -n "$agent"
   tmux send-keys -t "$TMUX_SESSION:$agent" "$cmd" Enter
   echo "  Started: $agent"
+}
+
+capture_new_sessions() {
+  if [[ ${#AGENTS_NEEDING_SESSION[@]} -eq 0 ]]; then
+    return
+  fi
+
+  echo "=== Capturing session IDs (waiting 15s for Claude Code startup) ==="
+  sleep 15
+
+  for agent in "${AGENTS_NEEDING_SESSION[@]}"; do
+    local new_sid
+    new_sid="$(python3 "$CONFIG" detect-session "$agent")"
+    if [[ -n "$new_sid" ]]; then
+      python3 "$CONFIG" set-session "$agent" "$new_sid"
+      echo "  ${agent}: ${new_sid}"
+    else
+      echo "  ${agent}: (no session found yet)"
+    fi
+  done
 }
 
 cleanup_init_window() {
@@ -215,6 +242,7 @@ case "${1:-__all__}" in
       start_agent "$agent"
     done
     cleanup_init_window
+    capture_new_sessions
     tmux select-window -t "$TMUX_SESSION:$(tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' | head -1)"
     ;;
   --all|__all__)
@@ -226,6 +254,7 @@ case "${1:-__all__}" in
       start_agent "$agent"
     done
     cleanup_init_window
+    capture_new_sessions
     tmux select-window -t "$TMUX_SESSION:$(tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' | head -1)"
     ;;
   --help|-h)
@@ -240,6 +269,7 @@ case "${1:-__all__}" in
       echo "=== Restarting $agent ==="
       ensure_session
       start_agent "$agent"
+      capture_new_sessions
     else
       echo "Unknown agent: $agent"
       usage
