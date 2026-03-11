@@ -25,6 +25,7 @@ export default function Messages() {
   const [sender, setSender] = useState('human');
   const [recipient, setRecipient] = useState('');
   const [sending, setSending] = useState(false);
+  const [agentsOnly, setAgentsOnly] = useState(true);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -35,7 +36,9 @@ export default function Messages() {
     let active = true;
     async function load() {
       try {
-        const data = await fetchMessages();
+        const params: Record<string, string> = {};
+        if (agentsOnly) params.agents_only = 'true';
+        const data = await fetchMessages(params);
         if (active) {
           setThreads(data.threads);
           setError(null);
@@ -52,7 +55,7 @@ export default function Messages() {
     load();
     const interval = setInterval(load, 10000);
     return () => { active = false; clearInterval(interval); };
-  }, []);
+  }, [agentsOnly]);
 
   useEffect(() => {
     if (!selectedThread) return;
@@ -91,7 +94,9 @@ export default function Messages() {
         setMessages([...data].reverse());
         setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
       }
-      const threadData = await fetchMessages();
+      const threadParams: Record<string, string> = {};
+      if (agentsOnly) threadParams.agents_only = 'true';
+      const threadData = await fetchMessages(threadParams);
       setThreads(threadData.threads);
     } catch (e) {
       setError(String(e));
@@ -126,7 +131,27 @@ export default function Messages() {
 
   return (
     <div>
-      <h2 className="text-2xl font-bold text-gray-800 dark:text-gray-100 mb-4">Messages</h2>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-2xl font-bold text-gray-800 dark:text-gray-100">Messages</h2>
+        <button
+          onClick={() => setAgentsOnly(!agentsOnly)}
+          className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+            agentsOnly
+              ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
+              : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
+          }`}
+          title={agentsOnly ? 'Showing current agents only. Click to show all conversations.' : 'Showing all conversations. Click to filter to current agents only.'}
+        >
+          <span className={`inline-block w-8 h-4 rounded-full relative transition-colors ${
+            agentsOnly ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'
+          }`}>
+            <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform ${
+              agentsOnly ? 'translate-x-4' : 'translate-x-0.5'
+            }`} />
+          </span>
+          {agentsOnly ? 'Current agents' : 'All conversations'}
+        </button>
+      </div>
 
       <div className="flex flex-wrap gap-2 mb-4 items-center text-sm">
         <label className="text-gray-600 dark:text-gray-400">Send as:</label>

@@ -178,9 +178,19 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
         params = request.query_params
         limit = int(params.get("limit", "100"))
         offset = int(params.get("offset", "0"))
+        agents_only = params.get("agents_only", "false").lower() == "true"
+
         result = await store.get_all_messages(limit=limit, offset=offset)
-        # Also include conversation threads
-        threads = await store.get_conversation_threads()
+
+        # When agents_only=true, filter threads to only include conversations
+        # between currently configured agents (from agents.yaml)
+        agent_ids = None
+        if agents_only:
+            cfg = get_config()
+            agents_expanded = resolve_agents(cfg)
+            agent_ids = list(agents_expanded.keys()) + ["human"]
+
+        threads = await store.get_conversation_threads(agent_ids=agent_ids)
         result["threads"] = threads
         return JSONResponse(result)
 

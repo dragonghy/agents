@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 
 test.describe('Messages', () => {
-  test('loads messages page with controls', async ({ page }) => {
+  test('loads messages page with controls and filter toggle', async ({ page }) => {
     await page.goto('/messages');
     await expect(page.locator('h2')).toHaveText('Messages', { timeout: 10_000 });
 
@@ -10,6 +10,25 @@ test.describe('Messages', () => {
     // New conversation controls
     await expect(page.getByText('New conversation with:')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Start' })).toBeVisible();
+    // Filter toggle - defaults to "Current agents"
+    await expect(page.getByText('Current agents')).toBeVisible();
+  });
+
+  test('filter toggle switches between current agents and all', async ({ page }) => {
+    await page.goto('/messages');
+    await expect(page.locator('h2')).toHaveText('Messages', { timeout: 10_000 });
+
+    // Default: "Current agents"
+    const toggleBtn = page.getByText('Current agents');
+    await expect(toggleBtn).toBeVisible();
+
+    // Click to switch to "All conversations"
+    await toggleBtn.click();
+    await expect(page.getByText('All conversations')).toBeVisible();
+
+    // Click again to switch back
+    await page.getByText('All conversations').click();
+    await expect(page.getByText('Current agents')).toBeVisible();
   });
 
   test('shows thread list or empty state', async ({ page }) => {
@@ -42,6 +61,12 @@ test.describe('Messages', () => {
     // Navigate to messages page
     await page.goto('/messages');
     await expect(page.locator('h2')).toHaveText('Messages', { timeout: 10_000 });
+
+    // Switch to "All conversations" to see test agent messages
+    const toggleBtn = page.getByText('Current agents');
+    await expect(toggleBtn).toBeVisible({ timeout: 5_000 });
+    await toggleBtn.click();
+    await expect(page.getByText('All conversations')).toBeVisible();
 
     // Find thread containing our test agents and click it
     const threadBtn = page.locator('button').filter({ hasText: 'e2e-sender' });

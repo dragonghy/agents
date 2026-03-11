@@ -201,17 +201,37 @@ class AgentStore:
             "total": total,
         }
 
-    async def get_conversation_threads(self) -> list[dict]:
-        """Get unique conversation pairs with latest message info."""
+    async def get_conversation_threads(
+        self, agent_ids: Optional[list[str]] = None
+    ) -> list[dict]:
+        """Get unique conversation pairs with latest message info.
+
+        Args:
+            agent_ids: If provided, only return threads where BOTH participants
+                       are in this list (used for "current agents only" filter).
+        """
+        if agent_ids:
+            placeholders = ", ".join("?" for _ in agent_ids)
+            where_clause = (
+                f"WHERE from_agent IN ({placeholders}) "
+                f"AND to_agent IN ({placeholders})"
+            )
+            query_params = agent_ids + agent_ids
+        else:
+            where_clause = ""
+            query_params = []
+
         async with self._db.execute(
-            """SELECT
+            f"""SELECT
                  CASE WHEN from_agent < to_agent THEN from_agent ELSE to_agent END AS agent_a,
                  CASE WHEN from_agent < to_agent THEN to_agent ELSE from_agent END AS agent_b,
                  MAX(created_at) AS last_message_at,
                  COUNT(*) AS message_count
                FROM messages
+               {where_clause}
                GROUP BY agent_a, agent_b
-               ORDER BY last_message_at DESC"""
+               ORDER BY last_message_at DESC""",
+            query_params,
         ) as cursor:
             rows = await cursor.fetchall()
 
