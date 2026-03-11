@@ -365,6 +365,7 @@ async def get_agent_status(agent: str = "all") -> str:
         results.append({
             "id": name,
             "role": info.get("role", ""),
+            "is_idle": tmux_status == "idle",
             "tmux_status": tmux_status,
             "workload": wl,
             "dispatchable": info.get("dispatchable", False),
