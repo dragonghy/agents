@@ -31,6 +31,28 @@ CREATE INDEX IF NOT EXISTS idx_msg_inbox
     ON messages(to_agent, is_read, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_msg_conv
     ON messages(from_agent, to_agent, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS token_usage_daily (
+    agent_id        TEXT NOT NULL,
+    date            TEXT NOT NULL,
+    model           TEXT NOT NULL,
+    input_tokens    INTEGER DEFAULT 0,
+    output_tokens   INTEGER DEFAULT 0,
+    cache_read_tokens  INTEGER DEFAULT 0,
+    cache_write_tokens INTEGER DEFAULT 0,
+    message_count   INTEGER DEFAULT 0,
+    PRIMARY KEY (agent_id, date, model)
+);
+
+CREATE INDEX IF NOT EXISTS idx_usage_agent
+    ON token_usage_daily(agent_id, date DESC);
+
+CREATE TABLE IF NOT EXISTS usage_scan_state (
+    agent_id        TEXT NOT NULL,
+    filename        TEXT NOT NULL,
+    byte_offset     INTEGER DEFAULT 0,
+    PRIMARY KEY (agent_id, filename)
+);
 """
 
 
@@ -255,3 +277,213 @@ class AgentStore:
             threads.append(row_dict)
 
         return threads
+
+    # ── Token usage methods ──
+
+    async def get_scan_state(self, agent_id: str) -> dict:
+        """Get the JSONL scan state for an agent (filename -> byte offset)."""
+        async with self._db.execute(
+            "SELECT filename, byte_offset FROM usage_scan_state WHERE agent_id = ?",
+            (agent_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return {row["filename"]: row["byte_offset"] for row in rows}
+
+    async def save_scan_state(self, agent_id: str, scan_state: dict):
+        """Save the JSONL scan state for an agent."""
+        for filename, offset in scan_state.items():
+            await self._db.execute(
+                """INSERT INTO usage_scan_state (agent_id, filename, byte_offset)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(agent_id, filename) DO UPDATE SET byte_offset = ?""",
+                (agent_id, filename, offset, offset),
+            )
+        await self._db.commit()
+
+    async def upsert_daily_usage(self, agent_id: str, daily: dict):
+        """Merge daily usage data into the database.
+
+        Args:
+            agent_id: Agent ID
+            daily: {date_str: {model: {input_tokens, output_tokens, ...}}}
+        """
+        for date_str, models in daily.items():
+            for model, usage in models.items():
+                # Check if row exists
+                async with self._db.execute(
+                    """SELECT input_tokens, output_tokens, cache_read_tokens,
+                              cache_write_tokens, message_count
+                       FROM token_usage_daily
+                       WHERE agent_id = ? AND date = ? AND model = ?""",
+                    (agent_id, date_str, model),
+                ) as cursor:
+                    existing = await cursor.fetchone()
+
+                if existing:
+                    # Add incremental values
+                    await self._db.execute(
+                        """UPDATE token_usage_daily SET
+                             input_tokens = input_tokens + ?,
+                             output_tokens = output_tokens + ?,
+                             cache_read_tokens = cache_read_tokens + ?,
+                             cache_write_tokens = cache_write_tokens + ?,
+                             message_count = message_count + ?
+                           WHERE agent_id = ? AND date = ? AND model = ?""",
+                        (
+                            usage.get("input_tokens", 0),
+                            usage.get("output_tokens", 0),
+                            usage.get("cache_read_tokens", 0),
+                            usage.get("cache_write_tokens", 0),
+                            usage.get("message_count", 0),
+                            agent_id, date_str, model,
+                        ),
+                    )
+                else:
+                    await self._db.execute(
+                        """INSERT INTO token_usage_daily
+                           (agent_id, date, model, input_tokens, output_tokens,
+                            cache_read_tokens, cache_write_tokens, message_count)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            agent_id, date_str, model,
+                            usage.get("input_tokens", 0),
+                            usage.get("output_tokens", 0),
+                            usage.get("cache_read_tokens", 0),
+                            usage.get("cache_write_tokens", 0),
+                            usage.get("message_count", 0),
+                        ),
+                    )
+        await self._db.commit()
+
+    async def get_agent_usage(self, agent_id: str) -> dict:
+        """Get aggregated token usage for an agent.
+
+        Returns:
+            {
+                "today": {totals},
+                "lifetime": {totals},
+                "by_model": {model: {totals}},
+                "daily_totals": [{date, totals}, ...],
+            }
+        """
+        from datetime import datetime, timezone
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        # Fetch all daily rows for this agent
+        async with self._db.execute(
+            """SELECT date, model, input_tokens, output_tokens,
+                      cache_read_tokens, cache_write_tokens, message_count
+               FROM token_usage_daily
+               WHERE agent_id = ?
+               ORDER BY date""",
+            (agent_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        lifetime = {
+            "input_tokens": 0, "output_tokens": 0,
+            "cache_read_tokens": 0, "cache_write_tokens": 0,
+            "message_count": 0,
+        }
+        today = dict(lifetime)
+        by_model = {}
+        daily_map = {}  # date -> {totals}
+
+        for row in rows:
+            row = dict(row)
+            date_str = row["date"]
+            model = row["model"]
+
+            for key in ("input_tokens", "output_tokens",
+                        "cache_read_tokens", "cache_write_tokens",
+                        "message_count"):
+                val = row[key]
+                lifetime[key] += val
+
+                if date_str == today_str:
+                    today[key] += val
+
+                if model not in by_model:
+                    by_model[model] = {
+                        "input_tokens": 0, "output_tokens": 0,
+                        "cache_read_tokens": 0, "cache_write_tokens": 0,
+                        "message_count": 0,
+                    }
+                by_model[model][key] += val
+
+                if date_str not in daily_map:
+                    daily_map[date_str] = {
+                        "date": date_str,
+                        "input_tokens": 0, "output_tokens": 0,
+                        "cache_read_tokens": 0, "cache_write_tokens": 0,
+                        "message_count": 0,
+                    }
+                daily_map[date_str][key] += val
+
+        daily_totals = sorted(daily_map.values(), key=lambda d: d["date"])
+
+        return {
+            "today": today,
+            "lifetime": lifetime,
+            "by_model": by_model,
+            "daily_totals": daily_totals,
+        }
+
+    async def get_all_agents_usage_summary(self) -> list[dict]:
+        """Get usage summary for all agents (for dashboard)."""
+        from datetime import datetime, timezone
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        async with self._db.execute(
+            """SELECT agent_id,
+                      SUM(input_tokens) as total_input,
+                      SUM(output_tokens) as total_output,
+                      SUM(cache_read_tokens) as total_cache_read,
+                      SUM(cache_write_tokens) as total_cache_write,
+                      SUM(message_count) as total_messages
+               FROM token_usage_daily
+               GROUP BY agent_id
+               ORDER BY agent_id"""
+        ) as cursor:
+            lifetime_rows = await cursor.fetchall()
+
+        async with self._db.execute(
+            """SELECT agent_id,
+                      SUM(input_tokens) as today_input,
+                      SUM(output_tokens) as today_output,
+                      SUM(cache_read_tokens) as today_cache_read,
+                      SUM(cache_write_tokens) as today_cache_write,
+                      SUM(message_count) as today_messages
+               FROM token_usage_daily
+               WHERE date = ?
+               GROUP BY agent_id""",
+            (today_str,),
+        ) as cursor:
+            today_rows = await cursor.fetchall()
+
+        today_map = {row["agent_id"]: dict(row) for row in today_rows}
+
+        result = []
+        for row in lifetime_rows:
+            row = dict(row)
+            agent_id = row["agent_id"]
+            today_data = today_map.get(agent_id, {})
+            result.append({
+                "agent_id": agent_id,
+                "lifetime": {
+                    "input_tokens": row["total_input"],
+                    "output_tokens": row["total_output"],
+                    "cache_read_tokens": row["total_cache_read"],
+                    "cache_write_tokens": row["total_cache_write"],
+                    "message_count": row["total_messages"],
+                },
+                "today": {
+                    "input_tokens": today_data.get("today_input", 0),
+                    "output_tokens": today_data.get("today_output", 0),
+                    "cache_read_tokens": today_data.get("today_cache_read", 0),
+                    "cache_write_tokens": today_data.get("today_cache_write", 0),
+                    "message_count": today_data.get("today_messages", 0),
+                },
+            })
+
+        return result

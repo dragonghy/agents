@@ -665,6 +665,29 @@ async def reassign_ticket(
 
 
 _dispatch_task = None
+_usage_task = None
+
+
+async def _usage_collection_loop(root_dir: str, agents: list[str], interval: int = 300):
+    """Background loop that periodically collects token usage from JSONL files."""
+    from agents_mcp.usage import collect_agent_usage
+
+    logger.info(f"Usage collection loop started (interval={interval}s, agents={agents})")
+    while True:
+        try:
+            store = await get_store()
+            for agent_id in agents:
+                try:
+                    scan_state = await store.get_scan_state(agent_id)
+                    result = collect_agent_usage(root_dir, agent_id, scan_state=scan_state)
+                    if result["daily"]:
+                        await store.upsert_daily_usage(agent_id, result["daily"])
+                    await store.save_scan_state(agent_id, result["scan_state"])
+                except Exception as e:
+                    logger.warning(f"Usage collection failed for {agent_id}: {e}")
+        except Exception as e:
+            logger.warning(f"Usage collection loop error: {e}")
+        await asyncio.sleep(interval)
 
 
 async def _start_auto_dispatch_async():
@@ -707,6 +730,15 @@ async def _start_auto_dispatch_async():
                       staleness_threshold=staleness_threshold)
     )
     logger.info(f"Auto-dispatch background task started for {agents_list}")
+
+    # Start usage collection background task
+    global _usage_task
+    config_path = os.environ.get("AGENTS_CONFIG_PATH", ".")
+    root_dir = os.path.dirname(os.path.abspath(config_path))
+    _usage_task = asyncio.create_task(
+        _usage_collection_loop(root_dir, all_agents_list, interval=300)
+    )
+    logger.info(f"Usage collection background task started for {all_agents_list}")
 
 
 # ════════════════════════════════════════
