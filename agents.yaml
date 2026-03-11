@@ -24,6 +24,11 @@ mcp_servers:
       - --directory
       - "{ROOT_DIR}/services/agents-mcp"
       - agents-mcp-proxy
+  agent-hub:
+    command: "${VM_MCP_DIR}/.venv/bin/python"
+    args:
+      - "-m"
+      - agent_hub
 
 # Daily journal: all agents write a work summary at the configured time.
 # Stagger avoids dispatching all agents simultaneously.
