@@ -1,12 +1,15 @@
 """REST API routes for the Display UI."""
 
 import json
+import logging
 import os
 import re
 import subprocess
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route, Router
+
+logger = logging.getLogger(__name__)
 
 ANSI_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
 
@@ -279,13 +282,32 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
             return JSONResponse({"error": "from_agent, to_agent required"}, status_code=400)
         client = get_client()
         comment = body.get("comment")
+
+        # Add handoff comment (best-effort: don't block reassignment if comment fails)
+        comment_added = True
+        comment_error = None
         if comment:
-            await client.add_comment(
-                "ticket", ticket_id,
-                f"[Handoff {from_agent} → {to_agent}] {comment}",
-            )
+            try:
+                await client.add_comment(
+                    "ticket", ticket_id,
+                    f"[Handoff {from_agent} → {to_agent}] {comment}",
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to add handoff comment on #{ticket_id}: {e}. "
+                    "Proceeding with reassignment."
+                )
+                comment_added = False
+                comment_error = str(e)
+
         await client.update_ticket(ticket_id, assignee=to_agent, status=3)
-        return JSONResponse({"status": "reassigned", "ticket_id": ticket_id, "to": to_agent})
+        response = {
+            "status": "reassigned", "ticket_id": ticket_id,
+            "to": to_agent, "comment_added": comment_added,
+        }
+        if comment_error:
+            response["comment_error"] = comment_error
+        return JSONResponse(response)
 
     async def dispatch_agent(request: Request) -> JSONResponse:
         agent_id = request.path_params["id"]

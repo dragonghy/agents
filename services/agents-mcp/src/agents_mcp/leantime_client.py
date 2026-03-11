@@ -210,13 +210,34 @@ class LeantimeClient:
         return module
 
     async def add_comment(self, module: str, module_id: int, comment: str) -> Any:
+        """Add a comment. Tries AgentsApi first, falls back to native Comments API."""
         module = self._normalize_module(module)
+        # Try AgentsApi first (has session/entity workarounds)
+        try:
+            return await self._call(
+                "leantime.rpc.AgentsApi.addComment",
+                {
+                    "text": comment,
+                    "module": module,
+                    "entityId": module_id,
+                },
+            )
+        except RuntimeError as e:
+            if "-32601" not in str(e):
+                raise
+            logger.warning(
+                "AgentsApi.addComment unavailable (-32601), "
+                "falling back to native Comments.addComment"
+            )
+        # Fallback: native Comments API (has known PHP bugs but may still work)
         return await self._call(
-            "leantime.rpc.AgentsApi.addComment",
+            "leantime.rpc.Comments.addComment",
             {
-                "text": comment,
-                "module": module,
-                "entityId": module_id,
+                "values": {
+                    "text": comment,
+                    "moduleId": module_id,
+                    "module": module,
+                },
             },
         )
 

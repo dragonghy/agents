@@ -628,10 +628,23 @@ async def reassign_ticket(
         comment: Optional handoff comment explaining context for the next agent.
     """
     client = get_client()
+
+    # Add handoff comment (best-effort: don't block reassignment if comment fails)
+    comment_added = True
+    comment_error = None
     if comment:
-        await client.add_comment(
-            "ticket", ticket_id, f"[Handoff {from_agent} → {to_agent}] {comment}"
-        )
+        try:
+            await client.add_comment(
+                "ticket", ticket_id, f"[Handoff {from_agent} → {to_agent}] {comment}"
+            )
+        except Exception as e:
+            comment_added = False
+            comment_error = str(e)
+            logger.warning(
+                f"Failed to add handoff comment on #{ticket_id}: {e}. "
+                "Proceeding with reassignment."
+            )
+
     result = await client.update_ticket(ticket_id, assignee=to_agent, status=3)
 
     # Auto-dispatch target agent (best-effort)
@@ -653,10 +666,14 @@ async def reassign_ticket(
         dispatch_result = f"error"
         logger.warning(f"Auto-dispatch failed for {to_agent} after reassign #{ticket_id}: {e}")
 
-    return json.dumps({
+    response = {
         "status": "reassigned", "ticket_id": ticket_id,
         "to": to_agent, "auto_dispatch": dispatch_result,
-    })
+        "comment_added": comment_added,
+    }
+    if comment_error:
+        response["comment_error"] = comment_error
+    return json.dumps(response)
 
 
 # ════════════════════════════════════════
