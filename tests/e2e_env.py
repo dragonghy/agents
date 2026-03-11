@@ -442,10 +442,25 @@ def cmd_archive(args):
 
     print(f"Archiving environment '{env_name}' as '{showcase_name}'...")
 
-    # 1. Copy project code from agent workspaces
+    # 1. Copy project code from projects/ directory (where Dev agents create code)
+    projects_dir = os.path.join(work_dir, "projects")
     agents_dir = os.path.join(work_dir, "agents")
     copied_files = 0
 
+    if os.path.isdir(projects_dir):
+        for dirpath, dirnames, filenames in os.walk(projects_dir):
+            dirnames[:] = [d for d in dirnames if d not in _INFRA_DIRS]
+            for fname in filenames:
+                if fname in _INFRA_FILES:
+                    continue
+                src = os.path.join(dirpath, fname)
+                rel = os.path.relpath(src, projects_dir)
+                dst = os.path.join(showcase_path, rel)
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.copy2(src, dst)
+                copied_files += 1
+
+    # Also scan agent workspaces for any project files created there
     if os.path.isdir(agents_dir):
         for agent_name in sorted(os.listdir(agents_dir)):
             agent_path = os.path.join(agents_dir, agent_name)
@@ -460,16 +475,34 @@ def cmd_archive(args):
                     src = os.path.join(dirpath, fname)
                     rel = os.path.relpath(src, agent_path)
                     dst = os.path.join(showcase_path, rel)
-                    os.makedirs(os.path.dirname(dst), exist_ok=True)
-                    shutil.copy2(src, dst)
-                    copied_files += 1
+                    if not os.path.exists(dst):
+                        os.makedirs(os.path.dirname(dst), exist_ok=True)
+                        shutil.copy2(src, dst)
+                        copied_files += 1
 
     print(f"  Copied {copied_files} project files")
 
-    # 2. Copy QA screenshots
+    # 2. Copy QA screenshots from multiple locations
     screenshots_copied = 0
     screenshot_dst = os.path.join(showcase_path, "screenshots")
 
+    # Scan tests/screenshots/ at the environment root
+    for sdir in (
+        os.path.join(work_dir, "tests", "screenshots"),
+        os.path.join(work_dir, "tests", "test-results"),
+    ):
+        if os.path.isdir(sdir):
+            for root, _dirs, files in os.walk(sdir):
+                for f in files:
+                    if os.path.splitext(f)[1].lower() in _IMAGE_EXTS:
+                        src = os.path.join(root, f)
+                        rel = os.path.relpath(src, sdir)
+                        dst = os.path.join(screenshot_dst, rel)
+                        os.makedirs(os.path.dirname(dst), exist_ok=True)
+                        shutil.copy2(src, dst)
+                        screenshots_copied += 1
+
+    # Also scan agent workspace screenshot directories
     if os.path.isdir(agents_dir):
         for agent_name in sorted(os.listdir(agents_dir)):
             agent_path = os.path.join(agents_dir, agent_name)
@@ -487,9 +520,10 @@ def cmd_archive(args):
                             src = os.path.join(root, f)
                             rel = os.path.relpath(src, src_dir)
                             dst = os.path.join(screenshot_dst, rel)
-                            os.makedirs(os.path.dirname(dst), exist_ok=True)
-                            shutil.copy2(src, dst)
-                            screenshots_copied += 1
+                            if not os.path.exists(dst):
+                                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                                shutil.copy2(src, dst)
+                                screenshots_copied += 1
 
     if screenshots_copied:
         print(f"  Copied {screenshots_copied} screenshots")

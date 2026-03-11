@@ -273,6 +273,12 @@ def setup_all(cfg, config_path, source_dir, output_dir):
         suffix = f" (instance of {base_name})" if is_instance else ""
         print(f"  {name}: OK{suffix}")
 
+    # Generate root-level .mcp.json for --agent mode compatibility.
+    # When using `claude --agent <name>`, Claude Code resolves the project root
+    # to the git root (where .claude/agents/ lives) and looks for .mcp.json there.
+    generate_mcp_json(cfg, config_path, output_dir, source_dir)
+    print("  .mcp.json (root): OK")
+
     generate_roster(cfg, agents_expanded, output_agents_dir)
     print("  team-roster.md: OK")
 
