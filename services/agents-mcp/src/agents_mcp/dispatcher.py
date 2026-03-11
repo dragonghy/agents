@@ -2,10 +2,12 @@
 
 import asyncio
 import logging
+import re
 import subprocess
 import time
 from datetime import datetime, timedelta
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from agents_mcp.leantime_client import LeantimeClient
 
@@ -16,6 +18,9 @@ _last_dispatched: dict[str, float] = {}
 
 # Track journal dispatch per agent per day (agent -> "YYYY-MM-DD")
 _journal_dispatched: dict[str, str] = {}
+
+# Rate limit: when set, all dispatch is paused until this Unix timestamp
+_rate_limit_until: Optional[float] = None
 
 
 def _tmux_window_exists(tmux_session: str, agent: str) -> bool:
@@ -45,6 +50,99 @@ def _is_idle(tmux_session: str, agent: str) -> bool:
         return any(l.startswith("❯") for l in lines[-10:])
     except subprocess.CalledProcessError:
         return False
+
+
+def _capture_pane(tmux_session: str, agent: str, lines: int = 30) -> str:
+    """Capture tmux pane content. Returns empty string on failure."""
+    try:
+        return subprocess.check_output(
+            ["tmux", "capture-pane", "-t", f"{tmux_session}:{agent}",
+             "-p", "-S", f"-{lines}"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except subprocess.CalledProcessError:
+        return ""
+
+
+def _parse_reset_time(text: str) -> Optional[float]:
+    """Parse rate limit reset time from text like 'resets 12am (America/Los_Angeles)'.
+
+    Returns Unix timestamp of the reset time, or None if unparseable.
+    """
+    match = re.search(
+        r'resets?\s+(\d{1,2})\s*(am|pm)\s*\(([^)]+)\)', text, re.IGNORECASE
+    )
+    if not match:
+        # Fallback: if we detect rate limit but can't parse time, pause for 1 hour
+        return None
+
+    hour = int(match.group(1))
+    ampm = match.group(2).lower()
+    tz_name = match.group(3).strip()
+
+    if ampm == "pm" and hour != 12:
+        hour += 12
+    elif ampm == "am" and hour == 12:
+        hour = 0
+
+    try:
+        tz = ZoneInfo(tz_name)
+    except (KeyError, ValueError):
+        logger.warning(f"Unknown timezone '{tz_name}', defaulting to 1h pause")
+        return time.time() + 3600
+
+    now = datetime.now(tz)
+    reset_dt = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+    if reset_dt <= now:
+        reset_dt += timedelta(days=1)
+
+    return reset_dt.timestamp()
+
+
+def _check_rate_limited(tmux_session: str, agent: str) -> Optional[float]:
+    """Check if an agent's terminal shows a rate limit message.
+
+    Returns the reset timestamp if rate limited, None otherwise.
+    """
+    out = _capture_pane(tmux_session, agent)
+    if not out:
+        return None
+
+    lower = out.lower()
+    if "hit your limit" not in lower and "rate limit" not in lower:
+        return None
+
+    reset_ts = _parse_reset_time(out)
+    if reset_ts is None:
+        # Rate limit detected but couldn't parse reset time; default 1 hour
+        reset_ts = time.time() + 3600
+
+    return reset_ts
+
+
+def is_rate_limited() -> bool:
+    """Check if dispatch is currently paused due to rate limit."""
+    global _rate_limit_until
+    if _rate_limit_until is None:
+        return False
+    if time.time() >= _rate_limit_until:
+        _rate_limit_until = None
+        return False
+    return True
+
+
+def get_rate_limit_info() -> Optional[dict]:
+    """Get rate limit info if active. Used by API/WebSocket."""
+    global _rate_limit_until
+    if _rate_limit_until is None or time.time() >= _rate_limit_until:
+        return None
+    remaining = int(_rate_limit_until - time.time())
+    return {
+        "until": _rate_limit_until,
+        "until_iso": datetime.fromtimestamp(_rate_limit_until).isoformat(),
+        "remaining_seconds": remaining,
+    }
 
 
 def _send_tmux_message(tmux_session: str, agent: str, msg: str):
@@ -141,10 +239,15 @@ def _dispatch_agent_journal(tmux_session: str, agent: str):
 
 
 def get_agent_tmux_status(tmux_session: str, agent: str) -> str:
-    """Get agent's tmux status: 'idle', 'busy', 'no_window', or 'unknown'."""
+    """Get agent's tmux status: 'idle', 'busy', 'rate_limited', 'no_window', or 'unknown'."""
     if not _tmux_window_exists(tmux_session, agent):
         return "no_window"
     if _is_idle(tmux_session, agent):
+        # Check if idle due to rate limit
+        out = _capture_pane(tmux_session, agent)
+        lower = out.lower()
+        if "hit your limit" in lower or "rate limit" in lower:
+            return "rate_limited"
         return "idle"
     try:
         out = subprocess.check_output(
@@ -175,6 +278,28 @@ async def dispatch_cycle(client: LeantimeClient, agents: list[str],
         all_agents: All agent names (including non-dispatchable) for journal dispatch.
         staleness_threshold: Minutes before in_progress tickets are considered stale (0=disabled).
     """
+    global _rate_limit_until
+
+    # Check if rate limit is still active
+    if _rate_limit_until is not None:
+        if time.time() < _rate_limit_until:
+            remaining = int(_rate_limit_until - time.time())
+            logger.debug(f"Dispatch paused (rate limit, {remaining}s remaining)")
+            return {agent: "rate_limited" for agent in agents}
+        else:
+            logger.info("Rate limit expired, resuming dispatch")
+            _rate_limit_until = None
+            # Broadcast rate limit cleared via WebSocket (best-effort)
+            try:
+                from agents_mcp.web.events import event_bus
+                if event_bus.client_count > 0:
+                    import asyncio
+                    asyncio.ensure_future(
+                        event_bus.broadcast("rate_limit_cleared", {})
+                    )
+            except Exception:
+                pass
+
     # Check blocked deps first
     unblocked = await client.check_and_unblock_deps()
     for msg in unblocked:
@@ -210,6 +335,34 @@ async def dispatch_cycle(client: LeantimeClient, agents: list[str],
         if not _is_idle(tmux_session, agent):
             results[agent] = "busy"
             continue
+
+        # Check if this idle agent shows rate limit in terminal
+        reset_ts = _check_rate_limited(tmux_session, agent)
+        if reset_ts is not None:
+            _rate_limit_until = reset_ts
+            reset_str = datetime.fromtimestamp(reset_ts).strftime("%Y-%m-%d %H:%M:%S")
+            logger.warning(
+                f"Rate limit detected on {agent}, pausing dispatch until {reset_str}"
+            )
+            # Mark all remaining agents as rate_limited
+            for a in agents:
+                if a not in results:
+                    results[a] = "rate_limited"
+            # Broadcast rate limit event via WebSocket (best-effort)
+            try:
+                from agents_mcp.web.events import event_bus
+                if event_bus.client_count > 0:
+                    import asyncio
+                    asyncio.ensure_future(
+                        event_bus.broadcast("rate_limit_detected", {
+                            "agent": agent,
+                            "until": reset_str,
+                            "remaining_seconds": int(reset_ts - time.time()),
+                        })
+                    )
+            except Exception:
+                pass
+            return results
 
         # Priority: messages > tasks > schedule
         if unread_count:

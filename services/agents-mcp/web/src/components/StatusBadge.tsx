@@ -1,10 +1,11 @@
 interface StatusBadgeProps {
-  status: 'idle' | 'busy' | 'no_window' | 'unknown';
+  status: 'idle' | 'busy' | 'rate_limited' | 'no_window' | 'unknown';
 }
 
-const statusConfig = {
+const statusConfig: Record<string, { label: string; color: string }> = {
   idle: { label: 'Idle', color: 'bg-green-500' },
   busy: { label: 'Busy', color: 'bg-yellow-500' },
+  rate_limited: { label: 'Rate Limited', color: 'bg-red-500' },
   no_window: { label: 'Offline', color: 'bg-gray-400' },
   unknown: { label: 'Unknown', color: 'bg-gray-400' },
 };

@@ -42,7 +42,7 @@ export interface Agent {
   role: string;
   description: string;
   dispatchable: boolean;
-  tmux_status: 'idle' | 'busy' | 'no_window' | 'unknown';
+  tmux_status: 'idle' | 'busy' | 'rate_limited' | 'no_window' | 'unknown';
   workload: AgentWorkload;
   profile?: AgentProfile;
 }

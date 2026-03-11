@@ -372,6 +372,8 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
     # ── Health ──
 
     async def health(request: Request) -> JSONResponse:
+        from agents_mcp.dispatcher import get_rate_limit_info
+
         cfg = get_config()
         tmux_session = cfg.get("tmux_session", "agents")
 
@@ -393,12 +395,17 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
         except (subprocess.CalledProcessError, FileNotFoundError):
             pass
 
-        return JSONResponse({
+        result = {
             "status": "ok",
             "leantime": leantime_ok,
             "tmux_session": tmux_session,
             "tmux_active": tmux_ok,
-        })
+        }
+        rate_limit = get_rate_limit_info()
+        if rate_limit:
+            result["rate_limit"] = rate_limit
+
+        return JSONResponse(result)
 
     routes = [
         # Read endpoints
