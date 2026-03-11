@@ -58,6 +58,7 @@ agents:
     dispatchable: true
     add_dirs:
       - ${VM_MCP_DIR}
+      - ${TEST_PROJECTS_DIR}
   dev-alex:
     template: dev
     role: 开发工程师
@@ -65,6 +66,7 @@ agents:
     dispatchable: true
     add_dirs:
       - ${VM_MCP_DIR}
+      - ${TEST_PROJECTS_DIR}
   dev-emma:
     template: dev
     role: 开发工程师
@@ -72,6 +74,7 @@ agents:
     dispatchable: true
     add_dirs:
       - ${VM_MCP_DIR}
+      - ${TEST_PROJECTS_DIR}
   qa-lucy:
     template: qa
     role: QA 工程师
@@ -79,6 +82,7 @@ agents:
     dispatchable: true
     add_dirs:
       - ${VM_MCP_DIR}
+      - ${TEST_PROJECTS_DIR}
   qa-oliver:
     template: qa
     role: QA 工程师
@@ -86,6 +90,7 @@ agents:
     dispatchable: true
     add_dirs:
       - ${VM_MCP_DIR}
+      - ${TEST_PROJECTS_DIR}
   user-sophia:
     template: user
     role: 用户体验测试员
@@ -93,6 +98,7 @@ agents:
     dispatchable: true
     add_dirs:
       - .
+      - ${TEST_PROJECTS_DIR}
     schedule:
       interval_hours: 4
       prompt: "定时唤醒：请继续你的用户测试工作。先用 get_inbox 检查是否有未读消息，再用 list_tickets 检查待办任务。然后检查是否有活跃测试环境（python3 tests/e2e_env.py list）。如果有，检查进度继续测试；如果没有，构思一个新项目并创建隔离环境开始测试。"

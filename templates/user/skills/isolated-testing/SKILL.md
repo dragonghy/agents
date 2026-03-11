@@ -145,6 +145,42 @@ curl -s -X POST http://127.0.0.1:${PORT}/api/v1/tickets/2/update \
 - **困惑的地方**：哪些概念或操作让你费解
 - **耗时过长的地方**：哪些步骤花的时间比预期长
 
+### Step 8.5: 持久化项目代码（销毁前必做）
+
+**在销毁环境之前**，必须将项目代码提交到 test-projects 仓库。
+
+```bash
+# 1. 确保 test-projects repo 是最新的
+cd $TEST_PROJECTS_DIR
+git checkout main && git pull
+
+# 2. 从隔离环境复制项目文件到 test-projects
+PROJECT_NAME=<项目名>
+cp -r /tmp/agents-e2e-<name>/projects/${PROJECT_NAME}/ $TEST_PROJECTS_DIR/${PROJECT_NAME}/
+
+# 3. 确保项目 README 存在且完整
+# 如果缺少 README，创建一个（参考 /publishing skill 的要求）
+
+# 4. 如果是 Web 项目，部署到 Vercel
+cd $TEST_PROJECTS_DIR/${PROJECT_NAME}
+npx vercel --prod --yes --token $VERCEL_TOKEN
+# 记录返回的 URL，写入项目 README
+
+# 5. 更新根 README 索引
+# 在 $TEST_PROJECTS_DIR/README.md 的索引表中添加新项目
+
+# 6. 提交并推送
+cd $TEST_PROJECTS_DIR
+git add ${PROJECT_NAME}/ README.md
+git commit -m "feat: add ${PROJECT_NAME} - <简短描述>"
+git push origin main
+```
+
+**注意**：
+- 如果隔离环境中的项目代码分散在多个位置（如 `projects/<name>/` 和 agent 工作目录），确保全部收集
+- QA 截图也值得保留，可放在项目的 `screenshots/` 子目录中
+- 详细的发布规范见 `/publishing` skill
+
 ### Step 9: 销毁环境
 
 测试完成后，先停止 tmux session 中的 agent，再销毁环境：

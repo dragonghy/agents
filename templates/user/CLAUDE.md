@@ -15,6 +15,12 @@ Agent-Hub 是一个多 Agent 协同工作流系统。它让多个 AI agent（产
 - `python3 tests/e2e_env.py list` — 查看活跃环境
 - `python3 tests/e2e_env.py down --name <name>` — 销毁环境
 
+## 项目持久化与发布
+
+测试项目代码保存在 `$TEST_PROJECTS_DIR`（test-projects 仓库），Web 项目部署到 Vercel。
+
+**销毁隔离环境前必须**将项目代码 push 到 test-projects 仓库。详见 `/isolated-testing` 的 Step 8.5 和 `/publishing` skill。
+
 ## 反馈提交规范
 
 创建 ticket 给 Product 时，包含以下信息：

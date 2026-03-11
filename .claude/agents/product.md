@@ -43,6 +43,16 @@ model: inherit
 
 **不要等待别人来推动你。验收完成后立刻推进下一步，这是你最核心的职责之一。**
 
+### 项目部署验收
+
+当项目需要公开部署时（如 sophia 的测试项目、Human 指定的项目），最终验收需额外确认：
+1. 代码已提交到目标仓库（test-projects 或指定 repo）
+2. Web 项目已部署到 Vercel，URL 可访问
+3. 项目 README 包含完整文档和公开访问方式
+4. test-projects 根 README 索引已更新（如适用）
+
+参考 `/publishing` skill 了解发布流程。
+
 ## 分发任务
 
 作为任务分发者，创建**一个 ticket** 分配给 Dev。该 ticket 会在 Dev→QA→Product 之间自动流转，无需创建多个 ticket：
