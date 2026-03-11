@@ -493,6 +493,31 @@ def cmd_archive(args):
                         shutil.copy2(src, dst)
                         copied_files += 1
 
+    # 3. Scan root-level directories (Dev may create project dirs outside projects/)
+    _ROOT_INFRA_DIRS = {
+        "agents", "projects", "tests", "templates", "shared", "services",
+        ".claude", ".git", "__pycache__", "node_modules",
+    }
+    for entry in sorted(os.listdir(work_dir)):
+        entry_path = os.path.join(work_dir, entry)
+        if not os.path.isdir(entry_path):
+            continue
+        if entry in _ROOT_INFRA_DIRS or entry.startswith("."):
+            continue
+        # This is likely a project directory created at root level
+        for dirpath, dirnames, filenames in os.walk(entry_path):
+            dirnames[:] = [d for d in dirnames if d not in _INFRA_DIRS]
+            for fname in filenames:
+                if fname in _INFRA_FILES:
+                    continue
+                src = os.path.join(dirpath, fname)
+                rel = os.path.relpath(src, entry_path)
+                dst = os.path.join(showcase_path, entry, rel)
+                if not os.path.exists(dst):
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    shutil.copy2(src, dst)
+                    copied_files += 1
+
     print(f"  Copied {copied_files} project files")
 
     # 2. Copy QA screenshots from multiple locations
