@@ -203,6 +203,15 @@ def cmd_up(args):
         check=True,
     )
 
+    # 7b. Initialize git repo so Claude Code resolves the project root to work_dir.
+    # Without .git, `claude --agent <name>` walks up the filesystem and may find
+    # the source repo's .git, causing agents to work outside the isolated env.
+    subprocess.run(
+        ["git", "init", work_dir],
+        capture_output=True, check=True,
+    )
+    print("  git init: OK")
+
     # 8. Start daemon
     daemon_log = os.path.join(work_dir, "daemon.log")
     print(f"Starting daemon on port {port}...")
