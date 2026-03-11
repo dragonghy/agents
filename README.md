@@ -97,11 +97,14 @@ agent-hub/
 ├── .env.example              # Template for .env
 ├── setup-agents.py           # Generate agent workspaces from agents.yaml
 ├── restart_all_agents.sh     # Start/restart daemon and agents
-├── agents/                   # Agent templates and shared resources
-│   ├── product/              #   Product Manager template
-│   ├── dev/                  #   Developer template
-│   ├── qa/                   #   QA Engineer template
-│   └── shared/               #   Shared skills and resources
+├── .claude/agents/           # Agent definitions (YAML frontmatter + system prompts)
+├── templates/                # Agent template resources (tracked in git)
+│   ├── product/              #   Product Manager (CLAUDE.md + skills/)
+│   ├── dev/                  #   Developer (CLAUDE.md)
+│   ├── qa/                   #   QA Engineer (CLAUDE.md)
+│   ├── admin/                #   Admin (CLAUDE.md + skills/)
+│   └── shared/               #   Shared skills (leantime, daily-journal, etc.)
+├── agents/                   # Generated workspaces (gitignored, created by setup-agents.py)
 ├── services/
 │   ├── agents-mcp/           # Central MCP daemon (Python/FastMCP)
 │   │   ├── src/agents_mcp/   #   Server, dispatcher, Leantime client
