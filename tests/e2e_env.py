@@ -511,6 +511,27 @@ def cmd_archive(args):
                         shutil.copy2(src, dst)
                         screenshots_copied += 1
 
+    # Scan projects/*/tests/screenshots/ and projects/*/tests/test-results/
+    if os.path.isdir(projects_dir):
+        for project_name in sorted(os.listdir(projects_dir)):
+            project_path = os.path.join(projects_dir, project_name)
+            if not os.path.isdir(project_path):
+                continue
+            for sdir_name in ("tests/screenshots", "tests/test-results"):
+                src_dir = os.path.join(project_path, sdir_name)
+                if not os.path.isdir(src_dir):
+                    continue
+                for root, _dirs, files in os.walk(src_dir):
+                    for f in files:
+                        if os.path.splitext(f)[1].lower() in _IMAGE_EXTS:
+                            src = os.path.join(root, f)
+                            rel = os.path.relpath(src, src_dir)
+                            dst = os.path.join(screenshot_dst, rel)
+                            if not os.path.exists(dst):
+                                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                                shutil.copy2(src, dst)
+                                screenshots_copied += 1
+
     # Also scan agent workspace screenshot directories
     if os.path.isdir(agents_dir):
         for agent_name in sorted(os.listdir(agents_dir)):
