@@ -1,6 +1,7 @@
 """REST API routes for the Display UI."""
 
 import json
+import os
 import re
 import subprocess
 from starlette.requests import Request
@@ -326,6 +327,38 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
         )
         return JSONResponse({"ticket_id": result, "status": "created"})
 
+    # ── Token Usage ──
+
+    async def get_agent_usage(request: Request) -> JSONResponse:
+        agent_id = request.path_params["id"]
+        store = await get_store()
+        result = await store.get_agent_usage(agent_id)
+        return JSONResponse(result)
+
+    async def get_all_usage(request: Request) -> JSONResponse:
+        store = await get_store()
+        result = await store.get_all_agents_usage_summary()
+        return JSONResponse(result)
+
+    async def refresh_agent_usage(request: Request) -> JSONResponse:
+        """Trigger an immediate usage scan for one agent."""
+        agent_id = request.path_params["id"]
+        from agents_mcp.usage import collect_agent_usage
+
+        cfg = get_config()
+        config_path = os.environ.get("AGENTS_CONFIG_PATH", ".")
+        root_dir = os.path.dirname(os.path.abspath(config_path))
+
+        store = await get_store()
+        scan_state = await store.get_scan_state(agent_id)
+        result = collect_agent_usage(root_dir, agent_id, scan_state=scan_state)
+        if result["daily"]:
+            await store.upsert_daily_usage(agent_id, result["daily"])
+        await store.save_scan_state(agent_id, result["scan_state"])
+
+        usage = await store.get_agent_usage(agent_id)
+        return JSONResponse(usage)
+
     # ── Health ──
 
     async def health(request: Request) -> JSONResponse:
@@ -361,7 +394,10 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
         # Read endpoints
         Route("/v1/agents", list_agents),
         Route("/v1/agents/{id}/terminal", get_agent_terminal),
+        Route("/v1/agents/{id}/usage", get_agent_usage),
+        Route("/v1/agents/{id}/usage/refresh", refresh_agent_usage, methods=["POST"]),
         Route("/v1/agents/{id}", get_agent),
+        Route("/v1/usage", get_all_usage),
         Route("/v1/tickets/{id}/comments", ticket_comments, methods=["GET", "POST"]),
         Route("/v1/tickets/{id}/subtasks", get_ticket_subtasks),
         Route("/v1/tickets/{id}/reassign", reassign_ticket, methods=["POST"]),

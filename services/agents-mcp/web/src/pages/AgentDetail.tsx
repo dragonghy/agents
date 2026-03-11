@@ -6,6 +6,7 @@ import { fetchTickets } from '../api/tickets';
 import type { Agent } from '../types/agent';
 import type { Ticket } from '../types/ticket';
 import StatusBadge from '../components/StatusBadge';
+import TokenUsagePanel from '../components/TokenUsage';
 
 const STATUS_LABELS: Record<number, string> = {
   3: 'New',
@@ -219,6 +220,9 @@ export default function AgentDetail() {
               </div>
             </div>
           </div>
+
+          {/* Token Usage */}
+          <TokenUsagePanel agentId={id!} />
         </div>
 
         {/* Terminal + Tickets */}
