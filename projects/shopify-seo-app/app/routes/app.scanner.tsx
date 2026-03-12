@@ -15,9 +15,7 @@ import {
   Divider,
   IndexTable,
   useIndexResourceState,
-  Filters,
   ChoiceList,
-  Tooltip,
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
 import { useState, useCallback } from "react";
@@ -77,7 +75,6 @@ export default function Scanner() {
 
   // Filtering state
   const [typeFilter, setTypeFilter] = useState<string[]>([]);
-  const [scoreFilter, setScoreFilter] = useState<string[]>([]);
   const [sortColumn, setSortColumn] = useState<"score" | "issues">("score");
   const [sortDirection, setSortDirection] = useState<"ascending" | "descending">("ascending");
 
@@ -93,7 +90,6 @@ export default function Scanner() {
   const filteredResults = getFilteredResults(
     summary?.results || [],
     typeFilter,
-    scoreFilter,
     sortColumn,
     sortDirection,
   );
@@ -299,7 +295,7 @@ export default function Scanner() {
                         <Text as="h2" variant="headingMd">
                           Detailed Results ({filteredResults.length})
                         </Text>
-                        <InlineStack gap="200">
+                        <InlineStack gap="200" blockAlign="center">
                           <ChoiceList
                             title=""
                             titleHidden
@@ -312,6 +308,14 @@ export default function Scanner() {
                             selected={typeFilter}
                             onChange={setTypeFilter}
                           />
+                          {typeFilter.length > 0 && (
+                            <Button
+                              variant="plain"
+                              onClick={() => setTypeFilter([])}
+                            >
+                              Clear filters
+                            </Button>
+                          )}
                         </InlineStack>
                       </InlineStack>
                     </Box>
@@ -368,18 +372,27 @@ export default function Scanner() {
                             )}
                           </IndexTable.Cell>
                           <IndexTable.Cell>
-                            <Tooltip
-                              content={result.issues.length > 0
-                                ? result.issues.map((i) => `[${i.severity}] ${i.message}`).join("\n")
-                                : "No issues found"
-                              }
-                            >
-                              <Text as="span" variant="bodySm" tone="subdued">
-                                {result.issues.length > 0
-                                  ? result.issues.map((i) => i.ruleName).filter((v, i, a) => a.indexOf(v) === i).join(", ")
-                                  : "All checks passed"}
+                            {result.issues.length > 0 ? (
+                              <BlockStack gap="050">
+                                {result.issues.map((issue, idx) => (
+                                  <InlineStack key={idx} gap="100" blockAlign="center">
+                                    <Badge
+                                      tone={issue.severity === "critical" ? "critical" : issue.severity === "warning" ? "warning" : "info"}
+                                      size="small"
+                                    >
+                                      {issue.severity}
+                                    </Badge>
+                                    <Text as="span" variant="bodySm" tone="subdued">
+                                      {issue.ruleName}
+                                    </Text>
+                                  </InlineStack>
+                                ))}
+                              </BlockStack>
+                            ) : (
+                              <Text as="span" variant="bodySm" tone="success">
+                                All checks passed
                               </Text>
-                            </Tooltip>
+                            )}
                           </IndexTable.Cell>
                         </IndexTable.Row>
                       ))}
@@ -443,7 +456,6 @@ export default function Scanner() {
 function getFilteredResults(
   results: SeoCheckResult[],
   typeFilter: string[],
-  scoreFilter: string[],
   sortColumn: "score" | "issues",
   sortDirection: "ascending" | "descending",
 ): SeoCheckResult[] {

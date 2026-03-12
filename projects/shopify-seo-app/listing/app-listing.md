@@ -46,14 +46,17 @@ SEOPilot is your all-in-one SEO optimization tool for Shopify. It scans your ent
 
 ### Plans
 
+**Try Pro free for 7 days** — no credit card required to start.
+
 | Feature | Free | Pro ($19/mo) | Business ($39/mo) |
 |---------|------|--------------|-------------------|
-| SEO Scanning | Basic | Full | Full |
+| SEO Scanning | Up to 50 products | Unlimited | Unlimited |
 | AI Fix Credits | 10/month | 100/month | Unlimited |
 | Batch Operations | - | Yes | Yes |
 | Fix History & Rollback | Yes | Yes | Yes |
+| Custom AI Tone | Professional only | Professional only | All tones |
 | Priority Support | - | - | Yes |
-| Custom AI Tone | - | - | Yes |
+| Free Trial | - | 7 days | - |
 
 ### How It Works
 
@@ -68,7 +71,7 @@ SEOPilot is your all-in-one SEO optimization tool for Shopify. It scans your ent
 - **Save Time**: Fix SEO issues in minutes instead of hours
 - **No SEO Expertise Required**: AI handles the optimization
 - **Safe**: Preview everything, revert anytime
-- **Affordable**: Start free, upgrade as you grow
+- **Affordable**: Start free, upgrade as you grow (Pro plan includes a 7-day free trial)
 - **Built for Shopify**: Native integration, no external tools needed
 
 ## Keywords

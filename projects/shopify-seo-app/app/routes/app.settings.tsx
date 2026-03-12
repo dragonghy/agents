@@ -317,11 +317,27 @@ export default function Settings() {
                 <Divider />
                 <Select
                   label="AI Tone"
-                  helpText="Controls the writing style for AI-generated content"
+                  helpText={
+                    subscription.plan === "business"
+                      ? "Controls the writing style for AI-generated content"
+                      : "Upgrade to Business plan to unlock Casual and Luxury tones"
+                  }
                   options={[
                     { label: "Professional — clear & informative", value: "professional" },
-                    { label: "Casual — friendly & conversational", value: "casual" },
-                    { label: "Luxury — elegant & sophisticated", value: "luxury" },
+                    {
+                      label: subscription.plan === "business"
+                        ? "Casual — friendly & conversational"
+                        : "Casual — Business plan only",
+                      value: "casual",
+                      disabled: subscription.plan !== "business",
+                    },
+                    {
+                      label: subscription.plan === "business"
+                        ? "Luxury — elegant & sophisticated"
+                        : "Luxury — Business plan only",
+                      value: "luxury",
+                      disabled: subscription.plan !== "business",
+                    },
                   ]}
                   value={aiTone}
                   onChange={(v) => setAiTone(v)}
@@ -350,6 +366,22 @@ export default function Settings() {
                 </InlineStack>
               </BlockStack>
             </Card>
+          </Layout.Section>
+        </Layout>
+
+        {/* Footer Links */}
+        <Layout>
+          <Layout.Section>
+            <Box paddingBlockStart="400" paddingBlockEnd="400">
+              <InlineStack gap="400" align="center">
+                <Button variant="plain" url="/app/privacy">
+                  Privacy Policy
+                </Button>
+                <Button variant="plain" url="/app/help">
+                  Help & FAQ
+                </Button>
+              </InlineStack>
+            </Box>
           </Layout.Section>
         </Layout>
       </BlockStack>

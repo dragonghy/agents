@@ -27,6 +27,7 @@ export default function App() {
         <Link to="/app/scanner">Scanner</Link>
         <Link to="/app/fixer">Fixer</Link>
         <Link to="/app/settings">Settings</Link>
+        <Link to="/app/help">Help</Link>
       </NavMenu>
       <Outlet />
     </AppProvider>

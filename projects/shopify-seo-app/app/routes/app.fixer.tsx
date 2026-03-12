@@ -628,69 +628,66 @@ export default function Fixer() {
           </Layout.Section>
         </Layout>
 
-        {/* Single Fix Preview */}
-        {previewIssue && fetcherData?.intent === "generate" && fetcherData?.suggestion && (
-          <Layout>
-            <Layout.Section>
-              <Card>
-                <BlockStack gap="400">
-                  <InlineStack align="space-between">
-                    <Text as="h2" variant="headingMd">
-                      Fix Preview — {previewIssue.resourceTitle}
+        {/* Single Fix Preview Modal */}
+        <Modal
+          open={!!(previewIssue && fetcherData?.intent === "generate" && fetcherData?.suggestion)}
+          onClose={() => {
+            setPreviewIssue(null);
+            setPreviewSuggestion(null);
+          }}
+          title={previewIssue ? `Fix Preview — ${previewIssue.resourceTitle}` : "Fix Preview"}
+          primaryAction={{
+            content: "Apply Fix",
+            loading: isLoading,
+            onAction: () => {
+              if (previewIssue && fetcherData?.suggestion) {
+                handleApplyFix(previewIssue, fetcherData.suggestion.suggestedValue);
+              }
+            },
+          }}
+          secondaryActions={[
+            {
+              content: "Dismiss",
+              onAction: () => {
+                setPreviewIssue(null);
+                setPreviewSuggestion(null);
+              },
+            },
+          ]}
+        >
+          <Modal.Section>
+            {previewIssue && fetcherData?.suggestion && (
+              <BlockStack gap="400">
+                <InlineStack gap="200">
+                  <Badge>{formatFixType(previewIssue.fixType)}</Badge>
+                  {fetcherData.suggestion.usedMock && (
+                    <Badge tone="info">Mock mode</Badge>
+                  )}
+                </InlineStack>
+                <BlockStack gap="200">
+                  <Text as="h3" variant="headingSm" tone="subdued">
+                    Original
+                  </Text>
+                  <Box padding="300" background="bg-surface-critical" borderRadius="200">
+                    <Text as="p" variant="bodyMd">
+                      {fetcherData.suggestion.originalValue || "(empty)"}
                     </Text>
-                    <Badge>{formatFixType(previewIssue.fixType)}</Badge>
-                  </InlineStack>
-                  <Divider />
-                  <BlockStack gap="200">
-                    <Text as="h3" variant="headingSm" tone="subdued">
-                      Original
-                    </Text>
-                    <Box padding="300" background="bg-surface-critical" borderRadius="200">
-                      <Text as="p" variant="bodyMd">
-                        {fetcherData.suggestion.originalValue || "(empty)"}
-                      </Text>
-                    </Box>
-                  </BlockStack>
-                  <BlockStack gap="200">
-                    <InlineStack gap="200" blockAlign="center">
-                      <Text as="h3" variant="headingSm" tone="success">
-                        AI Suggestion
-                      </Text>
-                      {fetcherData.suggestion.usedMock && (
-                        <Badge tone="info">Mock mode</Badge>
-                      )}
-                    </InlineStack>
-                    <Box padding="300" background="bg-surface-success" borderRadius="200">
-                      <Text as="p" variant="bodyMd">
-                        {fetcherData.suggestion.suggestedValue}
-                      </Text>
-                    </Box>
-                  </BlockStack>
-                  <Divider />
-                  <InlineStack gap="200" align="end">
-                    <Button
-                      onClick={() => {
-                        setPreviewIssue(null);
-                        setPreviewSuggestion(null);
-                      }}
-                    >
-                      Dismiss
-                    </Button>
-                    <Button
-                      variant="primary"
-                      loading={isLoading}
-                      onClick={() =>
-                        handleApplyFix(previewIssue, fetcherData.suggestion.suggestedValue)
-                      }
-                    >
-                      Apply Fix
-                    </Button>
-                  </InlineStack>
+                  </Box>
                 </BlockStack>
-              </Card>
-            </Layout.Section>
-          </Layout>
-        )}
+                <BlockStack gap="200">
+                  <Text as="h3" variant="headingSm" tone="success">
+                    AI Suggestion
+                  </Text>
+                  <Box padding="300" background="bg-surface-success" borderRadius="200">
+                    <Text as="p" variant="bodyMd">
+                      {fetcherData.suggestion.suggestedValue}
+                    </Text>
+                  </Box>
+                </BlockStack>
+              </BlockStack>
+            )}
+          </Modal.Section>
+        </Modal>
       </BlockStack>
     </Page>
   );
