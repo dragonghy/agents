@@ -82,4 +82,15 @@ describe("Billing - Plan Configuration", () => {
     expect(plans[1].aiCreditsLimit).toBe(100);
     expect(plans[2].aiCreditsLimit).toBe(-1);
   });
+
+  it("free plan has scan limit of 50", async () => {
+    const { PLANS } = await import("../app/services/billing.server");
+    expect(PLANS.free.scanLimit).toBe(50);
+  });
+
+  it("pro and business plans have unlimited scanning", async () => {
+    const { PLANS } = await import("../app/services/billing.server");
+    expect(PLANS.pro.scanLimit).toBe(-1);
+    expect(PLANS.business.scanLimit).toBe(-1);
+  });
 });

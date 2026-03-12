@@ -19,6 +19,7 @@ export interface PlanConfig {
   name: string;
   price: number; // monthly USD
   aiCreditsLimit: number; // -1 = unlimited
+  scanLimit: number; // max products to scan, -1 = unlimited
   features: string[];
   recommended?: boolean;
 }
@@ -29,8 +30,9 @@ export const PLANS: Record<string, PlanConfig> = {
     name: "Free",
     price: 0,
     aiCreditsLimit: 10,
+    scanLimit: 50,
     features: [
-      "Basic SEO scan",
+      "Scan up to 50 products",
       "10 AI fix credits/month",
       "SEO score dashboard",
       "Manual fixes only",
@@ -41,9 +43,10 @@ export const PLANS: Record<string, PlanConfig> = {
     name: "Pro",
     price: 19,
     aiCreditsLimit: 100,
+    scanLimit: -1, // unlimited
     recommended: true,
     features: [
-      "Full SEO scan (all resource types)",
+      "Unlimited product scanning",
       "100 AI fix credits/month",
       "Batch fix operations",
       "Fix history & rollback",
@@ -56,6 +59,7 @@ export const PLANS: Record<string, PlanConfig> = {
     name: "Business",
     price: 39,
     aiCreditsLimit: -1, // unlimited
+    scanLimit: -1, // unlimited
     features: [
       "Everything in Pro",
       "Unlimited AI fix credits",
@@ -351,6 +355,15 @@ export async function canUseBatchOperations(shop: string): Promise<boolean> {
 export async function canUseCustomTone(shop: string): Promise<boolean> {
   const info = await getSubscriptionInfo(shop);
   return info.plan === "business";
+}
+
+/**
+ * Get the scan limit for a shop's current plan.
+ * Returns -1 for unlimited.
+ */
+export async function getScanLimit(shop: string): Promise<number> {
+  const info = await getSubscriptionInfo(shop);
+  return info.planConfig.scanLimit;
 }
 
 export function getPlanConfig(planId: string): PlanConfig {
