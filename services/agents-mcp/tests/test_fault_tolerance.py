@@ -226,6 +226,135 @@ def test_reassign_mcp_no_comment():
     print("PASS: MCP reassign_ticket skips comment when None")
 
 
+# ── Long comment splitting tests ──
+
+
+def test_short_comment_not_split():
+    """Comments under COMMENT_MAX_LEN should be posted as-is, no splitting."""
+    client = _make_client()
+    client._call = AsyncMock(return_value=True)
+    short = "x" * 3999
+
+    asyncio.run(client.add_comment("ticket", 42, short))
+
+    # Should be exactly 1 call (AgentsApi), text unchanged
+    assert client._call.call_count == 1
+    call_args = client._call.call_args
+    assert call_args[0][1]["text"] == short
+    print("PASS: short comment posted as-is without splitting")
+
+
+def test_long_comment_splits_into_parts():
+    """Comments over COMMENT_MAX_LEN should be split into multiple parts."""
+    client = _make_client()
+    client._call = AsyncMock(return_value=True)
+
+    # Create a comment slightly over 2x the limit to get 3 parts
+    long_text = "line\n" * 2500  # ~12500 chars, well over 4000
+
+    asyncio.run(client.add_comment("ticket", 42, long_text))
+
+    # Should have multiple AgentsApi calls (one per part)
+    assert client._call.call_count >= 2, f"Expected multiple calls, got {client._call.call_count}"
+
+    # All calls should have [Part X/N] headers
+    for i, call in enumerate(client._call.call_args_list):
+        text = call[0][1]["text"]
+        assert text.startswith(f"[Part {i+1}/"), f"Part {i+1} missing header: {text[:50]}"
+
+    print(f"PASS: long comment split into {client._call.call_count} parts")
+
+
+def test_split_comment_preserves_all_content():
+    """Splitting should preserve all original content (nothing lost)."""
+    # Test the static method directly
+    text = "A" * 3000 + "\n" + "B" * 3000 + "\n" + "C" * 3000
+    parts = LeantimeClient._split_comment(text, 4000, 40)
+
+    # Reconstruct original from parts (strip headers)
+    reconstructed = ""
+    for part in parts:
+        if part.startswith("[Part"):
+            # Remove header line
+            body = part.split("\n", 1)[1] if "\n" in part else ""
+        else:
+            body = part
+        reconstructed += body
+
+    # All original characters should be present
+    assert "A" * 3000 in reconstructed
+    assert "B" * 3000 in reconstructed
+    assert "C" * 3000 in reconstructed
+    print(f"PASS: split into {len(parts)} parts, all content preserved")
+
+
+def test_split_comment_respects_newline_boundaries():
+    """Splitting should prefer breaking at newline boundaries."""
+    # Create text with clear newline breaks
+    lines = [f"Line {i}: " + "x" * 80 for i in range(50)]
+    text = "\n".join(lines)  # ~4550 chars
+    parts = LeantimeClient._split_comment(text, 4000, 40)
+
+    assert len(parts) == 2, f"Expected 2 parts, got {len(parts)}"
+    # First part body should end at a newline boundary (no partial lines)
+    body = parts[0].split("\n", 1)[1]  # strip [Part 1/2] header
+    # Each line should be complete (starts with "Line ")
+    for line in body.strip().split("\n"):
+        assert line.startswith("Line "), f"Unexpected partial line: {line[:30]}"
+    print("PASS: split respects newline boundaries")
+
+
+def test_split_comment_hard_cut_no_newlines():
+    """When there are no newlines, should hard cut at max length."""
+    text = "x" * 10000  # No newlines
+    parts = LeantimeClient._split_comment(text, 4000, 40)
+
+    assert len(parts) >= 3, f"Expected >=3 parts, got {len(parts)}"
+    # Total content length should match original (minus headers)
+    total_body = sum(
+        len(p.split("\n", 1)[1]) if p.startswith("[Part") else len(p)
+        for p in parts
+    )
+    assert total_body == 10000, f"Expected 10000 chars, got {total_body}"
+    print(f"PASS: hard cut into {len(parts)} parts for text without newlines")
+
+
+def test_single_chunk_no_header():
+    """A single chunk (text fits) should NOT get a [Part] header."""
+    parts = LeantimeClient._split_comment("short text", 4000, 40)
+    assert len(parts) == 1
+    assert not parts[0].startswith("[Part")
+    assert parts[0] == "short text"
+    print("PASS: single chunk has no Part header")
+
+
+def test_long_comment_with_fallback():
+    """Long comment splitting should work with -32601 fallback too."""
+    client = _make_client()
+
+    calls = []
+    async def mock_call(method, params=None):
+        calls.append((method, params))
+        if "AgentsApi" in method:
+            raise RuntimeError("Leantime API Error -32601: Method not found")
+        return True
+
+    client._call = mock_call
+
+    # Create a long comment that needs splitting
+    long_text = "test line\n" * 500  # ~5000 chars
+
+    asyncio.run(client.add_comment("ticket", 42, long_text))
+
+    # Each part should attempt AgentsApi then fallback
+    agents_calls = [c for c in calls if "AgentsApi" in c[0]]
+    native_calls = [c for c in calls if "Comments.addComment" in c[0]]
+    assert len(agents_calls) >= 2, f"Expected >=2 AgentsApi attempts, got {len(agents_calls)}"
+    assert len(native_calls) >= 2, f"Expected >=2 native fallback calls, got {len(native_calls)}"
+    assert len(agents_calls) == len(native_calls), "Each part should have AgentsApi + fallback"
+    print(f"PASS: long comment with fallback — {len(native_calls)} parts each with fallback")
+
+
 if __name__ == "__main__":
     test_add_comment_agents_api_success()
     test_add_comment_fallback_on_32601()
@@ -236,4 +365,11 @@ if __name__ == "__main__":
     test_reassign_mcp_comment_failure_does_not_block()
     test_reassign_mcp_comment_success()
     test_reassign_mcp_no_comment()
+    test_short_comment_not_split()
+    test_long_comment_splits_into_parts()
+    test_split_comment_preserves_all_content()
+    test_split_comment_respects_newline_boundaries()
+    test_split_comment_hard_cut_no_newlines()
+    test_single_chunk_no_header()
+    test_long_comment_with_fallback()
     print("\nAll fault tolerance tests passed!")

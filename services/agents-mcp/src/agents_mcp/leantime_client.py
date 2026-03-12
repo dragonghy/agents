@@ -209,15 +209,18 @@ class LeantimeClient:
             return "ticket"
         return module
 
-    async def add_comment(self, module: str, module_id: int, comment: str) -> Any:
-        """Add a comment. Tries AgentsApi first, falls back to native Comments API."""
-        module = self._normalize_module(module)
-        # Try AgentsApi first (has session/entity workarounds)
+    # Maximum safe length for a single comment (Leantime returns "Invalid params"
+    # for very long content).  We leave headroom for the [Part X/N] header.
+    COMMENT_MAX_LEN = 4000
+    _PART_HEADER_RESERVE = 40  # "[Part XX/XX]\n" ≈ 15 chars, generous reserve
+
+    async def _post_single_comment(self, module: str, module_id: int, text: str) -> Any:
+        """Post a single comment, trying AgentsApi then native fallback."""
         try:
             return await self._call(
                 "leantime.rpc.AgentsApi.addComment",
                 {
-                    "text": comment,
+                    "text": text,
                     "module": module,
                     "entityId": module_id,
                 },
@@ -229,17 +232,74 @@ class LeantimeClient:
                 "AgentsApi.addComment unavailable (-32601), "
                 "falling back to native Comments.addComment"
             )
-        # Fallback: native Comments API (has known PHP bugs but may still work)
         return await self._call(
             "leantime.rpc.Comments.addComment",
             {
                 "values": {
-                    "text": comment,
+                    "text": text,
                     "moduleId": module_id,
                     "module": module,
                 },
             },
         )
+
+    @staticmethod
+    def _split_comment(text: str, max_len: int, header_reserve: int) -> list[str]:
+        """Split long comment text into chunks that fit within max_len.
+
+        Each chunk gets a [Part X/N] header.  Splitting tries to break at
+        newline boundaries to keep markdown structure intact.
+        """
+        chunk_body_max = max_len - header_reserve
+        if chunk_body_max <= 0:
+            chunk_body_max = max_len
+
+        chunks: list[str] = []
+        remaining = text
+        while remaining:
+            if len(remaining) <= chunk_body_max:
+                chunks.append(remaining)
+                break
+            # Try to break at last newline within the limit
+            cut = remaining.rfind("\n", 0, chunk_body_max)
+            if cut <= 0:
+                # No good newline break — hard cut
+                cut = chunk_body_max
+            chunks.append(remaining[:cut])
+            remaining = remaining[cut:].lstrip("\n")
+
+        # Prepend part headers
+        total = len(chunks)
+        if total == 1:
+            return chunks
+        return [f"[Part {i+1}/{total}]\n{chunk}" for i, chunk in enumerate(chunks)]
+
+    async def add_comment(self, module: str, module_id: int, comment: str) -> Any:
+        """Add a comment. Automatically splits long content into multiple comments.
+
+        Tries AgentsApi first, falls back to native Comments API.
+        """
+        module = self._normalize_module(module)
+
+        # Short comments — post directly
+        if len(comment) <= self.COMMENT_MAX_LEN:
+            return await self._post_single_comment(module, module_id, comment)
+
+        # Long comments — split into parts
+        parts = self._split_comment(
+            comment, self.COMMENT_MAX_LEN, self._PART_HEADER_RESERVE
+        )
+        logger.info(
+            f"Comment too long ({len(comment)} chars), splitting into {len(parts)} parts"
+        )
+
+        results = []
+        for part in parts:
+            result = await self._post_single_comment(module, module_id, part)
+            results.append(result)
+
+        # Return result of last part (most callers only check success/failure)
+        return results[-1] if results else None
 
     async def get_comments(self, module: str, module_id: int) -> Any:
         module = self._normalize_module(module)
