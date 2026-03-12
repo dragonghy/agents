@@ -29,6 +29,12 @@ mcp_servers:
     args:
       - "-m"
       - agent_hub
+    env:
+      VMWARE_API_URL: ${VMWARE_API_URL:-http://localhost:8697}
+      VMWARE_USERNAME: ${VMWARE_USERNAME}
+      VMWARE_PASSWORD: ${VMWARE_PASSWORD}
+      SSH_KEY_PATH: ${SSH_KEY_PATH:-~/.ssh/id_ed25519}
+      SSH_USERNAME: ${SSH_USERNAME:-root}
 
 # Daily journal: all agents write a work summary at the configured time.
 # Stagger avoids dispatching all agents simultaneously.

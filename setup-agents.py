@@ -71,9 +71,11 @@ def generate_mcp_json(cfg, config_path, agent_dir, source_dir):
             ],
         }
 
-        # Build env vars
+        # Build env vars: start with any env defined in config, then apply
+        # server-specific overrides for agents/leantime.
+        env = dict(server_cfg.get("env", {}))
+
         if name == "agents":
-            env = {}
             # Check if the command is the proxy (agents-mcp-proxy)
             is_proxy = any("agents-mcp-proxy" in str(a) for a in entry["args"])
             if is_proxy and daemon:
@@ -83,13 +85,15 @@ def generate_mcp_json(cfg, config_path, agent_dir, source_dir):
             else:
                 # Direct mode: pass config path to full server
                 env["AGENTS_CONFIG_PATH"] = config_path
-            entry["env"] = env
         elif name == "leantime" and leantime:
-            entry["env"] = {
+            env.update({
                 "LEANTIME_URL": leantime.get("url", ""),
                 "LEANTIME_API_KEY": leantime.get("api_key", ""),
                 "LEANTIME_USER_EMAIL": leantime.get("user_email", ""),
-            }
+            })
+
+        if env:
+            entry["env"] = env
 
         result["mcpServers"][name] = entry
 
