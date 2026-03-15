@@ -1,5 +1,5 @@
 /**
- * Tests for the Markdown export function and settings filtering.
+ * Tests for Markdown and HTML export functions and settings filtering.
  */
 
 import { describe, it, expect } from "vitest";
@@ -337,5 +337,242 @@ describe("Settings filtering", () => {
 
     // All checks should be included since none are explicitly false
     expect(enabledChecks.length).toBe(6);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HTML Report generation (inlined for testing without DOM)
+// ---------------------------------------------------------------------------
+
+function escapeHtmlStatic(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function formatHtmlReport(result: AnalysisResult, settings: UserSettings): string {
+  const enabledChecks = result.checks.filter(
+    (c) => settings.enabledChecks[c.id] !== false,
+  );
+
+  let totalWeight = 0;
+  let weightedScore = 0;
+  for (const check of enabledChecks) {
+    totalWeight += check.weight;
+    weightedScore += check.weight * check.score;
+  }
+  const displayScore = totalWeight > 0 ? Math.round(weightedScore / totalWeight) : 0;
+  const scoreColor = displayScore < 50 ? "#ef4444" : displayScore < 80 ? "#f59e0b" : "#22c55e";
+  const scoreLabel = displayScore < 50 ? "Poor" : displayScore < 80 ? "Needs Work" : "Good";
+
+  const statusColors: Record<string, string> = {
+    pass: "#22c55e",
+    warning: "#f59e0b",
+    fail: "#ef4444",
+  };
+
+  const statusIcons: Record<string, string> = {
+    pass: "&#10003;",
+    warning: "!",
+    fail: "&#10007;",
+  };
+
+  const severityColors: Record<string, { bg: string; text: string }> = {
+    critical: { bg: "#fef2f2", text: "#ef4444" },
+    warning: { bg: "#fffbeb", text: "#f59e0b" },
+    info: { bg: "#eff6ff", text: "#3b82f6" },
+  };
+
+  let checksHtml = "";
+  for (const check of enabledChecks) {
+    const color = statusColors[check.status] || "#6b7280";
+    let issuesHtml = "";
+    if (check.issues.length === 0) {
+      issuesHtml = '<p style="color:#22c55e;margin:8px 0;">&#10003; All checks passed</p>';
+    } else {
+      for (const issue of check.issues) {
+        const sc = severityColors[issue.severity] || severityColors.info;
+        issuesHtml += `<div style="margin:8px 0;padding:8px 12px;background:#f8f9fa;border-radius:6px;">
+          <span style="display:inline-block;font-size:10px;font-weight:600;text-transform:uppercase;padding:2px 6px;border-radius:3px;background:${sc.bg};color:${sc.text};margin-right:8px;">${issue.severity}</span>
+          <span style="font-size:13px;">${escapeHtmlStatic(issue.message)}</span>
+          <div style="font-size:12px;color:#6b7280;margin-top:4px;">Fix: ${escapeHtmlStatic(issue.recommendation)}</div>
+        </div>`;
+      }
+    }
+
+    checksHtml += `
+      <div style="margin-bottom:16px;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#f8f9fa;">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="width:20px;height:20px;border-radius:50%;background:${color};color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:bold;">${statusIcons[check.status]}</span>
+            <strong>${escapeHtmlStatic(check.name)}</strong>
+          </div>
+          <span style="font-weight:600;color:${color};">${check.score}/100</span>
+        </div>
+        <div style="padding:8px 16px 12px;">
+          ${issuesHtml}
+        </div>
+      </div>`;
+  }
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SEO Report — ${escapeHtmlStatic(result.url)}</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 700px; margin: 0 auto; padding: 24px; color: #1a1a2e; background: #fff; line-height: 1.5; }
+  a { color: #3b82f6; }
+  .header { text-align: center; margin-bottom: 32px; }
+  .score-circle { width: 120px; height: 120px; border-radius: 50%; border: 8px solid ${scoreColor}; display: inline-flex; align-items: center; justify-content: center; font-size: 36px; font-weight: 700; color: ${scoreColor}; margin: 16px auto; }
+  .meta { font-size: 13px; color: #6b7280; }
+  hr { border: none; border-top: 1px solid #e5e7eb; margin: 24px 0; }
+  .footer { text-align: center; font-size: 11px; color: #9ca3af; margin-top: 32px; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>SEO Analysis Report</h1>
+  <div class="score-circle">${displayScore}</div>
+  <p style="font-size:14px;font-weight:600;color:${scoreColor};">${scoreLabel}</p>
+</div>
+<div class="meta">
+  <p><strong>URL:</strong> <a href="${escapeHtmlStatic(result.url)}">${escapeHtmlStatic(result.url)}</a></p>
+  <p><strong>Date:</strong> ${new Date(result.timestamp).toLocaleString()}</p>
+</div>
+<hr>
+${checksHtml}
+<hr>
+<div class="footer">
+  <p>Generated by SEOPilot Lite</p>
+  <p>100% private &mdash; no data was sent to any server</p>
+</div>
+</body>
+</html>`;
+}
+
+// ===========================================================================
+// HTML Report Tests
+// ===========================================================================
+
+describe("formatHtmlReport", () => {
+  const allEnabled: UserSettings = {
+    enabledChecks: {
+      "meta-title": true,
+      "meta-description": true,
+      headings: true,
+      "image-alt": true,
+      links: true,
+      "social-meta": true,
+    },
+  };
+
+  it("should produce valid HTML document", () => {
+    const result = createMockResult();
+    const html = formatHtmlReport(result, allEnabled);
+
+    expect(html).toContain("<!DOCTYPE html>");
+    expect(html).toContain("<html lang=\"en\">");
+    expect(html).toContain("</html>");
+    expect(html).toContain("<title>SEO Report");
+    expect(html).toContain("</body>");
+  });
+
+  it("should include URL and score", () => {
+    const result = createMockResult();
+    const html = formatHtmlReport(result, allEnabled);
+
+    expect(html).toContain("https://example.com/page");
+    expect(html).toContain("SEO Analysis Report");
+    expect(html).toContain("Generated by SEOPilot Lite");
+  });
+
+  it("should show correct score color (yellow for 50-79)", () => {
+    const result = createMockResult({ overallScore: 75 });
+    const html = formatHtmlReport(result, allEnabled);
+
+    // Yellow range
+    expect(html).toContain("#f59e0b");
+    expect(html).toContain("Needs Work");
+  });
+
+  it("should show green for high scores", () => {
+    const result = createMockResult({ overallScore: 85 });
+    // Override all checks to have score 100
+    result.checks = result.checks.map((c) => ({ ...c, score: 100, status: "pass" as const, issues: [] }));
+    const html = formatHtmlReport(result, allEnabled);
+
+    expect(html).toContain("#22c55e");
+    expect(html).toContain("Good");
+  });
+
+  it("should show red for low scores", () => {
+    const result = createMockResult({ overallScore: 30 });
+    result.checks = result.checks.map((c) => ({ ...c, score: 0, status: "fail" as const }));
+    const html = formatHtmlReport(result, allEnabled);
+
+    expect(html).toContain("#ef4444");
+    expect(html).toContain("Poor");
+  });
+
+  it("should include all checks when all enabled", () => {
+    const result = createMockResult();
+    const html = formatHtmlReport(result, allEnabled);
+
+    expect(html).toContain("Meta Title");
+    expect(html).toContain("Meta Description");
+    expect(html).toContain("Heading Structure");
+    expect(html).toContain("Image Alt Text");
+    expect(html).toContain("Link Analysis");
+    expect(html).toContain("OG / Twitter Card");
+  });
+
+  it("should filter disabled checks", () => {
+    const result = createMockResult();
+    const settings: UserSettings = {
+      enabledChecks: {
+        "meta-title": true,
+        "meta-description": false,
+        headings: false,
+        "image-alt": false,
+        links: true,
+        "social-meta": false,
+      },
+    };
+    const html = formatHtmlReport(result, settings);
+
+    expect(html).toContain("Meta Title");
+    expect(html).toContain("Link Analysis");
+    expect(html).not.toContain("Meta Description");
+    expect(html).not.toContain("Heading Structure");
+  });
+
+  it("should include issue details with severity", () => {
+    const result = createMockResult();
+    const html = formatHtmlReport(result, allEnabled);
+
+    expect(html).toContain("critical");
+    expect(html).toContain("Meta description is missing.");
+    expect(html).toContain("Add a meta description.");
+  });
+
+  it("should show pass message for checks with no issues", () => {
+    const result = createMockResult();
+    const html = formatHtmlReport(result, allEnabled);
+
+    expect(html).toContain("All checks passed");
+  });
+
+  it("should escape HTML in URL and content", () => {
+    const result = createMockResult({
+      url: "https://example.com/<script>alert(1)</script>",
+    });
+    const html = formatHtmlReport(result, allEnabled);
+
+    expect(html).not.toContain("<script>alert(1)</script>");
+    expect(html).toContain("&lt;script&gt;");
   });
 });

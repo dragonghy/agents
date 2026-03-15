@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SEOPilot Lite — SEO Analyzer",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "One-click SEO analysis for any webpage. Get a 0-100 score with actionable fix suggestions — free, fast, no account needed.",
   "permissions": ["activeTab", "scripting", "storage"],
   "action": {

@@ -29,8 +29,8 @@ Every page gets a weighted score with clear color coding: Green (80-100) = Good,
 **Social Media Previews**
 See exactly how your page will look when shared on Google Search, Twitter/X, and Facebook — before you post.
 
-**Copy Report**
-One-click copy your full SEO report in Markdown format — paste it into docs, Notion, Slack, or email.
+**Export Report**
+Copy your SEO report to clipboard in Markdown format, or download a beautifully formatted HTML report. Share with your team via docs, Notion, Slack, or email.
 
 **Customizable Checks**
 Toggle individual checks on/off based on what matters to you. Your settings are saved automatically.
@@ -79,3 +79,18 @@ SEO, SEO checker, SEO analyzer, meta tags, meta title, meta description, heading
 - Does not collect user data
 - Does not sell user data
 - Does not use data for purposes unrelated to the extension's core functionality
+
+## Promotional Screenshots
+
+Three HTML mockup files are provided in `listing/`. Open each in Chrome at 1280x800 and capture:
+
+1. **screenshot-1-score.html** — SEO Score Overview (shows the score ring and 6 checks)
+2. **screenshot-2-issues.html** — Issue Details with Fix Suggestions (expanded check items)
+3. **screenshot-3-preview.html** — Social Media Previews (Google SERP, Twitter, Facebook)
+
+To capture at exact dimensions:
+```bash
+# Using Chrome DevTools (F12 → Device toolbar → 1280x800)
+# Or using Playwright:
+npx playwright screenshot --viewport-size=1280,800 listing/screenshot-1-score.html listing/screenshot-1.png
+```

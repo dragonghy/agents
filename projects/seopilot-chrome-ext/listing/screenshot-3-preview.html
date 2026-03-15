@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Screenshot 3 — Social Media Previews</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    width: 1280px;
+    height: 800px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+  .container {
+    display: flex;
+    align-items: center;
+    gap: 60px;
+  }
+  .text-side {
+    color: #fff;
+    max-width: 420px;
+  }
+  .text-side h1 {
+    font-size: 42px;
+    font-weight: 800;
+    line-height: 1.2;
+    margin-bottom: 16px;
+  }
+  .text-side p {
+    font-size: 20px;
+    opacity: 0.9;
+    line-height: 1.5;
+  }
+  .popup-mock {
+    width: 400px;
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 25px 50px -12px rgba(0,0,0,0.4);
+    overflow: hidden;
+  }
+  .popup-header {
+    padding: 14px 18px;
+    border-bottom: 1px solid #e5e7eb;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .popup-header .logo { font-size: 22px; }
+  .popup-header h2 { font-size: 17px; font-weight: 700; color: #1a1a2e; }
+  .popup-header .lite { font-weight: 400; color: #6b7280; }
+  .tabs {
+    display: flex;
+    border-bottom: 1px solid #e5e7eb;
+    padding: 0 14px;
+  }
+  .tab {
+    flex: 1; text-align: center; padding: 9px 0;
+    font-size: 12px; font-weight: 500; color: #9ca3af;
+  }
+  .tab.active { color: #3b82f6; border-bottom: 2px solid #3b82f6; }
+  .previews { padding: 10px 14px 14px; }
+  .preview-card { margin-bottom: 14px; }
+  .preview-label {
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.5px; color: #9ca3af; margin-bottom: 6px;
+  }
+  /* Google SERP */
+  .serp {
+    background: #fff; border: 1px solid #e5e7eb;
+    border-radius: 8px; padding: 12px;
+  }
+  .serp-url { font-size: 12px; color: #202124; margin-bottom: 2px; }
+  .serp-title { font-size: 18px; color: #1a0dab; line-height: 1.3; cursor: pointer; }
+  .serp-desc { font-size: 13px; color: #4d5156; line-height: 1.4; margin-top: 4px; }
+  /* Twitter */
+  .twitter {
+    background: #fff; border: 1px solid #e5e7eb;
+    border-radius: 12px; overflow: hidden;
+  }
+  .tw-image {
+    height: 100px; background: linear-gradient(135deg, #e0e7ff 0%, #c7d2fe 100%);
+    display: flex; align-items: center; justify-content: center;
+    color: #6366f1; font-size: 28px;
+  }
+  .tw-body { padding: 10px 12px; }
+  .tw-title { font-size: 14px; font-weight: 600; color: #1a1a2e; }
+  .tw-desc { font-size: 12px; color: #6b7280; margin-top: 2px; }
+  .tw-domain { font-size: 11px; color: #9ca3af; margin-top: 4px; }
+  /* Facebook */
+  .fb {
+    background: #fff; border: 1px solid #e5e7eb; overflow: hidden;
+  }
+  .fb-image {
+    height: 100px; background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
+    display: flex; align-items: center; justify-content: center;
+    color: #3b82f6; font-size: 28px;
+  }
+  .fb-body { padding: 10px 12px; background: #f8f9fa; }
+  .fb-domain { font-size: 11px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.3px; }
+  .fb-title { font-size: 15px; font-weight: 600; color: #1a1a2e; margin-top: 2px; }
+  .fb-desc { font-size: 12px; color: #6b7280; margin-top: 2px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="text-side">
+    <h1>Social Media Preview</h1>
+    <p>See how your page looks on Google, Twitter, and Facebook before you share it.</p>
+  </div>
+  <div class="popup-mock">
+    <div class="popup-header">
+      <span class="logo">&#x1F50D;</span>
+      <h2>SEOPilot <span class="lite">Lite</span></h2>
+    </div>
+    <div class="tabs">
+      <div class="tab">Analysis</div>
+      <div class="tab active">Preview</div>
+    </div>
+    <div class="previews">
+      <div class="preview-card">
+        <div class="preview-label">Google Search</div>
+        <div class="serp">
+          <div class="serp-url">https://example.com/running-shoes</div>
+          <div class="serp-title">Best Running Shoes for Marathon Training 2026</div>
+          <div class="serp-desc">Expert reviews and buying guides for the top marathon running shoes. Compare Nike, Adidas, and more. Free shipping on orders over $75.</div>
+        </div>
+      </div>
+      <div class="preview-card">
+        <div class="preview-label">Twitter / X</div>
+        <div class="twitter">
+          <div class="tw-image">&#128248; og:image preview</div>
+          <div class="tw-body">
+            <div class="tw-title">Best Running Shoes for Marathon Training</div>
+            <div class="tw-desc">Expert reviews and buying guides for the top marathon running shoes.</div>
+            <div class="tw-domain">example.com</div>
+          </div>
+        </div>
+      </div>
+      <div class="preview-card">
+        <div class="preview-label">Facebook</div>
+        <div class="fb">
+          <div class="fb-image">&#128248; og:image preview</div>
+          <div class="fb-body">
+            <div class="fb-domain">EXAMPLE.COM</div>
+            <div class="fb-title">Best Running Shoes for Marathon Training</div>
+            <div class="fb-desc">Expert reviews and buying guides for the top marathon running shoes.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
