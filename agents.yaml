@@ -48,8 +48,8 @@ staleness:
   threshold_minutes: 30
 
 # Agent name pool (pick from here when adding new agents).
-# Used: kevin, alex, lucy, emma, oliver, sophia
-name_pool: [noah, mia, liam, chloe, james, lily, ethan, grace, ryan, zoe, max, aria, sam, leo, ruby, finn, ivy]
+# Used: kevin, alex, lucy, emma, oliver, sophia, sarah, lisa, jack, noah, mia, liam, chloe, james
+name_pool: [lily, ethan, grace, ryan, zoe, max, aria, sam, leo, ruby, finn, ivy]
 
 # Agent definitions.
 # Each agent has a unique human-name ID (e.g. qa-lucy, dev-alex).
@@ -57,12 +57,28 @@ name_pool: [noah, mia, liam, chloe, james, lily, ethan, grace, ryan, zoe, max, a
 # To add another QA agent, just add a new entry like qa-david with template: qa.
 agents:
   admin:
+    project: agents
+    work_stream: admin
     role: 管理员
     description: 负责全局配置、Skill 管理和 Agent 重启
-    dispatchable: false
+    dispatchable: true
     add_dirs:
       - .
+  inspector:
+    project: agents
+    work_stream: admin
+    role: 系统巡检员
+    description: 每日自动检查所有 Agent 的健康状态和行为问题
+    dispatchable: true
+    add_dirs:
+      - .
+    schedule:
+      interval_hours: 24
+      offset_hours: 2
+      prompt: "定时唤醒：请执行每日系统巡检。1) 用 get_inbox 检查未读消息 2) 使用 /inspect-agents skill 执行完整的 Agent 行为检查 3) 将检查报告保存到 journal 4) 对发现的问题创建修复 ticket 5) 重大问题通过 send_message 通知 admin。"
   product-kevin:
+    project: agents
+    work_stream: product
     template: product
     role: 产品经理
     description: 负责需求分析、任务分发和最终验收
@@ -71,6 +87,8 @@ agents:
       - ${VM_MCP_DIR}
       - ${TEST_PROJECTS_DIR}
   dev-alex:
+    project: agents
+    work_stream: dev
     template: dev
     role: 开发工程师
     description: 负责技术方案设计、代码实现和开发测试
@@ -79,6 +97,8 @@ agents:
       - ${VM_MCP_DIR}
       - ${TEST_PROJECTS_DIR}
   dev-emma:
+    project: agents
+    work_stream: dev
     template: dev
     role: 开发工程师
     description: 负责技术方案设计、代码实现和开发测试
@@ -87,6 +107,8 @@ agents:
       - ${VM_MCP_DIR}
       - ${TEST_PROJECTS_DIR}
   qa-lucy:
+    project: agents
+    work_stream: qa
     template: qa
     role: QA 工程师
     description: 负责 E2E 测试和需求一致性验证
@@ -95,6 +117,8 @@ agents:
       - ${VM_MCP_DIR}
       - ${TEST_PROJECTS_DIR}
   qa-oliver:
+    project: agents
+    work_stream: qa
     template: qa
     role: QA 工程师
     description: 负责 E2E 测试和需求一致性验证
@@ -103,6 +127,8 @@ agents:
       - ${VM_MCP_DIR}
       - ${TEST_PROJECTS_DIR}
   user-sophia:
+    project: agents
+    work_stream: user
     template: user
     role: 用户体验测试员
     description: 以用户视角使用 Agent-Hub，构思项目并在隔离环境中测试完整工作流
@@ -111,5 +137,99 @@ agents:
       - .
       - ${TEST_PROJECTS_DIR}
     schedule:
-      interval_hours: 4
+      interval_hours: 12
+      offset_hours: 0
       prompt: "定时唤醒：请继续你的用户测试工作。先用 get_inbox 检查是否有未读消息，再用 list_tickets 检查待办任务。然后检查是否有活跃测试环境（python3 tests/e2e_env.py list）。如果有，检查进度继续测试；如果没有，构思一个新项目并创建隔离环境开始测试。"
+  product-sarah:
+    project: trading
+    work_stream: product
+    template: product
+    role: 产品经理
+    description: 负责 Trading 项目的策略评估、回测分析和股票池管理
+    dispatchable: true
+    add_dirs:
+      - /Users/huayang/code/trading
+    schedule:
+      interval_hours: 24
+      offset_hours: 6
+      prompt: "定时唤醒：请检查 Trading 项目状态。1) 用 get_inbox 检查未读消息 2) 用 list_tickets 检查待办任务 3) 检查策略表现和 GitHub Actions 执行日志（gh run list）4) 分析是否需要调整策略或股票池 5) 如有改动需求，创建 agent:human ticket 等待审批。"
+  product-lisa:
+    project: vm-mcp
+    work_stream: product
+    template: product
+    role: 产品经理
+    description: 负责 VM MCP 项目的产品规划和功能改进
+    dispatchable: true
+    add_dirs:
+      - /Users/huayang/code/vm-mcp
+    schedule:
+      interval_hours: 24
+      offset_hours: 9
+      prompt: "定时唤醒：请检查 VM MCP 项目状态。1) 用 get_inbox 检查未读消息，特别是 user-jack 的测试反馈 2) 用 list_tickets 检查待办任务 3) 思考可以增加的新能力或改进方向 4) 规划功能改进，创建 ticket 给 Dev。"
+  user-jack:
+    project: vm-mcp
+    work_stream: user
+    template: user
+    role: 用户体验测试员
+    description: 以用户视角测试 VM MCP 工具的各种使用场景
+    dispatchable: true
+    add_dirs:
+      - /Users/huayang/code/vm-mcp
+    schedule:
+      interval_hours: 12
+      offset_hours: 3
+      prompt: "定时唤醒：请测试 VM MCP 工具。1) 用 get_inbox 检查未读消息 2) 用 list_tickets 检查待办任务 3) 选择一个使用场景（网上购物调研、制作 PPT、写代码部署网站、文件管理等），直接使用 VM MCP 的 MCP tools 进行测试 4) 发现问题后创建 ticket 给 product-lisa。"
+  founder-noah:
+    project: founder
+    work_stream: founder
+    template: founder
+    role: 创业者
+    description: 发现商业机会、规划可盈利项目、驱动从 0 到 1
+    dispatchable: true
+    add_dirs:
+      - .
+      - ${TEST_PROJECTS_DIR}
+    schedule:
+      interval_hours: 24
+      offset_hours: 12
+      prompt: "定时唤醒：请推进你的创业工作。1) 用 get_inbox 检查未读消息 2) 用 list_tickets 检查待办任务 3) 检查 projects/ 目录下活跃项目的进展 4) 如果有活跃项目，与 product-mia 沟通进度，做商业判断 5) 如果没有活跃项目，研究市场寻找新的商业机会并制定项目计划。"
+  product-mia:
+    project: founder
+    work_stream: product
+    template: product
+    role: 产品经理
+    description: 产品经理，主要与 founder-noah 协作，负责将商业计划转化为产品需求并管理交付
+    dispatchable: true
+    add_dirs:
+      - .
+      - ${TEST_PROJECTS_DIR}
+  dev-liam:
+    project: founder
+    work_stream: dev
+    template: dev
+    role: 开发工程师
+    description: 开发工程师，主要参与创业项目的技术实现
+    dispatchable: true
+    add_dirs:
+      - .
+      - ${TEST_PROJECTS_DIR}
+  qa-chloe:
+    project: founder
+    work_stream: qa
+    template: qa
+    role: QA 工程师
+    description: QA 工程师，主要参与创业项目的质量保证
+    dispatchable: true
+    add_dirs:
+      - .
+      - ${TEST_PROJECTS_DIR}
+  user-james:
+    project: founder
+    work_stream: user
+    template: user
+    role: 用户体验测试员
+    description: 用户体验测试员，主要以用户视角验证创业项目的可用性
+    dispatchable: true
+    add_dirs:
+      - .
+      - ${TEST_PROJECTS_DIR}

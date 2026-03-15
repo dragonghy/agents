@@ -114,6 +114,8 @@ export default function Tokens() {
   const [usageSummaries, setUsageSummaries] = useState<AgentUsageSummary[]>([]);
   const [agentUsages, setAgentUsages] = useState<Record<string, AgentUsage>>({});
   const [selectedAgents, setSelectedAgents] = useState<Set<string>>(new Set());
+  const [selectedProject, setSelectedProject] = useState<string | null>(null);
+  const [selectedWorkStream, setSelectedWorkStream] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -172,6 +174,28 @@ export default function Tokens() {
     return map;
   }, [usageSummaries]);
 
+  // Derive unique projects and work streams
+  const projects = useMemo(() => {
+    const set = new Set<string>();
+    usageSummaries.forEach(s => { if (s.project) set.add(s.project); });
+    return [...set].sort();
+  }, [usageSummaries]);
+
+  const workStreams = useMemo(() => {
+    const set = new Set<string>();
+    usageSummaries.forEach(s => { if (s.work_stream) set.add(s.work_stream); });
+    return [...set].sort();
+  }, [usageSummaries]);
+
+  // Filtered summaries based on selected project / work stream
+  const filteredSummaries = useMemo(() => {
+    return usageSummaries.filter(s => {
+      if (selectedProject && s.project !== selectedProject) return false;
+      if (selectedWorkStream && s.work_stream !== selectedWorkStream) return false;
+      return true;
+    });
+  }, [usageSummaries, selectedProject, selectedWorkStream]);
+
   // Toggle agent selection
   function toggleAgent(id: string) {
     setSelectedAgents(prev => {
@@ -183,11 +207,33 @@ export default function Tokens() {
   }
 
   function selectAll() {
-    setSelectedAgents(new Set(usageSummaries.map(s => s.agent_id)));
+    setSelectedAgents(new Set(filteredSummaries.map(s => s.agent_id)));
   }
 
   function selectNone() {
     setSelectedAgents(new Set());
+  }
+
+  function handleProjectFilter(project: string | null) {
+    setSelectedProject(project);
+    // Auto-select all agents matching the new filter combination
+    const matching = usageSummaries.filter(s => {
+      if (project && s.project !== project) return false;
+      if (selectedWorkStream && s.work_stream !== selectedWorkStream) return false;
+      return true;
+    });
+    setSelectedAgents(new Set(matching.map(s => s.agent_id)));
+  }
+
+  function handleWorkStreamFilter(ws: string | null) {
+    setSelectedWorkStream(ws);
+    // Auto-select all agents matching the new filter combination
+    const matching = usageSummaries.filter(s => {
+      if (selectedProject && s.project !== selectedProject) return false;
+      if (ws && s.work_stream !== ws) return false;
+      return true;
+    });
+    setSelectedAgents(new Set(matching.map(s => s.agent_id)));
   }
 
   // Chart theme colors
@@ -249,28 +295,95 @@ export default function Tokens() {
         <MetricCard label="Avg per Agent" value={formatTokens(avgPerAgent)} />
       </div>
 
-      {/* Agent filter */}
-      <div className="mb-4">
-        <div className="flex items-center gap-2 mb-2">
-          <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Agents:</span>
-          <button onClick={selectAll} className="text-xs text-blue-600 dark:text-blue-400 hover:underline">All</button>
-          <button onClick={selectNone} className="text-xs text-blue-600 dark:text-blue-400 hover:underline">None</button>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {usageSummaries.map((s) => (
-            <button
-              key={s.agent_id}
-              onClick={() => toggleAgent(s.agent_id)}
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-colors border ${
-                selectedAgents.has(s.agent_id)
-                  ? 'border-transparent text-white'
-                  : 'border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-400 bg-transparent'
-              }`}
-              style={selectedAgents.has(s.agent_id) ? { backgroundColor: agentColorMap[s.agent_id] } : undefined}
-            >
-              {s.agent_id}
-            </button>
-          ))}
+      {/* Filters */}
+      <div className="mb-4 space-y-3">
+        {/* Project filter */}
+        {projects.length > 0 && (
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-gray-700 dark:text-gray-300 w-24 shrink-0">Project:</span>
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                onClick={() => handleProjectFilter(null)}
+                className={`px-3 py-1 text-xs rounded-md transition-colors ${
+                  selectedProject === null
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+                }`}
+              >
+                All
+              </button>
+              {projects.map((p) => (
+                <button
+                  key={p}
+                  onClick={() => handleProjectFilter(p)}
+                  className={`px-3 py-1 text-xs rounded-md transition-colors ${
+                    selectedProject === p
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+                  }`}
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Work Stream filter */}
+        {workStreams.length > 0 && (
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-gray-700 dark:text-gray-300 w-24 shrink-0">Work Stream:</span>
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                onClick={() => handleWorkStreamFilter(null)}
+                className={`px-3 py-1 text-xs rounded-md transition-colors ${
+                  selectedWorkStream === null
+                    ? 'bg-green-600 text-white'
+                    : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+                }`}
+              >
+                All
+              </button>
+              {workStreams.map((ws) => (
+                <button
+                  key={ws}
+                  onClick={() => handleWorkStreamFilter(ws)}
+                  className={`px-3 py-1 text-xs rounded-md transition-colors ${
+                    selectedWorkStream === ws
+                      ? 'bg-green-600 text-white'
+                      : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+                  }`}
+                >
+                  {ws}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Agent filter */}
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium text-gray-700 dark:text-gray-300 w-24 shrink-0">Agents:</span>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button onClick={selectAll} className="text-xs text-blue-600 dark:text-blue-400 hover:underline">All</button>
+            <button onClick={selectNone} className="text-xs text-blue-600 dark:text-blue-400 hover:underline">None</button>
+            <div className="flex flex-wrap gap-1.5">
+              {filteredSummaries.map((s) => (
+                <button
+                  key={s.agent_id}
+                  onClick={() => toggleAgent(s.agent_id)}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-colors border ${
+                    selectedAgents.has(s.agent_id)
+                      ? 'border-transparent text-white'
+                      : 'border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-400 bg-transparent'
+                  }`}
+                  style={selectedAgents.has(s.agent_id) ? { backgroundColor: agentColorMap[s.agent_id] } : undefined}
+                >
+                  {s.agent_id}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
 

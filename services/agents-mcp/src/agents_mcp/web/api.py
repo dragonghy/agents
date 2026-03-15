@@ -49,6 +49,8 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
                 "id": name,
                 "role": info.get("role", ""),
                 "description": info.get("description", ""),
+                "project": info.get("project", ""),
+                "work_stream": info.get("work_stream", ""),
                 "dispatchable": info.get("dispatchable", False),
                 "tmux_status": tmux_status,
                 "workload": wl,
@@ -87,6 +89,8 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
             "id": agent_id,
             "role": info.get("role", ""),
             "description": info.get("description", ""),
+            "project": info.get("project", ""),
+            "work_stream": info.get("work_stream", ""),
             "dispatchable": info.get("dispatchable", False),
             "tmux_status": tmux_status,
             "workload": wl,
@@ -370,6 +374,15 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
     async def get_all_usage(request: Request) -> JSONResponse:
         store = await get_store()
         result = await store.get_all_agents_usage_summary()
+
+        # Enrich each entry with project / work_stream from config
+        cfg = get_config()
+        agents_expanded = resolve_agents(cfg)
+        for entry in result:
+            info = agents_expanded.get(entry["agent_id"], {})
+            entry["project"] = info.get("project", "")
+            entry["work_stream"] = info.get("work_stream", "")
+
         return JSONResponse(result)
 
     async def refresh_agent_usage(request: Request) -> JSONResponse:

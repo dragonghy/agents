@@ -33,6 +33,8 @@ export interface AgentUsage {
 
 export interface AgentUsageSummary {
   agent_id: string;
+  project?: string;
+  work_stream?: string;
   lifetime: TokenTotals;
   today: TokenTotals;
 }
@@ -41,6 +43,8 @@ export interface Agent {
   id: string;
   role: string;
   description: string;
+  project?: string;
+  work_stream?: string;
   dispatchable: boolean;
   tmux_status: 'idle' | 'busy' | 'rate_limited' | 'no_window' | 'unknown';
   workload: AgentWorkload;
