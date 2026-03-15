@@ -10,9 +10,15 @@
   <div id="app">
     <!-- Header -->
     <header class="header">
-      <div class="header-title">
-        <span class="logo">&#x1F50D;</span>
-        <h1>SEOPilot <span class="lite">Lite</span></h1>
+      <div class="header-top">
+        <div class="header-title">
+          <span class="logo">&#x1F50D;</span>
+          <h1>SEOPilot <span class="lite">Lite</span></h1>
+        </div>
+        <div class="header-actions">
+          <button id="copy-btn" class="btn-icon" title="Copy report to clipboard">&#128203;</button>
+          <button id="settings-btn" class="btn-icon" title="Settings">&#9881;</button>
+        </div>
       </div>
       <div id="page-info" class="page-info"></div>
     </header>
@@ -44,14 +50,106 @@
         <div class="score-label" id="score-label">SEO Score</div>
       </div>
 
-      <!-- Checks List -->
-      <div id="checks-list" class="checks-list"></div>
+      <!-- Tabs -->
+      <div class="tabs">
+        <button class="tab active" data-tab="analysis">Analysis</button>
+        <button class="tab" data-tab="preview">Preview</button>
+      </div>
+
+      <!-- Tab: Analysis -->
+      <div id="tab-analysis" class="tab-content active">
+        <div id="checks-list" class="checks-list"></div>
+      </div>
+
+      <!-- Tab: Preview -->
+      <div id="tab-preview" class="tab-content">
+        <div class="preview-section">
+          <!-- Google SERP -->
+          <div class="preview-card">
+            <div class="preview-label">Google Search</div>
+            <div class="serp-preview" id="serp-preview">
+              <div class="serp-url" id="serp-url"></div>
+              <div class="serp-title" id="serp-title"></div>
+              <div class="serp-desc" id="serp-desc"></div>
+            </div>
+          </div>
+
+          <!-- Twitter Card -->
+          <div class="preview-card">
+            <div class="preview-label">Twitter / X</div>
+            <div class="twitter-preview" id="twitter-preview">
+              <div class="tw-image" id="tw-image"></div>
+              <div class="tw-body">
+                <div class="tw-title" id="tw-title"></div>
+                <div class="tw-desc" id="tw-desc"></div>
+                <div class="tw-domain" id="tw-domain"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Facebook OG -->
+          <div class="preview-card">
+            <div class="preview-label">Facebook</div>
+            <div class="fb-preview" id="fb-preview">
+              <div class="fb-image" id="fb-image"></div>
+              <div class="fb-body">
+                <div class="fb-domain" id="fb-domain"></div>
+                <div class="fb-title" id="fb-title"></div>
+                <div class="fb-desc" id="fb-desc"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Copy Success Toast -->
+      <div id="toast" class="toast hidden">Copied to clipboard!</div>
 
       <!-- Footer -->
       <footer class="footer">
         <span class="footer-brand">SEOPilot Lite v1.0</span>
         <span class="footer-privacy">100% private &mdash; no data sent</span>
       </footer>
+    </div>
+
+    <!-- Settings Panel (overlay) -->
+    <div id="settings-panel" class="settings-panel hidden">
+      <div class="settings-header">
+        <h2>Settings</h2>
+        <button id="settings-close" class="btn-icon" title="Close">&#10005;</button>
+      </div>
+      <div class="settings-body">
+        <p class="settings-desc">Choose which checks to include in the analysis:</p>
+        <div class="settings-checks" id="settings-checks">
+          <label class="check-toggle">
+            <input type="checkbox" data-check="meta-title" checked />
+            <span>Meta Title</span>
+          </label>
+          <label class="check-toggle">
+            <input type="checkbox" data-check="meta-description" checked />
+            <span>Meta Description</span>
+          </label>
+          <label class="check-toggle">
+            <input type="checkbox" data-check="headings" checked />
+            <span>Heading Structure</span>
+          </label>
+          <label class="check-toggle">
+            <input type="checkbox" data-check="image-alt" checked />
+            <span>Image Alt Text</span>
+          </label>
+          <label class="check-toggle">
+            <input type="checkbox" data-check="links" checked />
+            <span>Link Analysis</span>
+          </label>
+          <label class="check-toggle">
+            <input type="checkbox" data-check="social-meta" checked />
+            <span>OG / Twitter Card</span>
+          </label>
+        </div>
+        <div class="settings-footer">
+          <button id="settings-save" class="btn btn-primary">Save</button>
+        </div>
+      </div>
     </div>
   </div>
 

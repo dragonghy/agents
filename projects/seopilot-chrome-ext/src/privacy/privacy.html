@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SEOPilot Lite — Privacy Policy</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 15px;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #ffffff;
+      padding: 40px 20px;
+      max-width: 680px;
+      margin: 0 auto;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #1a1a2e; color: #f1f5f9; }
+      h1, h2 { color: #f1f5f9; }
+      a { color: #60a5fa; }
+    }
+    h1 { font-size: 24px; margin-bottom: 8px; }
+    .subtitle { font-size: 13px; color: #6b7280; margin-bottom: 32px; }
+    h2 { font-size: 18px; margin: 24px 0 8px; }
+    p { margin-bottom: 12px; }
+    ul { margin: 8px 0 16px 24px; }
+    li { margin-bottom: 4px; }
+    .highlight {
+      background: #f0fdf4;
+      border-left: 3px solid #22c55e;
+      padding: 12px 16px;
+      margin: 16px 0;
+      border-radius: 4px;
+    }
+    @media (prefers-color-scheme: dark) {
+      .highlight { background: #052e16; border-left-color: #22c55e; }
+      .subtitle { color: #94a3b8; }
+    }
+  </style>
+</head>
+<body>
+  <h1>Privacy Policy</h1>
+  <p class="subtitle">SEOPilot Lite — SEO Analyzer | Last updated: March 2026</p>
+
+  <div class="highlight">
+    <strong>TL;DR:</strong> SEOPilot Lite does not collect, store, or transmit any user data. All analysis happens 100% in your browser.
+  </div>
+
+  <h2>1. Data Collection</h2>
+  <p>SEOPilot Lite does <strong>not</strong> collect any personal data. Specifically, we do not collect:</p>
+  <ul>
+    <li>Browsing history or URLs you visit</li>
+    <li>Page content or HTML</li>
+    <li>Personal information (name, email, etc.)</li>
+    <li>Cookies or tracking identifiers</li>
+    <li>Usage analytics or telemetry</li>
+  </ul>
+
+  <h2>2. How the Extension Works</h2>
+  <p>When you click the SEOPilot Lite icon:</p>
+  <ul>
+    <li>A content script analyzes the <strong>currently active tab's</strong> DOM (HTML structure)</li>
+    <li>The analysis runs <strong>entirely in your browser</strong> — no data is sent to any server</li>
+    <li>Results are displayed in the popup and discarded when you close it</li>
+  </ul>
+
+  <h2>3. Permissions Used</h2>
+  <p>SEOPilot Lite requests the minimum permissions needed to function:</p>
+  <ul>
+    <li><strong>activeTab</strong> — Access the current tab only when you click the extension icon</li>
+    <li><strong>scripting</strong> — Run the SEO analysis script on the current page</li>
+    <li><strong>storage</strong> — Save your settings (check toggles) locally in Chrome</li>
+  </ul>
+  <p>We do <strong>not</strong> request broad permissions like "Access all websites" or "Read browsing history."</p>
+
+  <h2>4. Data Storage</h2>
+  <p>The only data stored locally is your settings (which SEO checks are enabled/disabled). This data:</p>
+  <ul>
+    <li>Is stored using Chrome's built-in <code>chrome.storage.local</code> API</li>
+    <li>Never leaves your device</li>
+    <li>Can be cleared by uninstalling the extension</li>
+  </ul>
+
+  <h2>5. Third-Party Services</h2>
+  <p>SEOPilot Lite does <strong>not</strong> use any third-party services, APIs, analytics, or tracking tools.</p>
+
+  <h2>6. Changes to This Policy</h2>
+  <p>If we ever change this privacy policy, we will update the "Last updated" date above. Any changes that affect data collection will be clearly communicated through extension updates.</p>
+
+  <h2>7. Contact</h2>
+  <p>If you have questions about this privacy policy, contact us at <a href="mailto:support@seopilot.app">support@seopilot.app</a>.</p>
+</body>
+</html>

@@ -46,6 +46,12 @@ export default defineConfig({
           resolve(dist, "popup.css"),
         );
 
+        // Copy privacy policy
+        copyFileSync(
+          resolve(__dirname, "src/privacy/privacy.html"),
+          resolve(dist, "privacy.html"),
+        );
+
         // Copy icons
         const iconsDir = resolve(dist, "icons");
         if (!existsSync(iconsDir)) {
