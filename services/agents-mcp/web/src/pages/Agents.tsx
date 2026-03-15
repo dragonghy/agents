@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { fetchAgents } from '../api/agents';
-import type { Agent } from '../types/agent';
+import { fetchAgents, fetchAllUsage } from '../api/agents';
+import type { Agent, AgentUsageSummary } from '../types/agent';
 import StatusBadge from '../components/StatusBadge';
+import { formatTokens, totalTokens } from '../utils/format';
 
 function Skeleton({ className = '' }: { className?: string }) {
   return <div className={`animate-pulse bg-gray-200 dark:bg-gray-700 rounded ${className}`} />;
@@ -10,6 +11,7 @@ function Skeleton({ className = '' }: { className?: string }) {
 
 export default function Agents() {
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [usageMap, setUsageMap] = useState<Record<string, AgentUsageSummary>>({});
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -32,6 +34,30 @@ export default function Agents() {
 
     poll();
     const interval = setInterval(poll, 5000);
+    return () => { active = false; clearInterval(interval); };
+  }, []);
+
+  // Fetch usage data once on mount, then every 30s
+  useEffect(() => {
+    let active = true;
+
+    async function loadUsage() {
+      try {
+        const summaries = await fetchAllUsage();
+        if (active) {
+          const map: Record<string, AgentUsageSummary> = {};
+          for (const s of summaries) {
+            map[s.agent_id] = s;
+          }
+          setUsageMap(map);
+        }
+      } catch {
+        // Usage data may not be available
+      }
+    }
+
+    loadUsage();
+    const interval = setInterval(loadUsage, 30000);
     return () => { active = false; clearInterval(interval); };
   }, []);
 
@@ -61,27 +87,42 @@ export default function Agents() {
               <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-300">Active</th>
               <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-300">New</th>
               <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-300">Blocked</th>
-              <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-300 hidden sm:table-cell">Context</th>
+              <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-300 hidden sm:table-cell">Today</th>
+              <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-300 hidden sm:table-cell">Lifetime</th>
+              <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-300 hidden md:table-cell">Context</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-            {agents.map((agent) => (
-              <tr key={agent.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
-                <td className="px-4 py-3 font-medium">
-                  <Link to={`/agents/${agent.id}`} className="text-blue-600 dark:text-blue-400 hover:underline">
-                    {agent.id}
-                  </Link>
-                </td>
-                <td className="px-4 py-3 text-gray-600 dark:text-gray-400">{agent.role}</td>
-                <td className="px-4 py-3"><StatusBadge status={agent.tmux_status} /></td>
-                <td className="px-4 py-3 text-center text-gray-700 dark:text-gray-300">{agent.workload.in_progress}</td>
-                <td className="px-4 py-3 text-center text-gray-700 dark:text-gray-300">{agent.workload.new}</td>
-                <td className="px-4 py-3 text-center text-gray-700 dark:text-gray-300">{agent.workload.blocked}</td>
-                <td className="px-4 py-3 text-gray-500 dark:text-gray-400 truncate max-w-xs hidden sm:table-cell">
-                  {agent.profile?.current_context || '-'}
-                </td>
-              </tr>
-            ))}
+            {agents.map((agent) => {
+              const usage = usageMap[agent.id];
+              const todayTotal = usage ? totalTokens(usage.today) : 0;
+              const lifetimeTotal = usage ? totalTokens(usage.lifetime) : 0;
+              const hasUsage = usage && lifetimeTotal > 0;
+
+              return (
+                <tr key={agent.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                  <td className="px-4 py-3 font-medium">
+                    <Link to={`/agents/${agent.id}`} className="text-blue-600 dark:text-blue-400 hover:underline">
+                      {agent.id}
+                    </Link>
+                  </td>
+                  <td className="px-4 py-3 text-gray-600 dark:text-gray-400">{agent.role}</td>
+                  <td className="px-4 py-3"><StatusBadge status={agent.tmux_status} /></td>
+                  <td className="px-4 py-3 text-center text-gray-700 dark:text-gray-300">{agent.workload.in_progress}</td>
+                  <td className="px-4 py-3 text-center text-gray-700 dark:text-gray-300">{agent.workload.new}</td>
+                  <td className="px-4 py-3 text-center text-gray-700 dark:text-gray-300">{agent.workload.blocked}</td>
+                  <td className="px-4 py-3 text-right text-blue-600 dark:text-blue-400 hidden sm:table-cell">
+                    {hasUsage ? formatTokens(todayTotal) : '-'}
+                  </td>
+                  <td className="px-4 py-3 text-right text-blue-600 dark:text-blue-400 hidden sm:table-cell">
+                    {hasUsage ? formatTokens(lifetimeTotal) : '-'}
+                  </td>
+                  <td className="px-4 py-3 text-gray-500 dark:text-gray-400 truncate max-w-xs hidden md:table-cell">
+                    {agent.profile?.current_context || '-'}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

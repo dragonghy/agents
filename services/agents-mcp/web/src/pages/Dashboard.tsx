@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { fetchAgents } from '../api/agents';
-import type { Agent } from '../types/agent';
+import { fetchAgents, fetchAllUsage } from '../api/agents';
+import type { Agent, AgentUsageSummary } from '../types/agent';
 import StatusBadge from '../components/StatusBadge';
+import { formatTokens, totalTokens } from '../utils/format';
 
 function Skeleton({ className = '' }: { className?: string }) {
   return <div className={`animate-pulse bg-gray-200 dark:bg-gray-700 rounded ${className}`} />;
@@ -10,6 +11,7 @@ function Skeleton({ className = '' }: { className?: string }) {
 
 export default function Dashboard() {
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [usageMap, setUsageMap] = useState<Record<string, AgentUsageSummary>>({});
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [dispatching, setDispatching] = useState(false);
@@ -34,6 +36,30 @@ export default function Dashboard() {
 
     poll();
     const interval = setInterval(poll, 5000);
+    return () => { active = false; clearInterval(interval); };
+  }, []);
+
+  // Fetch usage data once on mount, then every 30s
+  useEffect(() => {
+    let active = true;
+
+    async function loadUsage() {
+      try {
+        const summaries = await fetchAllUsage();
+        if (active) {
+          const map: Record<string, AgentUsageSummary> = {};
+          for (const s of summaries) {
+            map[s.agent_id] = s;
+          }
+          setUsageMap(map);
+        }
+      } catch {
+        // Usage data may not be available
+      }
+    }
+
+    loadUsage();
+    const interval = setInterval(loadUsage, 30000);
     return () => { active = false; clearInterval(interval); };
   }, []);
 
@@ -96,15 +122,19 @@ export default function Dashboard() {
       )}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {agents.map((agent) => (
-          <AgentCard key={agent.id} agent={agent} />
+          <AgentCard key={agent.id} agent={agent} usage={usageMap[agent.id]} />
         ))}
       </div>
     </div>
   );
 }
 
-function AgentCard({ agent }: { agent: Agent }) {
+function AgentCard({ agent, usage }: { agent: Agent; usage?: AgentUsageSummary }) {
   const wl = agent.workload;
+  const todayTotal = usage ? totalTokens(usage.today) : 0;
+  const lifetimeTotal = usage ? totalTokens(usage.lifetime) : 0;
+  const hasUsage = usage && lifetimeTotal > 0;
+
   return (
     <Link to={`/agents/${agent.id}`} className="block bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-800 p-4 shadow-sm hover:shadow-md dark:hover:border-gray-600 transition-all">
       <div className="flex items-center justify-between mb-2">
@@ -117,7 +147,7 @@ function AgentCard({ agent }: { agent: Agent }) {
           {agent.profile.current_context}
         </p>
       )}
-      <div className="flex gap-3 text-xs text-gray-500 dark:text-gray-400">
+      <div className="flex gap-3 text-xs text-gray-500 dark:text-gray-400 mb-2">
         <span title="In Progress">
           <span className="font-medium text-yellow-600 dark:text-yellow-400">{wl.in_progress}</span> active
         </span>
@@ -128,6 +158,15 @@ function AgentCard({ agent }: { agent: Agent }) {
           <span className="font-medium text-gray-600 dark:text-gray-400">{wl.blocked}</span> blocked
         </span>
       </div>
+      {hasUsage ? (
+        <div className="text-xs text-blue-600 dark:text-blue-400 border-t border-gray-100 dark:border-gray-800 pt-2">
+          Today: {formatTokens(todayTotal)} &middot; Total: {formatTokens(lifetimeTotal)}
+        </div>
+      ) : (
+        <div className="text-xs text-gray-400 dark:text-gray-600 border-t border-gray-100 dark:border-gray-800 pt-2">
+          Tokens: -
+        </div>
+      )}
     </Link>
   );
 }

@@ -1,13 +1,7 @@
 import { useEffect, useState } from 'react';
 import { fetchAgentUsage, refreshAgentUsage } from '../api/agents';
 import type { AgentUsage, TokenTotals } from '../types/agent';
-
-function formatTokens(n: number): string {
-  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return n.toString();
-}
+import { formatTokens } from '../utils/format';
 
 function TokenStat({ label, value, color }: { label: string; value: number; color: string }) {
   return (
