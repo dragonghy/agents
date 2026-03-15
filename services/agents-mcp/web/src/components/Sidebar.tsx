@@ -4,6 +4,7 @@ import { useTheme } from '../hooks/useTheme';
 const navItems = [
   { to: '/', label: 'Dashboard' },
   { to: '/agents', label: 'Agents' },
+  { to: '/tokens', label: 'Tokens' },
   { to: '/tickets', label: 'Tickets' },
   { to: '/messages', label: 'Messages' },
   { to: '/feedback', label: 'Feedback' },
