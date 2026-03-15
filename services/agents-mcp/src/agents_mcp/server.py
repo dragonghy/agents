@@ -427,17 +427,37 @@ async def suggest_assignee(role: str = None, task_context: str = None) -> str:
         elif tmux_status == "unknown":
             score += 3
 
-        # Expertise bonus (lower score = better)
+        # Expertise & context matching (lower score = better)
         profile = profiles.get(name)
         if profile and task_context:
+            ctx_words = set(re.findall(r'[a-zA-Z0-9]+', task_context.lower()))
+
+            # 1) Expertise keyword matching (word-level overlap)
             expertise_raw = profile.get("expertise", "[]")
             try:
                 expertise_list = json.loads(expertise_raw) if expertise_raw else []
             except (json.JSONDecodeError, TypeError):
                 expertise_list = []
-            ctx_lower = task_context.lower()
-            if any(e.lower() in ctx_lower for e in expertise_list):
-                score -= 1  # bonus for relevant expertise
+            match_count = 0
+            for e in expertise_list:
+                e_words = set(re.findall(r'[a-zA-Z0-9]+', e.lower()))
+                overlap = e_words & ctx_words
+                # Single-word expertise: 1 match suffices (e.g. "Remix")
+                # Multi-word expertise: require >=2 overlapping words to avoid
+                # false positives on generic terms like "integration", "development"
+                min_overlap = 1 if len(e_words) <= 1 else 2
+                if len(overlap) >= min_overlap:
+                    match_count += 1
+            # Each matching expertise area gives -2 (significant vs +3 per in_progress)
+            score -= match_count * 2
+
+            # 2) Current context bonus: recent work on similar topics
+            current_ctx = profile.get("current_context") or ""
+            if current_ctx:
+                ctx_current_words = set(re.findall(r'[a-zA-Z0-9]+', current_ctx.lower()))
+                overlap = ctx_words & ctx_current_words
+                if len(overlap) >= 2:  # at least 2 words in common
+                    score -= 1  # bonus for recent relevant work
 
         scored.append({
             "agent": name,
