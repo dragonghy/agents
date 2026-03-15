@@ -14,8 +14,46 @@ const AGENT_COLORS = [
   '#ec4899', '#06b6d4', '#84cc16', '#f97316', '#6366f1',
 ];
 
-type ViewMode = 'daily' | 'overall';
+type ViewMode = 'daily' | 'weekly' | 'overall';
 type DateRange = 7 | 14 | 30;
+
+// Quota cycle: resets every Sunday 10:00 PM PST (= Monday 06:00 UTC)
+// Given a date string "YYYY-MM-DD", return the quota week start (Monday 06:00 UTC of that cycle)
+function getQuotaWeekStart(dateStr: string): string {
+  const d = new Date(dateStr + 'T12:00:00Z'); // noon UTC to avoid timezone edge cases
+  // JS: 0=Sun, 1=Mon ... 6=Sat
+  // Quota week starts Monday 06:00 UTC (= Sunday 10PM PST)
+  // For grouping daily data by date strings, we map each day to its quota week.
+  // A day belongs to the quota week starting on the previous Monday (UTC).
+  // Sunday 10PM PST = Monday 06:00 UTC, but since our daily data is by calendar date,
+  // we treat Monday-Sunday (UTC dates) as one quota week for simplicity.
+  // More precisely: Sun before 06:00 UTC belongs to the previous week,
+  // but daily_totals are full calendar days, so we use:
+  // Mon..Sun → same week (start = Monday's date)
+  const day = d.getUTCDay(); // 0=Sun
+  const diff = day === 0 ? 6 : day - 1; // days since Monday
+  const monday = new Date(d);
+  monday.setUTCDate(monday.getUTCDate() - diff);
+  return monday.toISOString().slice(0, 10);
+}
+
+// Format a quota week label: "Mar 10 – Mar 16"
+function formatWeekLabel(mondayStr: string): string {
+  const d = new Date(mondayStr + 'T12:00:00Z');
+  const sun = new Date(d);
+  sun.setUTCDate(sun.getUTCDate() + 6);
+  const fmt = (dt: Date) => {
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return `${months[dt.getUTCMonth()]} ${dt.getUTCDate()}`;
+  };
+  return `${fmt(d)} – ${fmt(sun)}`;
+}
+
+// Get the current quota week start date
+function getCurrentQuotaWeekStart(): string {
+  const now = new Date();
+  return getQuotaWeekStart(now.toISOString().slice(0, 10));
+}
 
 function Skeleton({ className = '' }: { className?: string }) {
   return <div className={`animate-pulse bg-gray-200 dark:bg-gray-700 rounded ${className}`} />;
@@ -102,9 +140,9 @@ export default function Tokens() {
     return () => { active = false; clearInterval(interval); };
   }, []);
 
-  // Fetch per-agent daily data when switching to daily view
+  // Fetch per-agent daily data when switching to daily or weekly view
   useEffect(() => {
-    if (view !== 'daily' || usageSummaries.length === 0) return;
+    if ((view !== 'daily' && view !== 'weekly') || usageSummaries.length === 0) return;
     let active = true;
 
     async function loadDaily() {
@@ -188,7 +226,7 @@ export default function Tokens() {
         <h2 className="text-2xl font-bold text-gray-800 dark:text-gray-100">Token Usage</h2>
         {/* View toggle */}
         <div className="flex bg-gray-100 dark:bg-gray-800 rounded-lg p-0.5">
-          {(['daily', 'overall'] as ViewMode[]).map((v) => (
+          {(['daily', 'weekly', 'overall'] as ViewMode[]).map((v) => (
             <button
               key={v}
               onClick={() => setView(v)}
@@ -244,6 +282,14 @@ export default function Tokens() {
           agentColorMap={agentColorMap}
           dateRange={dateRange}
           setDateRange={setDateRange}
+          gridColor={gridColor}
+          tickColor={tickColor}
+        />
+      ) : view === 'weekly' ? (
+        <WeeklyView
+          agentUsages={agentUsages}
+          selectedAgents={selectedAgents}
+          agentColorMap={agentColorMap}
           gridColor={gridColor}
           tickColor={tickColor}
         />
@@ -348,6 +394,175 @@ function DailyView({
           </BarChart>
         </ResponsiveContainer>
       )}
+    </div>
+  );
+}
+
+// ---------- Weekly View ----------
+function WeeklyView({
+  agentUsages, selectedAgents, agentColorMap, gridColor, tickColor,
+}: {
+  agentUsages: Record<string, AgentUsage>;
+  selectedAgents: Set<string>;
+  agentColorMap: Record<string, string>;
+  gridColor: string;
+  tickColor: string;
+}) {
+  const currentWeekStart = useMemo(() => getCurrentQuotaWeekStart(), []);
+
+  // Build weekly aggregated data: { weekLabel, agent1: total, agent2: total, ... }
+  const { chartData, weekCount } = useMemo(() => {
+    const weekMap: Record<string, Record<string, number>> = {};
+
+    for (const [agentId, usage] of Object.entries(agentUsages)) {
+      if (!selectedAgents.has(agentId)) continue;
+      for (const day of usage.daily_totals) {
+        const weekStart = getQuotaWeekStart(day.date);
+        if (!weekMap[weekStart]) weekMap[weekStart] = {};
+        weekMap[weekStart][agentId] = (weekMap[weekStart][agentId] || 0) + totalTokens(day);
+      }
+    }
+
+    const sorted = Object.entries(weekMap)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .slice(-8) // last 8 weeks
+      .map(([weekStart, agents]) => ({
+        week: formatWeekLabel(weekStart),
+        weekStart,
+        ...agents,
+      }));
+
+    return { chartData: sorted, weekCount: sorted.length };
+  }, [agentUsages, selectedAgents]);
+
+  // This week's usage for the metric card
+  const thisWeekTotal = useMemo(() => {
+    let total = 0;
+    for (const [agentId, usage] of Object.entries(agentUsages)) {
+      if (!selectedAgents.has(agentId)) continue;
+      for (const day of usage.daily_totals) {
+        if (getQuotaWeekStart(day.date) === currentWeekStart) {
+          total += totalTokens(day);
+        }
+      }
+    }
+    return total;
+  }, [agentUsages, selectedAgents, currentWeekStart]);
+
+  // This week's per-agent ranking
+  const weeklyRanking = useMemo(() => {
+    const agentTotals: Record<string, number> = {};
+    for (const [agentId, usage] of Object.entries(agentUsages)) {
+      if (!selectedAgents.has(agentId)) continue;
+      for (const day of usage.daily_totals) {
+        if (getQuotaWeekStart(day.date) === currentWeekStart) {
+          agentTotals[agentId] = (agentTotals[agentId] || 0) + totalTokens(day);
+        }
+      }
+    }
+    return Object.entries(agentTotals)
+      .sort(([, a], [, b]) => b - a)
+      .map(([agent_id, total]) => ({ agent_id, total }));
+  }, [agentUsages, selectedAgents, currentWeekStart]);
+
+  const activeAgentIds = [...selectedAgents].filter(id => id in agentUsages);
+
+  if (Object.keys(agentUsages).length === 0) {
+    return (
+      <div className="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-800 p-8">
+        <div className="animate-pulse space-y-3">
+          <Skeleton className="h-6 w-48" />
+          <Skeleton className="h-64 w-full" />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Quota info + this week metric */}
+      <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M12 2a10 10 0 100 20 10 10 0 000-20z" />
+        </svg>
+        Quota resets every Sunday 10:00 PM PST (Monday 06:00 UTC)
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <MetricCard label="This Week" value={formatTokens(thisWeekTotal)} sub={`${formatWeekLabel(currentWeekStart)}`} />
+        <MetricCard label="Weeks Tracked" value={String(weekCount)} />
+        <MetricCard label="Avg per Week" value={formatTokens(weekCount > 0 ? chartData.reduce((sum, w) => {
+          let weekTotal = 0;
+          for (const id of activeAgentIds) {
+            weekTotal += (w as any)[id] || 0;
+          }
+          return sum + weekTotal;
+        }, 0) / weekCount : 0)} />
+      </div>
+
+      {/* Weekly stacked bar chart */}
+      <div className="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-800 p-4">
+        <h3 className="font-semibold text-gray-800 dark:text-gray-100 mb-4">Weekly Token Usage</h3>
+        {chartData.length === 0 ? (
+          <p className="text-sm text-gray-400 dark:text-gray-500 text-center py-12">No weekly data available for selected agents.</p>
+        ) : (
+          <ResponsiveContainer width="100%" height={360}>
+            <BarChart data={chartData} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
+              <XAxis dataKey="week" tick={{ fill: tickColor, fontSize: 10 }} />
+              <YAxis tick={{ fill: tickColor, fontSize: 11 }} tickFormatter={formatTokens} />
+              <Tooltip content={<DailyTooltip />} />
+              <Legend wrapperStyle={{ fontSize: '12px' }} />
+              {activeAgentIds.map((agentId) => (
+                <Bar
+                  key={agentId}
+                  dataKey={agentId}
+                  name={agentId}
+                  stackId="tokens"
+                  fill={agentColorMap[agentId]}
+                  radius={[0, 0, 0, 0]}
+                />
+              ))}
+            </BarChart>
+          </ResponsiveContainer>
+        )}
+      </div>
+
+      {/* This week's agent ranking */}
+      <div className="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-800 p-4">
+        <h3 className="font-semibold text-gray-800 dark:text-gray-100 mb-4">Agent Ranking (This Week)</h3>
+        {weeklyRanking.length === 0 ? (
+          <p className="text-sm text-gray-400 dark:text-gray-500">No usage this week.</p>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 dark:bg-gray-800">
+              <tr>
+                <th className="text-left px-3 py-2 font-medium text-gray-600 dark:text-gray-300">#</th>
+                <th className="text-left px-3 py-2 font-medium text-gray-600 dark:text-gray-300">Agent</th>
+                <th className="text-right px-3 py-2 font-medium text-gray-600 dark:text-gray-300">Tokens</th>
+                <th className="text-right px-3 py-2 font-medium text-gray-600 dark:text-gray-300">Share</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+              {weeklyRanking.map((r, i) => (
+                <tr key={r.agent_id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                  <td className="px-3 py-2 text-gray-400">{i + 1}</td>
+                  <td className="px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: agentColorMap[r.agent_id] }} />
+                      <span className="text-gray-800 dark:text-gray-200">{r.agent_id}</span>
+                    </div>
+                  </td>
+                  <td className="px-3 py-2 text-right text-blue-600 dark:text-blue-400">{formatTokens(r.total)}</td>
+                  <td className="px-3 py-2 text-right text-gray-500 dark:text-gray-400">
+                    {thisWeekTotal > 0 ? `${((r.total / thisWeekTotal) * 100).toFixed(1)}%` : '-'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
     </div>
   );
 }
