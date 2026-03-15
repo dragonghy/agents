@@ -1,0 +1,9 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm run setup && npm run build",
+  "installCommand": "npm install",
+  "framework": "remix",
+  "env": {
+    "NODE_ENV": "production"
+  }
+}
