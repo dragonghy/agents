@@ -1,0 +1,461 @@
+/* =========================================================================
+   SEOPilot Lite — Popup Styles
+   Clean, minimal design with system dark/light mode support.
+   ========================================================================= */
+
+:root {
+  /* Light mode (default) */
+  --bg-primary: #ffffff;
+  --bg-secondary: #f8f9fa;
+  --bg-card: #ffffff;
+  --text-primary: #1a1a2e;
+  --text-secondary: #6b7280;
+  --text-muted: #9ca3af;
+  --border: #e5e7eb;
+  --border-light: #f3f4f6;
+
+  --color-green: #22c55e;
+  --color-green-bg: #f0fdf4;
+  --color-yellow: #f59e0b;
+  --color-yellow-bg: #fffbeb;
+  --color-red: #ef4444;
+  --color-red-bg: #fef2f2;
+
+  --color-critical: #ef4444;
+  --color-warning: #f59e0b;
+  --color-info: #3b82f6;
+  --color-pass: #22c55e;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.08);
+
+  --radius: 8px;
+  --radius-sm: 4px;
+}
+
+/* Dark mode */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-primary: #1a1a2e;
+    --bg-secondary: #16213e;
+    --bg-card: #1e293b;
+    --text-primary: #f1f5f9;
+    --text-secondary: #94a3b8;
+    --text-muted: #64748b;
+    --border: #334155;
+    --border-light: #1e293b;
+
+    --color-green-bg: #052e16;
+    --color-yellow-bg: #422006;
+    --color-red-bg: #450a0a;
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
+    --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.3);
+  }
+}
+
+/* ---- Reset & Base ---- */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  width: 400px;
+  min-height: 200px;
+  max-height: 600px;
+  overflow-y: auto;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+}
+
+/* ---- Scrollbar ---- */
+body::-webkit-scrollbar {
+  width: 4px;
+}
+body::-webkit-scrollbar-track {
+  background: transparent;
+}
+body::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 2px;
+}
+
+/* ---- Header ---- */
+
+.header {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-primary);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.header-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.logo {
+  font-size: 20px;
+}
+
+.header h1 {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.header .lite {
+  font-weight: 400;
+  color: var(--text-secondary);
+}
+
+.page-info {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- Loading ---- */
+
+.loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 16px;
+  gap: 12px;
+}
+
+.spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border);
+  border-top-color: var(--color-info);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.loading p {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+/* ---- Error ---- */
+
+.error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 32px 16px;
+  gap: 12px;
+  text-align: center;
+}
+
+.error-icon {
+  font-size: 28px;
+  color: var(--color-warning);
+}
+
+.error p {
+  color: var(--text-secondary);
+}
+
+/* ---- Hidden ---- */
+
+.hidden {
+  display: none !important;
+}
+
+/* ---- Score Section ---- */
+
+.score-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 20px 16px 16px;
+  gap: 4px;
+}
+
+.score-ring {
+  position: relative;
+  width: 100px;
+  height: 100px;
+}
+
+.score-ring svg {
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+
+.score-ring-bg {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 8;
+}
+
+.score-ring-fill {
+  fill: none;
+  stroke: var(--color-green);
+  stroke-width: 8;
+  stroke-linecap: round;
+  stroke-dasharray: 326.73;
+  stroke-dashoffset: 326.73;
+  transition: stroke-dashoffset 0.8s ease-out, stroke 0.3s;
+}
+
+.score-value {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.score-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* ---- Checks List ---- */
+
+.checks-list {
+  padding: 0 12px 12px;
+}
+
+.check-item {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 8px;
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+
+.check-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  cursor: pointer;
+  user-select: none;
+  gap: 8px;
+}
+
+.check-header:hover {
+  background: var(--bg-secondary);
+}
+
+.check-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.check-status-icon {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.check-status-icon.pass { background: var(--color-pass); }
+.check-status-icon.warning { background: var(--color-warning); }
+.check-status-icon.fail { background: var(--color-critical); }
+
+.check-name span {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.check-score {
+  font-size: 13px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.check-arrow {
+  font-size: 10px;
+  color: var(--text-muted);
+  transition: transform 0.2s;
+  flex-shrink: 0;
+}
+
+.check-item.expanded .check-arrow {
+  transform: rotate(90deg);
+}
+
+.check-details {
+  display: none;
+  padding: 0 12px 10px;
+  border-top: 1px solid var(--border-light);
+}
+
+.check-item.expanded .check-details {
+  display: block;
+}
+
+/* ---- Issues ---- */
+
+.issue-item {
+  display: flex;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.issue-item:last-child {
+  border-bottom: none;
+}
+
+.issue-badge {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+  height: fit-content;
+  margin-top: 2px;
+}
+
+.issue-badge.critical {
+  background: var(--color-red-bg);
+  color: var(--color-critical);
+}
+
+.issue-badge.warning {
+  background: var(--color-yellow-bg);
+  color: var(--color-warning);
+}
+
+.issue-badge.info {
+  background: #eff6ff;
+  color: var(--color-info);
+}
+
+@media (prefers-color-scheme: dark) {
+  .issue-badge.info {
+    background: #172554;
+    color: #60a5fa;
+  }
+}
+
+.issue-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.issue-message {
+  font-size: 12px;
+  color: var(--text-primary);
+  line-height: 1.4;
+}
+
+.issue-recommendation {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 3px;
+  line-height: 1.4;
+}
+
+/* ---- No Issues (Pass) ---- */
+
+.check-pass-msg {
+  padding: 8px 0;
+  font-size: 12px;
+  color: var(--color-pass);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ---- Details Row ---- */
+
+.detail-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  font-size: 11px;
+}
+
+.detail-label {
+  color: var(--text-secondary);
+}
+
+.detail-value {
+  color: var(--text-primary);
+  font-weight: 500;
+  text-align: right;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- Button ---- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 16px;
+  border: none;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s, opacity 0.2s;
+}
+
+.btn:hover {
+  opacity: 0.9;
+}
+
+.btn-primary {
+  background: var(--color-info);
+  color: #fff;
+}
+
+/* ---- Footer ---- */
+
+.footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.footer-brand {
+  font-weight: 500;
+}

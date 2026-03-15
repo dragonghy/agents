@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=400" />
+  <title>SEOPilot Lite</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-title">
+        <span class="logo">&#x1F50D;</span>
+        <h1>SEOPilot <span class="lite">Lite</span></h1>
+      </div>
+      <div id="page-info" class="page-info"></div>
+    </header>
+
+    <!-- Loading State -->
+    <div id="loading" class="loading">
+      <div class="spinner"></div>
+      <p>Analyzing page SEO...</p>
+    </div>
+
+    <!-- Error State -->
+    <div id="error" class="error hidden">
+      <p class="error-icon">&#9888;</p>
+      <p id="error-message">Unable to analyze this page.</p>
+      <button id="retry-btn" class="btn btn-primary">Try Again</button>
+    </div>
+
+    <!-- Results -->
+    <div id="results" class="results hidden">
+      <!-- Overall Score -->
+      <div id="score-section" class="score-section">
+        <div class="score-ring" id="score-ring">
+          <svg viewBox="0 0 120 120">
+            <circle class="score-ring-bg" cx="60" cy="60" r="52" />
+            <circle class="score-ring-fill" id="score-circle" cx="60" cy="60" r="52" />
+          </svg>
+          <div class="score-value" id="score-value">0</div>
+        </div>
+        <div class="score-label" id="score-label">SEO Score</div>
+      </div>
+
+      <!-- Checks List -->
+      <div id="checks-list" class="checks-list"></div>
+
+      <!-- Footer -->
+      <footer class="footer">
+        <span class="footer-brand">SEOPilot Lite v1.0</span>
+        <span class="footer-privacy">100% private &mdash; no data sent</span>
+      </footer>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
