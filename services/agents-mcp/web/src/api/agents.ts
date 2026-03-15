@@ -35,3 +35,37 @@ export async function fetchAllUsage(): Promise<AgentUsageSummary[]> {
   if (!res.ok) throw new Error(`Failed to fetch usage: ${res.status}`);
   return res.json();
 }
+
+export interface JournalEntry {
+  date: string;
+  filename: string;
+}
+
+export interface JournalListResponse {
+  journals: JournalEntry[];
+  total: number;
+}
+
+export interface JournalContent {
+  date: string;
+  content: string;
+}
+
+export async function fetchAgentJournals(
+  id: string,
+  limit = 7,
+  offset = 0,
+): Promise<JournalListResponse> {
+  const res = await fetch(`/api/v1/agents/${id}/journals?limit=${limit}&offset=${offset}`);
+  if (!res.ok) throw new Error(`Failed to fetch journals for ${id}: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchAgentJournal(
+  id: string,
+  date: string,
+): Promise<JournalContent> {
+  const res = await fetch(`/api/v1/agents/${id}/journals/${date}`);
+  if (!res.ok) throw new Error(`Failed to fetch journal for ${id} on ${date}: ${res.status}`);
+  return res.json();
+}

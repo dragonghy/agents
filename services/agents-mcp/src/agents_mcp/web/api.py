@@ -391,6 +391,75 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
         usage = await store.get_agent_usage(agent_id)
         return JSONResponse(usage)
 
+    # ── Journals ──
+
+    def _get_root_dir() -> str:
+        config_path = os.environ.get("AGENTS_CONFIG_PATH", ".")
+        return os.path.dirname(os.path.abspath(config_path))
+
+    async def list_agent_journals(request: Request) -> JSONResponse:
+        agent_id = request.path_params["id"]
+        cfg = get_config()
+        agents_expanded = resolve_agents(cfg)
+        if agent_id not in agents_expanded:
+            return JSONResponse({"error": f"Agent {agent_id} not found"}, status_code=404)
+
+        root_dir = _get_root_dir()
+        journal_dir = os.path.join(root_dir, "agents", agent_id, "journal")
+
+        if not os.path.isdir(journal_dir):
+            return JSONResponse({"journals": [], "total": 0})
+
+        # Collect all YYYY-MM-DD.md files
+        date_re = re.compile(r"^(\d{4}-\d{2}-\d{2})\.md$")
+        entries = []
+        for fname in os.listdir(journal_dir):
+            m = date_re.match(fname)
+            if m:
+                entries.append({"date": m.group(1), "filename": fname})
+
+        # Sort by date descending (newest first)
+        entries.sort(key=lambda e: e["date"], reverse=True)
+        total = len(entries)
+
+        # Pagination
+        params = request.query_params
+        limit = int(params.get("limit", "7"))
+        offset = int(params.get("offset", "0"))
+        entries = entries[offset:offset + limit]
+
+        return JSONResponse({"journals": entries, "total": total})
+
+    async def get_agent_journal(request: Request) -> JSONResponse:
+        agent_id = request.path_params["id"]
+        date = request.path_params["date"]
+
+        # Validate date format to prevent path traversal
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+            return JSONResponse(
+                {"error": "Invalid date format. Use YYYY-MM-DD."},
+                status_code=400,
+            )
+
+        cfg = get_config()
+        agents_expanded = resolve_agents(cfg)
+        if agent_id not in agents_expanded:
+            return JSONResponse({"error": f"Agent {agent_id} not found"}, status_code=404)
+
+        root_dir = _get_root_dir()
+        journal_path = os.path.join(root_dir, "agents", agent_id, "journal", f"{date}.md")
+
+        if not os.path.isfile(journal_path):
+            return JSONResponse(
+                {"error": f"No journal found for {agent_id} on {date}"},
+                status_code=404,
+            )
+
+        with open(journal_path, encoding="utf-8") as f:
+            content = f.read()
+
+        return JSONResponse({"date": date, "content": content})
+
     # ── Health ──
 
     async def health(request: Request) -> JSONResponse:
@@ -435,6 +504,8 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
         Route("/v1/agents/{id}/terminal", get_agent_terminal),
         Route("/v1/agents/{id}/usage", get_agent_usage),
         Route("/v1/agents/{id}/usage/refresh", refresh_agent_usage, methods=["POST"]),
+        Route("/v1/agents/{id}/journals/{date}", get_agent_journal),
+        Route("/v1/agents/{id}/journals", list_agent_journals),
         Route("/v1/agents/{id}", get_agent),
         Route("/v1/usage", get_all_usage),
         Route("/v1/tickets/{id}/comments", ticket_comments, methods=["GET", "POST"]),

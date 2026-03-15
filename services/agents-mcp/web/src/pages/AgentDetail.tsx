@@ -7,6 +7,7 @@ import type { Agent } from '../types/agent';
 import type { Ticket } from '../types/ticket';
 import StatusBadge from '../components/StatusBadge';
 import TokenUsagePanel from '../components/TokenUsage';
+import JournalPanel from '../components/JournalPanel';
 
 const STATUS_LABELS: Record<number, string> = {
   3: 'New',
@@ -285,6 +286,9 @@ export default function AgentDetail() {
               </table>
             )}
           </div>
+
+          {/* Journal */}
+          <JournalPanel agentId={id!} />
         </div>
       </div>
     </div>
