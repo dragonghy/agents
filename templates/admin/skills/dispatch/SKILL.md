@@ -17,7 +17,7 @@ allowed-tools: Bash, mcp__agents__list_tickets, mcp__agents__dispatch_agents
 
 ### 1. 确定目标 agent 列表
 
-- 如果参数是 `all`，目标为所有 dispatchable agent（通过 `python3 /Users/huayang/code/agents/agent-config.py list-workers` 获取）
+- 如果参数是 `all`，目标为所有 dispatchable agent（通过 `python3 agent-config.py list-workers` 获取）
 - 否则目标为指定的单个 agent
 - 只允许 dispatchable agent（不能 dispatch 自己）
 - `agent:human` 不可 dispatch（无对应 tmux window，仅作为 Human 待办提醒）
@@ -32,7 +32,7 @@ tmux list-windows -t agents -F '#{window_name}' 2>/dev/null | grep -qx "<agent>"
 
 - 如果 window 不存在，先用 restart 脚本重启它：
   ```bash
-  /Users/huayang/code/agents/restart_all_agents.sh <agent>
+  ./restart_all_agents.sh <agent>
   ```
   然后等待 5 秒让 agent 启动。
 

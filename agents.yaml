@@ -148,7 +148,7 @@ agents:
     description: 负责 Trading 项目的策略评估、回测分析和股票池管理
     dispatchable: true
     add_dirs:
-      - /Users/huayang/code/trading
+      - ${TRADING_DIR}
     schedule:
       interval_hours: 24
       offset_hours: 6
@@ -161,7 +161,7 @@ agents:
     description: 负责 VM MCP 项目的产品规划和功能改进
     dispatchable: true
     add_dirs:
-      - /Users/huayang/code/vm-mcp
+      - ${VM_MCP_DIR}
     schedule:
       interval_hours: 24
       offset_hours: 9
@@ -174,7 +174,7 @@ agents:
     description: 以用户视角测试 VM MCP 工具的各种使用场景
     dispatchable: true
     add_dirs:
-      - /Users/huayang/code/vm-mcp
+      - ${VM_MCP_DIR}
     schedule:
       interval_hours: 12
       offset_hours: 3

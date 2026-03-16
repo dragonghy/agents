@@ -8,9 +8,9 @@ allowed-tools: Bash, Read, Write, Glob, Grep
 
 ## 1. test-projects 仓库
 
-测试项目统一保存在 `git@github.com:dragonghy/test-projects.git`。
+测试项目统一保存在 `$TEST_PROJECTS_REPO`（Git remote URL，在 `.env` 中配置）。
 
-本地路径通过环境变量 `$TEST_PROJECTS_DIR` 获取（通常为 `/Users/huayang/code/test-projects`）。
+本地路径通过环境变量 `$TEST_PROJECTS_DIR` 获取。
 
 ### 仓库结构
 
@@ -75,7 +75,7 @@ npx vercel --prod --yes --token $VERCEL_TOKEN
 ```markdown
 ## 安装与运行
 
-git clone https://github.com/dragonghy/test-projects.git
+git clone $TEST_PROJECTS_REPO
 cd test-projects/<project-name>
 python3 main.py   # 或 npm install && node index.js
 ```

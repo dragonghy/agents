@@ -97,7 +97,7 @@ agents-mcp --daemon --port 8765
 
 | 问题 | 位置 | 处理方式 |
 |------|------|---------|
-| 绝对路径 `/Users/huayang/code/` | `agents.yaml`, 多个文档 | 改为相对路径或 `$HOME` 变量 |
+| 绝对路径（个人目录） | `agents.yaml`, 多个文档 | 改为相对路径或环境变量 |
 | 个人邮箱 | `agents.yaml` line 8 | 模板化 |
 | 硬编码 project_id | SKILL.md, 文档 | 已部分解决（多项目支持），继续完善 |
 

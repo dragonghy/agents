@@ -83,7 +83,7 @@ leantime:
 
 #### Step 5: 处理绝对路径
 
-`agents.yaml` 中的 `/Users/huayang/code/vm-mcp` 等绝对路径：
+`agents.yaml` 中的绝对路径（如外部项目目录）：
 - 如果 vm-mcp 是可选依赖，改为条件加载或环境变量
 - 如果是必要依赖，改为相对路径或 `${HOME}` 变量
 

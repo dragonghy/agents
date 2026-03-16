@@ -159,7 +159,7 @@ def collect_agent_usage(root_dir: str, agent_id: str,
     """Collect token usage for a single agent across all sessions.
 
     Args:
-        root_dir: Project root directory (e.g. /Users/huayang/code/agents)
+        root_dir: Project root directory (e.g. /path/to/agents)
         agent_id: Agent name (e.g. 'dev-alex')
         scan_state: Previous scan state for incremental scanning.
                     Format: {"<filename>": <last_byte_offset>, ...}
