@@ -69,10 +69,16 @@ function formatWeekLabel(mondayStr: string): string {
   return `${fmt(d)} – ${fmt(sun)}`;
 }
 
-// Get the current quota week start date
+// Get the current quota week start date using local timezone (not UTC).
+// toISOString() returns UTC which can shift the date by a day in western
+// timezones (e.g. PST Sunday 9PM = UTC Monday 5AM), causing the weekly
+// view to jump to the next week prematurely.
 function getCurrentQuotaWeekStart(): string {
   const now = new Date();
-  return getQuotaWeekStart(now.toISOString().slice(0, 10));
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return getQuotaWeekStart(`${y}-${m}-${d}`);
 }
 
 function Skeleton({ className = '' }: { className?: string }) {
