@@ -25,8 +25,11 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
     """
 
     def _get_tmux_status(tmux_session: str, agent: str) -> str:
-        from agents_mcp.dispatcher import get_agent_tmux_status
-        return get_agent_tmux_status(tmux_session, agent)
+        try:
+            from agents_mcp.dispatcher import get_agent_tmux_status
+            return get_agent_tmux_status(tmux_session, agent)
+        except (FileNotFoundError, OSError):
+            return "unavailable"
 
     # ── Agents ──
 
