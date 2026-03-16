@@ -6,6 +6,7 @@ import {
 import { fetchAllUsage, fetchAgentUsage } from '../api/agents';
 import type { AgentUsageSummary, AgentUsage, TokenTotals } from '../types/agent';
 import { formatTokens, totalTokens } from '../utils/format';
+import { calculateCost, calculateCostDefault, calculateTotalCostByModel, formatCost, DEFAULT_PRICING } from '../utils/pricing';
 import { useTheme } from '../hooks/useTheme';
 
 // Color palette for agents (works on both light and dark)
@@ -14,8 +15,27 @@ const AGENT_COLORS = [
   '#ec4899', '#06b6d4', '#84cc16', '#f97316', '#6366f1',
 ];
 
+// Token type colors and labels
+const TOKEN_TYPE_COLORS: Record<string, string> = {
+  input_tokens: '#3b82f6',     // blue
+  output_tokens: '#10b981',    // green
+  cache_read_tokens: '#8b5cf6', // purple
+  cache_write_tokens: '#f59e0b', // amber
+};
+
+const TOKEN_TYPE_LABELS: Record<string, string> = {
+  input_tokens: 'Input',
+  output_tokens: 'Output',
+  cache_read_tokens: 'Cache Read',
+  cache_write_tokens: 'Cache Write',
+};
+
+const TOKEN_TYPES = ['input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens'] as const;
+
 type ViewMode = 'daily' | 'weekly' | 'overall';
 type DateRange = 7 | 14 | 30;
+type CostMode = 'tokens' | 'cost';
+type ChartMode = 'agents' | 'types';
 
 // Quota cycle: resets every Sunday 10:00 PM PST (= Monday 06:00 UTC)
 // Given a date string "YYYY-MM-DD", return the quota week start (Monday 06:00 UTC of that cycle)
@@ -71,8 +91,10 @@ function MetricCard({ label, value, sub }: { label: string; value: string; sub?:
 }
 
 // ---------- custom tooltip for bar chart ----------
-function DailyTooltip({ active, payload, label }: any) {
+function DailyTooltip({ active, payload, label, costMode }: any) {
   if (!active || !payload?.length) return null;
+  const fmt = costMode === 'cost' ? (v: number) => formatCost(v) : formatTokens;
+  const total = payload.reduce((sum: number, entry: any) => sum + (entry.value || 0), 0);
   return (
     <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded shadow-lg p-3 text-sm">
       <div className="font-medium text-gray-800 dark:text-gray-200 mb-1">{label}</div>
@@ -80,9 +102,14 @@ function DailyTooltip({ active, payload, label }: any) {
         <div key={entry.dataKey} className="flex items-center gap-2">
           <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: entry.color }} />
           <span className="text-gray-600 dark:text-gray-400">{entry.name}:</span>
-          <span className="font-medium text-gray-800 dark:text-gray-200">{formatTokens(entry.value)}</span>
+          <span className="font-medium text-gray-800 dark:text-gray-200">{fmt(entry.value)}</span>
         </div>
       ))}
+      {payload.length > 1 && (
+        <div className="border-t border-gray-200 dark:border-gray-600 mt-1 pt-1 font-medium text-gray-800 dark:text-gray-200">
+          Total: {fmt(total)}
+        </div>
+      )}
     </div>
   );
 }
@@ -116,6 +143,7 @@ export default function Tokens() {
   const [selectedAgents, setSelectedAgents] = useState<Set<string>>(new Set());
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
   const [selectedWorkStream, setSelectedWorkStream] = useState<string | null>(null);
+  const [costMode, setCostMode] = useState<CostMode>('tokens');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -265,34 +293,84 @@ export default function Tokens() {
     .reduce((sum, s) => sum + totalTokens(s.today), 0);
   const avgPerAgent = selectedAgents.size > 0 ? totalLifetime / selectedAgents.size : 0;
 
+  // Cost calculations (computed inline, not as hooks, since they're after early returns)
+  let lifetimeCost = 0;
+  if (Object.keys(agentUsages).length > 0) {
+    for (const [agentId, usage] of Object.entries(agentUsages)) {
+      if (!selectedAgents.has(agentId)) continue;
+      lifetimeCost += calculateTotalCostByModel(usage.by_model);
+    }
+  } else {
+    lifetimeCost = usageSummaries
+      .filter(s => selectedAgents.has(s.agent_id))
+      .reduce((sum, s) => sum + calculateCostDefault(s.lifetime), 0);
+  }
+
+  const todayCost = usageSummaries
+    .filter(s => selectedAgents.has(s.agent_id))
+    .reduce((sum, s) => sum + calculateCostDefault(s.today), 0);
+
   return (
     <div>
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-2xl font-bold text-gray-800 dark:text-gray-100">Token Usage</h2>
-        {/* View toggle */}
-        <div className="flex bg-gray-100 dark:bg-gray-800 rounded-lg p-0.5">
-          {(['daily', 'weekly', 'overall'] as ViewMode[]).map((v) => (
-            <button
-              key={v}
-              onClick={() => setView(v)}
-              className={`px-4 py-1.5 text-sm rounded-md capitalize transition-colors ${
-                view === v
-                  ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
-                  : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-              }`}
-            >
-              {v}
-            </button>
-          ))}
+        <div className="flex items-center gap-3">
+          {/* Tokens / Cost toggle */}
+          <div className="flex bg-gray-100 dark:bg-gray-800 rounded-lg p-0.5">
+            {(['tokens', 'cost'] as CostMode[]).map((m) => (
+              <button
+                key={m}
+                onClick={() => setCostMode(m)}
+                className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
+                  costMode === m
+                    ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
+                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+                }`}
+              >
+                {m === 'tokens' ? 'Tokens' : 'Cost ($)'}
+              </button>
+            ))}
+          </div>
+          {/* View toggle */}
+          <div className="flex bg-gray-100 dark:bg-gray-800 rounded-lg p-0.5">
+            {(['daily', 'weekly', 'overall'] as ViewMode[]).map((v) => (
+              <button
+                key={v}
+                onClick={() => setView(v)}
+                className={`px-4 py-1.5 text-sm rounded-md capitalize transition-colors ${
+                  view === v
+                    ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
+                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+                }`}
+              >
+                {v}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
       {/* Metric cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
-        <MetricCard label="Total Lifetime" value={formatTokens(totalLifetime)} sub={`${selectedAgents.size} agents`} />
-        <MetricCard label="Today" value={formatTokens(totalToday)} />
-        <MetricCard label="Avg per Agent" value={formatTokens(avgPerAgent)} />
+        <MetricCard
+          label="Total Lifetime"
+          value={costMode === 'cost' ? formatCost(lifetimeCost) : formatTokens(totalLifetime)}
+          sub={costMode === 'cost'
+            ? `${selectedAgents.size} agents · ${formatTokens(totalLifetime)} tokens`
+            : `${selectedAgents.size} agents · est. ${formatCost(lifetimeCost)}`}
+        />
+        <MetricCard
+          label="Today"
+          value={costMode === 'cost' ? formatCost(todayCost) : formatTokens(totalToday)}
+          sub={costMode === 'cost' ? `${formatTokens(totalToday)} tokens` : `est. ${formatCost(todayCost)}`}
+        />
+        <MetricCard
+          label="Avg per Agent"
+          value={costMode === 'cost'
+            ? formatCost(selectedAgents.size > 0 ? lifetimeCost / selectedAgents.size : 0)
+            : formatTokens(avgPerAgent)}
+        />
       </div>
 
       {/* Filters */}
@@ -397,6 +475,7 @@ export default function Tokens() {
           setDateRange={setDateRange}
           gridColor={gridColor}
           tickColor={tickColor}
+          costMode={costMode}
         />
       ) : view === 'weekly' ? (
         <WeeklyView
@@ -405,6 +484,7 @@ export default function Tokens() {
           agentColorMap={agentColorMap}
           gridColor={gridColor}
           tickColor={tickColor}
+          costMode={costMode}
         />
       ) : (
         <OverallView
@@ -414,6 +494,7 @@ export default function Tokens() {
           agentColorMap={agentColorMap}
           gridColor={gridColor}
           tickColor={tickColor}
+          costMode={costMode}
         />
       )}
     </div>
@@ -422,7 +503,7 @@ export default function Tokens() {
 
 // ---------- Daily View ----------
 function DailyView({
-  agentUsages, selectedAgents, agentColorMap, dateRange, setDateRange, gridColor, tickColor,
+  agentUsages, selectedAgents, agentColorMap, dateRange, setDateRange, gridColor, tickColor, costMode,
 }: {
   agentUsages: Record<string, AgentUsage>;
   selectedAgents: Set<string>;
@@ -431,26 +512,67 @@ function DailyView({
   setDateRange: (r: DateRange) => void;
   gridColor: string;
   tickColor: string;
+  costMode: CostMode;
 }) {
-  // Build merged daily data: { date, agent1: total, agent2: total, ... }
-  const chartData = useMemo(() => {
+  const [chartMode, setChartMode] = useState<ChartMode>('agents');
+
+  // Build agent-stacked daily data: { date, agent1: value, agent2: value, ... }
+  const agentChartData = useMemo(() => {
     const dateMap: Record<string, Record<string, number>> = {};
 
     for (const [agentId, usage] of Object.entries(agentUsages)) {
       if (!selectedAgents.has(agentId)) continue;
       for (const day of usage.daily_totals) {
         if (!dateMap[day.date]) dateMap[day.date] = {};
-        dateMap[day.date][agentId] = totalTokens(day);
+        dateMap[day.date][agentId] = costMode === 'cost'
+          ? calculateCostDefault(day)
+          : totalTokens(day);
       }
     }
 
     return Object.entries(dateMap)
       .sort(([a], [b]) => a.localeCompare(b))
       .slice(-dateRange)
-      .map(([date, agents]) => ({ date: date.slice(5), ...agents })); // MM-DD format
-  }, [agentUsages, selectedAgents, dateRange]);
+      .map(([date, agents]) => ({ date: date.slice(5), ...agents }));
+  }, [agentUsages, selectedAgents, dateRange, costMode]);
 
+  // Build type-stacked daily data: { date, input_tokens: value, output_tokens: value, ... }
+  const typeChartData = useMemo(() => {
+    const dateMap: Record<string, { input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_write_tokens: number }> = {};
+
+    for (const [agentId, usage] of Object.entries(agentUsages)) {
+      if (!selectedAgents.has(agentId)) continue;
+      for (const day of usage.daily_totals) {
+        if (!dateMap[day.date]) {
+          dateMap[day.date] = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0 };
+        }
+        dateMap[day.date].input_tokens += day.input_tokens;
+        dateMap[day.date].output_tokens += day.output_tokens;
+        dateMap[day.date].cache_read_tokens += day.cache_read_tokens;
+        dateMap[day.date].cache_write_tokens += day.cache_write_tokens;
+      }
+    }
+
+    return Object.entries(dateMap)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .slice(-dateRange)
+      .map(([date, types]) => {
+        if (costMode === 'cost') {
+          return {
+            date: date.slice(5),
+            input_tokens: types.input_tokens * DEFAULT_PRICING.input / 1_000_000,
+            output_tokens: types.output_tokens * DEFAULT_PRICING.output / 1_000_000,
+            cache_read_tokens: types.cache_read_tokens * DEFAULT_PRICING.cache_read / 1_000_000,
+            cache_write_tokens: types.cache_write_tokens * DEFAULT_PRICING.cache_write / 1_000_000,
+          };
+        }
+        return { date: date.slice(5), ...types };
+      });
+  }, [agentUsages, selectedAgents, dateRange, costMode]);
+
+  const chartData = chartMode === 'types' ? typeChartData : agentChartData;
   const activeAgentIds = [...selectedAgents].filter(id => id in agentUsages);
+  const valueFmt = costMode === 'cost' ? (v: number) => formatCost(v) : formatTokens;
 
   if (Object.keys(agentUsages).length === 0) {
     return (
@@ -466,21 +588,42 @@ function DailyView({
   return (
     <div className="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-800 p-4">
       <div className="flex items-center justify-between mb-4">
-        <h3 className="font-semibold text-gray-800 dark:text-gray-100">Daily Token Usage</h3>
-        <div className="flex bg-gray-100 dark:bg-gray-800 rounded p-0.5">
-          {([7, 14, 30] as DateRange[]).map((r) => (
-            <button
-              key={r}
-              onClick={() => setDateRange(r)}
-              className={`px-3 py-1 text-xs rounded transition-colors ${
-                dateRange === r
-                  ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
-                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-              }`}
-            >
-              {r}d
-            </button>
-          ))}
+        <h3 className="font-semibold text-gray-800 dark:text-gray-100">
+          Daily {costMode === 'cost' ? 'Cost' : 'Token Usage'}
+        </h3>
+        <div className="flex items-center gap-2">
+          {/* Chart mode: By Agent / By Type */}
+          <div className="flex bg-gray-100 dark:bg-gray-800 rounded p-0.5">
+            {(['agents', 'types'] as ChartMode[]).map((m) => (
+              <button
+                key={m}
+                onClick={() => setChartMode(m)}
+                className={`px-3 py-1 text-xs rounded transition-colors ${
+                  chartMode === m
+                    ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
+                    : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+                }`}
+              >
+                By {m === 'agents' ? 'Agent' : 'Type'}
+              </button>
+            ))}
+          </div>
+          {/* Date range */}
+          <div className="flex bg-gray-100 dark:bg-gray-800 rounded p-0.5">
+            {([7, 14, 30] as DateRange[]).map((r) => (
+              <button
+                key={r}
+                onClick={() => setDateRange(r)}
+                className={`px-3 py-1 text-xs rounded transition-colors ${
+                  dateRange === r
+                    ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
+                    : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+                }`}
+              >
+                {r}d
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -491,19 +634,31 @@ function DailyView({
           <BarChart data={chartData} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
             <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
             <XAxis dataKey="date" tick={{ fill: tickColor, fontSize: 11 }} />
-            <YAxis tick={{ fill: tickColor, fontSize: 11 }} tickFormatter={formatTokens} />
-            <Tooltip content={<DailyTooltip />} />
+            <YAxis tick={{ fill: tickColor, fontSize: 11 }} tickFormatter={valueFmt} />
+            <Tooltip content={<DailyTooltip costMode={costMode} />} />
             <Legend wrapperStyle={{ fontSize: '12px' }} />
-            {activeAgentIds.map((agentId) => (
-              <Bar
-                key={agentId}
-                dataKey={agentId}
-                name={agentId}
-                stackId="tokens"
-                fill={agentColorMap[agentId]}
-                radius={[0, 0, 0, 0]}
-              />
-            ))}
+            {chartMode === 'types'
+              ? TOKEN_TYPES.map((type) => (
+                  <Bar
+                    key={type}
+                    dataKey={type}
+                    name={TOKEN_TYPE_LABELS[type]}
+                    stackId="tokens"
+                    fill={TOKEN_TYPE_COLORS[type]}
+                    radius={[0, 0, 0, 0]}
+                  />
+                ))
+              : activeAgentIds.map((agentId) => (
+                  <Bar
+                    key={agentId}
+                    dataKey={agentId}
+                    name={agentId}
+                    stackId="tokens"
+                    fill={agentColorMap[agentId]}
+                    radius={[0, 0, 0, 0]}
+                  />
+                ))
+            }
           </BarChart>
         </ResponsiveContainer>
       )}
@@ -513,18 +668,20 @@ function DailyView({
 
 // ---------- Weekly View ----------
 function WeeklyView({
-  agentUsages, selectedAgents, agentColorMap, gridColor, tickColor,
+  agentUsages, selectedAgents, agentColorMap, gridColor, tickColor, costMode,
 }: {
   agentUsages: Record<string, AgentUsage>;
   selectedAgents: Set<string>;
   agentColorMap: Record<string, string>;
   gridColor: string;
   tickColor: string;
+  costMode: CostMode;
 }) {
+  const [chartMode, setChartMode] = useState<ChartMode>('agents');
   const currentWeekStart = useMemo(() => getCurrentQuotaWeekStart(), []);
 
-  // Build weekly aggregated data: { weekLabel, agent1: total, agent2: total, ... }
-  const { chartData, weekCount } = useMemo(() => {
+  // Build agent-stacked weekly data
+  const { agentChartData, weekCount } = useMemo(() => {
     const weekMap: Record<string, Record<string, number>> = {};
 
     for (const [agentId, usage] of Object.entries(agentUsages)) {
@@ -532,21 +689,59 @@ function WeeklyView({
       for (const day of usage.daily_totals) {
         const weekStart = getQuotaWeekStart(day.date);
         if (!weekMap[weekStart]) weekMap[weekStart] = {};
-        weekMap[weekStart][agentId] = (weekMap[weekStart][agentId] || 0) + totalTokens(day);
+        const val = costMode === 'cost' ? calculateCostDefault(day) : totalTokens(day);
+        weekMap[weekStart][agentId] = (weekMap[weekStart][agentId] || 0) + val;
       }
     }
 
     const sorted = Object.entries(weekMap)
       .sort(([a], [b]) => a.localeCompare(b))
-      .slice(-8) // last 8 weeks
+      .slice(-8)
       .map(([weekStart, agents]) => ({
         week: formatWeekLabel(weekStart),
         weekStart,
         ...agents,
       }));
 
-    return { chartData: sorted, weekCount: sorted.length };
-  }, [agentUsages, selectedAgents]);
+    return { agentChartData: sorted, weekCount: sorted.length };
+  }, [agentUsages, selectedAgents, costMode]);
+
+  // Build type-stacked weekly data
+  const typeChartData = useMemo(() => {
+    const weekMap: Record<string, { input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_write_tokens: number }> = {};
+
+    for (const [agentId, usage] of Object.entries(agentUsages)) {
+      if (!selectedAgents.has(agentId)) continue;
+      for (const day of usage.daily_totals) {
+        const weekStart = getQuotaWeekStart(day.date);
+        if (!weekMap[weekStart]) {
+          weekMap[weekStart] = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0 };
+        }
+        weekMap[weekStart].input_tokens += day.input_tokens;
+        weekMap[weekStart].output_tokens += day.output_tokens;
+        weekMap[weekStart].cache_read_tokens += day.cache_read_tokens;
+        weekMap[weekStart].cache_write_tokens += day.cache_write_tokens;
+      }
+    }
+
+    return Object.entries(weekMap)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .slice(-8)
+      .map(([weekStart, types]) => {
+        const row: any = { week: formatWeekLabel(weekStart), weekStart };
+        if (costMode === 'cost') {
+          row.input_tokens = types.input_tokens * DEFAULT_PRICING.input / 1_000_000;
+          row.output_tokens = types.output_tokens * DEFAULT_PRICING.output / 1_000_000;
+          row.cache_read_tokens = types.cache_read_tokens * DEFAULT_PRICING.cache_read / 1_000_000;
+          row.cache_write_tokens = types.cache_write_tokens * DEFAULT_PRICING.cache_write / 1_000_000;
+        } else {
+          Object.assign(row, types);
+        }
+        return row;
+      });
+  }, [agentUsages, selectedAgents, costMode]);
+
+  const chartData = chartMode === 'types' ? typeChartData : agentChartData;
 
   // This week's usage for the metric card
   const thisWeekTotal = useMemo(() => {
@@ -555,30 +750,45 @@ function WeeklyView({
       if (!selectedAgents.has(agentId)) continue;
       for (const day of usage.daily_totals) {
         if (getQuotaWeekStart(day.date) === currentWeekStart) {
-          total += totalTokens(day);
+          total += costMode === 'cost' ? calculateCostDefault(day) : totalTokens(day);
         }
       }
     }
     return total;
-  }, [agentUsages, selectedAgents, currentWeekStart]);
+  }, [agentUsages, selectedAgents, currentWeekStart, costMode]);
 
-  // This week's per-agent ranking
+  // This week's per-agent ranking (always track both tokens + cost)
   const weeklyRanking = useMemo(() => {
-    const agentTotals: Record<string, number> = {};
+    const agentTotals: Record<string, { tokens: number; cost: number }> = {};
     for (const [agentId, usage] of Object.entries(agentUsages)) {
       if (!selectedAgents.has(agentId)) continue;
       for (const day of usage.daily_totals) {
         if (getQuotaWeekStart(day.date) === currentWeekStart) {
-          agentTotals[agentId] = (agentTotals[agentId] || 0) + totalTokens(day);
+          if (!agentTotals[agentId]) agentTotals[agentId] = { tokens: 0, cost: 0 };
+          agentTotals[agentId].tokens += totalTokens(day);
+          agentTotals[agentId].cost += calculateCostDefault(day);
         }
       }
     }
     return Object.entries(agentTotals)
-      .sort(([, a], [, b]) => b - a)
-      .map(([agent_id, total]) => ({ agent_id, total }));
+      .sort(([, a], [, b]) => b.tokens - a.tokens)
+      .map(([agent_id, data]) => ({ agent_id, ...data }));
   }, [agentUsages, selectedAgents, currentWeekStart]);
 
   const activeAgentIds = [...selectedAgents].filter(id => id in agentUsages);
+  const valueFmt = costMode === 'cost' ? (v: number) => formatCost(v) : formatTokens;
+
+  // Compute avg per week
+  const avgPerWeek = useMemo(() => {
+    if (weekCount === 0) return 0;
+    let total = 0;
+    for (const w of agentChartData) {
+      for (const id of activeAgentIds) {
+        total += (w as any)[id] || 0;
+      }
+    }
+    return total / weekCount;
+  }, [agentChartData, weekCount, activeAgentIds]);
 
   if (Object.keys(agentUsages).length === 0) {
     return (
@@ -593,7 +803,7 @@ function WeeklyView({
 
   return (
     <div className="space-y-6">
-      {/* Quota info + this week metric */}
+      {/* Quota info */}
       <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M12 2a10 10 0 100 20 10 10 0 000-20z" />
@@ -602,20 +812,37 @@ function WeeklyView({
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <MetricCard label="This Week" value={formatTokens(thisWeekTotal)} sub={`${formatWeekLabel(currentWeekStart)}`} />
+        <MetricCard
+          label="This Week"
+          value={valueFmt(thisWeekTotal)}
+          sub={formatWeekLabel(currentWeekStart)}
+        />
         <MetricCard label="Weeks Tracked" value={String(weekCount)} />
-        <MetricCard label="Avg per Week" value={formatTokens(weekCount > 0 ? chartData.reduce((sum, w) => {
-          let weekTotal = 0;
-          for (const id of activeAgentIds) {
-            weekTotal += (w as any)[id] || 0;
-          }
-          return sum + weekTotal;
-        }, 0) / weekCount : 0)} />
+        <MetricCard label="Avg per Week" value={valueFmt(avgPerWeek)} />
       </div>
 
       {/* Weekly stacked bar chart */}
       <div className="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-800 p-4">
-        <h3 className="font-semibold text-gray-800 dark:text-gray-100 mb-4">Weekly Token Usage</h3>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-semibold text-gray-800 dark:text-gray-100">
+            Weekly {costMode === 'cost' ? 'Cost' : 'Token Usage'}
+          </h3>
+          <div className="flex bg-gray-100 dark:bg-gray-800 rounded p-0.5">
+            {(['agents', 'types'] as ChartMode[]).map((m) => (
+              <button
+                key={m}
+                onClick={() => setChartMode(m)}
+                className={`px-3 py-1 text-xs rounded transition-colors ${
+                  chartMode === m
+                    ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
+                    : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+                }`}
+              >
+                By {m === 'agents' ? 'Agent' : 'Type'}
+              </button>
+            ))}
+          </div>
+        </div>
         {chartData.length === 0 ? (
           <p className="text-sm text-gray-400 dark:text-gray-500 text-center py-12">No weekly data available for selected agents.</p>
         ) : (
@@ -623,19 +850,31 @@ function WeeklyView({
             <BarChart data={chartData} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
               <XAxis dataKey="week" tick={{ fill: tickColor, fontSize: 10 }} />
-              <YAxis tick={{ fill: tickColor, fontSize: 11 }} tickFormatter={formatTokens} />
-              <Tooltip content={<DailyTooltip />} />
+              <YAxis tick={{ fill: tickColor, fontSize: 11 }} tickFormatter={valueFmt} />
+              <Tooltip content={<DailyTooltip costMode={costMode} />} />
               <Legend wrapperStyle={{ fontSize: '12px' }} />
-              {activeAgentIds.map((agentId) => (
-                <Bar
-                  key={agentId}
-                  dataKey={agentId}
-                  name={agentId}
-                  stackId="tokens"
-                  fill={agentColorMap[agentId]}
-                  radius={[0, 0, 0, 0]}
-                />
-              ))}
+              {chartMode === 'types'
+                ? TOKEN_TYPES.map((type) => (
+                    <Bar
+                      key={type}
+                      dataKey={type}
+                      name={TOKEN_TYPE_LABELS[type]}
+                      stackId="tokens"
+                      fill={TOKEN_TYPE_COLORS[type]}
+                      radius={[0, 0, 0, 0]}
+                    />
+                  ))
+                : activeAgentIds.map((agentId) => (
+                    <Bar
+                      key={agentId}
+                      dataKey={agentId}
+                      name={agentId}
+                      stackId="tokens"
+                      fill={agentColorMap[agentId]}
+                      radius={[0, 0, 0, 0]}
+                    />
+                  ))
+              }
             </BarChart>
           </ResponsiveContainer>
         )}
@@ -653,25 +892,30 @@ function WeeklyView({
                 <th className="text-left px-3 py-2 font-medium text-gray-600 dark:text-gray-300">#</th>
                 <th className="text-left px-3 py-2 font-medium text-gray-600 dark:text-gray-300">Agent</th>
                 <th className="text-right px-3 py-2 font-medium text-gray-600 dark:text-gray-300">Tokens</th>
+                <th className="text-right px-3 py-2 font-medium text-gray-600 dark:text-gray-300">Cost</th>
                 <th className="text-right px-3 py-2 font-medium text-gray-600 dark:text-gray-300">Share</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-              {weeklyRanking.map((r, i) => (
-                <tr key={r.agent_id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
-                  <td className="px-3 py-2 text-gray-400">{i + 1}</td>
-                  <td className="px-3 py-2">
-                    <div className="flex items-center gap-2">
-                      <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: agentColorMap[r.agent_id] }} />
-                      <span className="text-gray-800 dark:text-gray-200">{r.agent_id}</span>
-                    </div>
-                  </td>
-                  <td className="px-3 py-2 text-right text-blue-600 dark:text-blue-400">{formatTokens(r.total)}</td>
-                  <td className="px-3 py-2 text-right text-gray-500 dark:text-gray-400">
-                    {thisWeekTotal > 0 ? `${((r.total / thisWeekTotal) * 100).toFixed(1)}%` : '-'}
-                  </td>
-                </tr>
-              ))}
+              {weeklyRanking.map((r, i) => {
+                const totalTokensWeek = weeklyRanking.reduce((sum, x) => sum + x.tokens, 0);
+                return (
+                  <tr key={r.agent_id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                    <td className="px-3 py-2 text-gray-400">{i + 1}</td>
+                    <td className="px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: agentColorMap[r.agent_id] }} />
+                        <span className="text-gray-800 dark:text-gray-200">{r.agent_id}</span>
+                      </div>
+                    </td>
+                    <td className="px-3 py-2 text-right text-blue-600 dark:text-blue-400">{formatTokens(r.tokens)}</td>
+                    <td className="px-3 py-2 text-right text-emerald-600 dark:text-emerald-400">{formatCost(r.cost)}</td>
+                    <td className="px-3 py-2 text-right text-gray-500 dark:text-gray-400">
+                      {totalTokensWeek > 0 ? `${((r.tokens / totalTokensWeek) * 100).toFixed(1)}%` : '-'}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}
@@ -682,7 +926,7 @@ function WeeklyView({
 
 // ---------- Overall View ----------
 function OverallView({
-  usageSummaries, agentUsages, selectedAgents, agentColorMap, gridColor, tickColor,
+  usageSummaries, agentUsages, selectedAgents, agentColorMap, gridColor, tickColor, costMode,
 }: {
   usageSummaries: AgentUsageSummary[];
   agentUsages: Record<string, AgentUsage>;
@@ -690,6 +934,7 @@ function OverallView({
   agentColorMap: Record<string, string>;
   gridColor: string;
   tickColor: string;
+  costMode: CostMode;
 }) {
   // Pie chart data
   const pieData = useMemo(() => {
@@ -706,19 +951,28 @@ function OverallView({
     }).filter(d => d.value > 0).sort((a, b) => b.value - a.value);
   }, [usageSummaries, selectedAgents, agentColorMap]);
 
-  // Ranking data for table
+  // Ranking data for table (with cost)
   const rankingData = useMemo(() => {
     return usageSummaries
       .filter(s => selectedAgents.has(s.agent_id))
-      .map(s => ({
-        agent_id: s.agent_id,
-        today: s.today,
-        lifetime: s.lifetime,
-        todayTotal: totalTokens(s.today),
-        lifetimeTotal: totalTokens(s.lifetime),
-      }))
+      .map(s => {
+        // Use per-model pricing if available, else default
+        const agentUsage = agentUsages[s.agent_id];
+        const lifetimeCost = agentUsage
+          ? calculateTotalCostByModel(agentUsage.by_model)
+          : calculateCostDefault(s.lifetime);
+        return {
+          agent_id: s.agent_id,
+          today: s.today,
+          lifetime: s.lifetime,
+          todayTotal: totalTokens(s.today),
+          lifetimeTotal: totalTokens(s.lifetime),
+          todayCost: calculateCostDefault(s.today),
+          lifetimeCost,
+        };
+      })
       .sort((a, b) => b.lifetimeTotal - a.lifetimeTotal);
-  }, [usageSummaries, selectedAgents]);
+  }, [usageSummaries, agentUsages, selectedAgents]);
 
   // Merged by_model data
   const modelData = useMemo(() => {
@@ -739,6 +993,8 @@ function OverallView({
     return Object.entries(merged)
       .sort(([, a], [, b]) => totalTokens(b) - totalTokens(a));
   }, [agentUsages, selectedAgents]);
+
+  const valueFmt = costMode === 'cost' ? (v: number) => formatCost(v) : formatTokens;
 
   return (
     <div className="space-y-6">
@@ -783,6 +1039,7 @@ function OverallView({
                 <th className="text-left px-3 py-2 font-medium text-gray-600 dark:text-gray-300">Agent</th>
                 <th className="text-right px-3 py-2 font-medium text-gray-600 dark:text-gray-300">Today</th>
                 <th className="text-right px-3 py-2 font-medium text-gray-600 dark:text-gray-300">Lifetime</th>
+                <th className="text-right px-3 py-2 font-medium text-gray-600 dark:text-gray-300">Cost</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
@@ -796,6 +1053,7 @@ function OverallView({
                   </td>
                   <td className="px-3 py-2 text-right text-blue-600 dark:text-blue-400">{formatTokens(r.todayTotal)}</td>
                   <td className="px-3 py-2 text-right text-blue-600 dark:text-blue-400">{formatTokens(r.lifetimeTotal)}</td>
+                  <td className="px-3 py-2 text-right text-emerald-600 dark:text-emerald-400">{formatCost(r.lifetimeCost)}</td>
                 </tr>
               ))}
             </tbody>
@@ -805,7 +1063,9 @@ function OverallView({
 
       {/* Token breakdown by type */}
       <div className="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-800 p-4">
-        <h3 className="font-semibold text-gray-800 dark:text-gray-100 mb-4">Token Breakdown</h3>
+        <h3 className="font-semibold text-gray-800 dark:text-gray-100 mb-4">
+          Token Breakdown {costMode === 'cost' ? '(Cost)' : ''}
+        </h3>
         {(() => {
           // Aggregate token types across selected agents
           const breakdown = usageSummaries
@@ -819,20 +1079,27 @@ function OverallView({
               }),
               { input: 0, output: 0, cache_read: 0, cache_write: 0 }
             );
-          const barData = [
-            { name: 'Input', value: breakdown.input, fill: '#3b82f6' },
-            { name: 'Output', value: breakdown.output, fill: '#10b981' },
-            { name: 'Cache Read', value: breakdown.cache_read, fill: '#8b5cf6' },
-            { name: 'Cache Write', value: breakdown.cache_write, fill: '#f59e0b' },
-          ];
+          const barData = costMode === 'cost'
+            ? [
+                { name: 'Input', value: breakdown.input * DEFAULT_PRICING.input / 1_000_000, fill: '#3b82f6' },
+                { name: 'Output', value: breakdown.output * DEFAULT_PRICING.output / 1_000_000, fill: '#10b981' },
+                { name: 'Cache Read', value: breakdown.cache_read * DEFAULT_PRICING.cache_read / 1_000_000, fill: '#8b5cf6' },
+                { name: 'Cache Write', value: breakdown.cache_write * DEFAULT_PRICING.cache_write / 1_000_000, fill: '#f59e0b' },
+              ]
+            : [
+                { name: 'Input', value: breakdown.input, fill: '#3b82f6' },
+                { name: 'Output', value: breakdown.output, fill: '#10b981' },
+                { name: 'Cache Read', value: breakdown.cache_read, fill: '#8b5cf6' },
+                { name: 'Cache Write', value: breakdown.cache_write, fill: '#f59e0b' },
+              ];
           return (
             <ResponsiveContainer width="100%" height={200}>
               <BarChart data={barData} layout="vertical" margin={{ top: 5, right: 30, left: 80, bottom: 5 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
-                <XAxis type="number" tick={{ fill: tickColor, fontSize: 11 }} tickFormatter={formatTokens} />
+                <XAxis type="number" tick={{ fill: tickColor, fontSize: 11 }} tickFormatter={valueFmt} />
                 <YAxis type="category" dataKey="name" tick={{ fill: tickColor, fontSize: 12 }} width={75} />
-                <Tooltip formatter={(value) => formatTokens(Number(value))} />
-                <Bar dataKey="value" name="Tokens" radius={[0, 4, 4, 0]}>
+                <Tooltip formatter={(value) => valueFmt(Number(value))} />
+                <Bar dataKey="value" name={costMode === 'cost' ? 'Cost' : 'Tokens'} radius={[0, 4, 4, 0]}>
                   {barData.map((entry, i) => (
                     <Cell key={i} fill={entry.fill} />
                   ))}
@@ -847,32 +1114,61 @@ function OverallView({
       {modelData.length > 0 && (
         <div className="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-800 p-4">
           <h3 className="font-semibold text-gray-800 dark:text-gray-100 mb-4">By Model</h3>
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50 dark:bg-gray-800">
-              <tr>
-                <th className="text-left px-3 py-2 font-medium text-gray-600 dark:text-gray-300">Model</th>
-                <th className="text-right px-3 py-2 font-medium text-gray-600 dark:text-gray-300">Input</th>
-                <th className="text-right px-3 py-2 font-medium text-gray-600 dark:text-gray-300">Output</th>
-                <th className="text-right px-3 py-2 font-medium text-gray-600 dark:text-gray-300">Cache R</th>
-                <th className="text-right px-3 py-2 font-medium text-gray-600 dark:text-gray-300">Cache W</th>
-                <th className="text-right px-3 py-2 font-medium text-gray-600 dark:text-gray-300">Total</th>
-                <th className="text-right px-3 py-2 font-medium text-gray-600 dark:text-gray-300">Msgs</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-              {modelData.map(([model, totals]) => (
-                <tr key={model} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
-                  <td className="px-3 py-2 text-gray-800 dark:text-gray-200 font-mono text-xs">{model}</td>
-                  <td className="px-3 py-2 text-right text-blue-600 dark:text-blue-400">{formatTokens(totals.input_tokens)}</td>
-                  <td className="px-3 py-2 text-right text-green-600 dark:text-green-400">{formatTokens(totals.output_tokens)}</td>
-                  <td className="px-3 py-2 text-right text-purple-600 dark:text-purple-400">{formatTokens(totals.cache_read_tokens)}</td>
-                  <td className="px-3 py-2 text-right text-orange-600 dark:text-orange-400">{formatTokens(totals.cache_write_tokens)}</td>
-                  <td className="px-3 py-2 text-right font-medium text-gray-800 dark:text-gray-200">{formatTokens(totalTokens(totals))}</td>
-                  <td className="px-3 py-2 text-right text-gray-600 dark:text-gray-400">{totals.message_count}</td>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 dark:bg-gray-800">
+                <tr>
+                  <th className="text-left px-3 py-2 font-medium text-gray-600 dark:text-gray-300">Model</th>
+                  <th className="text-right px-3 py-2 font-medium text-gray-600 dark:text-gray-300">Input</th>
+                  <th className="text-right px-3 py-2 font-medium text-gray-600 dark:text-gray-300">Output</th>
+                  <th className="text-right px-3 py-2 font-medium text-gray-600 dark:text-gray-300">Cache R</th>
+                  <th className="text-right px-3 py-2 font-medium text-gray-600 dark:text-gray-300">Cache W</th>
+                  <th className="text-right px-3 py-2 font-medium text-gray-600 dark:text-gray-300">Total</th>
+                  <th className="text-right px-3 py-2 font-medium text-gray-600 dark:text-gray-300">Cost</th>
+                  <th className="text-right px-3 py-2 font-medium text-gray-600 dark:text-gray-300">Msgs</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                {modelData.map(([model, totals]) => (
+                  <tr key={model} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                    <td className="px-3 py-2 text-gray-800 dark:text-gray-200 font-mono text-xs">{model}</td>
+                    <td className="px-3 py-2 text-right text-blue-600 dark:text-blue-400">{formatTokens(totals.input_tokens)}</td>
+                    <td className="px-3 py-2 text-right text-green-600 dark:text-green-400">{formatTokens(totals.output_tokens)}</td>
+                    <td className="px-3 py-2 text-right text-purple-600 dark:text-purple-400">{formatTokens(totals.cache_read_tokens)}</td>
+                    <td className="px-3 py-2 text-right text-orange-600 dark:text-orange-400">{formatTokens(totals.cache_write_tokens)}</td>
+                    <td className="px-3 py-2 text-right font-medium text-gray-800 dark:text-gray-200">{formatTokens(totalTokens(totals))}</td>
+                    <td className="px-3 py-2 text-right font-medium text-emerald-600 dark:text-emerald-400">{formatCost(calculateCost(totals, model))}</td>
+                    <td className="px-3 py-2 text-right text-gray-600 dark:text-gray-400">{totals.message_count}</td>
+                  </tr>
+                ))}
+                {modelData.length > 1 && (() => {
+                  const totalRow = modelData.reduce(
+                    (acc, [, t]) => ({
+                      input_tokens: acc.input_tokens + t.input_tokens,
+                      output_tokens: acc.output_tokens + t.output_tokens,
+                      cache_read_tokens: acc.cache_read_tokens + t.cache_read_tokens,
+                      cache_write_tokens: acc.cache_write_tokens + t.cache_write_tokens,
+                      message_count: acc.message_count + t.message_count,
+                    }),
+                    { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, message_count: 0 }
+                  );
+                  const totalCost = modelData.reduce((sum, [model, totals]) => sum + calculateCost(totals, model), 0);
+                  return (
+                    <tr className="bg-gray-50 dark:bg-gray-800 font-medium">
+                      <td className="px-3 py-2 text-gray-800 dark:text-gray-200">Total</td>
+                      <td className="px-3 py-2 text-right text-blue-600 dark:text-blue-400">{formatTokens(totalRow.input_tokens)}</td>
+                      <td className="px-3 py-2 text-right text-green-600 dark:text-green-400">{formatTokens(totalRow.output_tokens)}</td>
+                      <td className="px-3 py-2 text-right text-purple-600 dark:text-purple-400">{formatTokens(totalRow.cache_read_tokens)}</td>
+                      <td className="px-3 py-2 text-right text-orange-600 dark:text-orange-400">{formatTokens(totalRow.cache_write_tokens)}</td>
+                      <td className="px-3 py-2 text-right text-gray-800 dark:text-gray-200">{formatTokens(totalTokens(totalRow))}</td>
+                      <td className="px-3 py-2 text-right text-emerald-600 dark:text-emerald-400">{formatCost(totalCost)}</td>
+                      <td className="px-3 py-2 text-right text-gray-600 dark:text-gray-400">{totalRow.message_count}</td>
+                    </tr>
+                  );
+                })()}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>
