@@ -7,6 +7,7 @@ Unified MCP providing:
 """
 
 import asyncio
+import functools
 import json
 import logging
 import os
@@ -128,11 +129,71 @@ async def get_store() -> AgentStore:
 
 
 # ════════════════════════════════════════
+# Tool timeout protection
+# ════════════════════════════════════════
+
+# Tiered timeouts by tool category (seconds)
+_TOOL_TIMEOUTS = {
+    # Fast tools: simple DB reads/writes (30s)
+    "list_tickets": 30,
+    "get_ticket": 30,
+    "get_comments": 30,
+    "add_comment": 30,
+    "get_status_labels": 30,
+    "get_all_subtasks": 30,
+    "update_profile": 30,
+    "get_profile": 30,
+    "list_agents": 30,
+    "get_inbox": 30,
+    "get_conversation": 30,
+    "send_message": 30,
+    "mark_messages_read": 30,
+    # Medium tools: involve more logic or external calls (120s)
+    "create_ticket": 120,
+    "update_ticket": 120,
+    "reassign_ticket": 120,
+    "upsert_subtask": 120,
+    "suggest_assignee": 120,
+    "get_agent_status": 120,
+    "get_schedules": 120,
+    "schedule_task": 120,
+    "remove_schedule": 120,
+    # Slow tools: involve subprocess, tmux, or heavy operations (300s)
+    "dispatch_agents": 300,
+    "request_restart": 300,
+}
+_DEFAULT_TOOL_TIMEOUT = 120
+
+
+def _with_timeout(fn):
+    """Decorator that wraps an async tool handler with asyncio.wait_for timeout.
+
+    On timeout, returns a JSON error instead of hanging forever.
+    """
+    timeout = _TOOL_TIMEOUTS.get(fn.__name__, _DEFAULT_TOOL_TIMEOUT)
+
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        try:
+            return await asyncio.wait_for(fn(*args, **kwargs), timeout=timeout)
+        except asyncio.TimeoutError:
+            msg = (
+                f"Tool '{fn.__name__}' timed out after {timeout}s. "
+                f"The daemon may be overloaded. Please retry."
+            )
+            logger.warning(msg)
+            return json.dumps({"error": msg})
+
+    return wrapper
+
+
+# ════════════════════════════════════════
 # Task Management Tools
 # ════════════════════════════════════════
 
 
 @app.tool()
+@_with_timeout
 async def list_tickets(
     project_id: int = None,
     status: str = None,
@@ -163,6 +224,7 @@ async def list_tickets(
 
 
 @app.tool()
+@_with_timeout
 async def get_ticket(ticket_id: int) -> str:
     """Get ticket details by ID. Returns detail fields + assignee (pruned from raw API)."""
     client = get_client()
@@ -171,6 +233,7 @@ async def get_ticket(ticket_id: int) -> str:
 
 
 @app.tool()
+@_with_timeout
 async def create_ticket(
     headline: str,
     project_id: int = None,
@@ -204,6 +267,7 @@ async def create_ticket(
 
 
 @app.tool()
+@_with_timeout
 async def update_ticket(
     ticket_id: int,
     project_id: int = None,
@@ -238,6 +302,7 @@ async def update_ticket(
 
 
 @app.tool()
+@_with_timeout
 async def get_comments(module: str, module_id: int) -> str:
     """Get comments for a ticket or other module."""
     client = get_client()
@@ -246,6 +311,7 @@ async def get_comments(module: str, module_id: int) -> str:
 
 
 @app.tool()
+@_with_timeout
 async def add_comment(module: str, module_id: int, comment: str) -> str:
     """Add a comment to a ticket or other module."""
     client = get_client()
@@ -254,6 +320,7 @@ async def add_comment(module: str, module_id: int, comment: str) -> str:
 
 
 @app.tool()
+@_with_timeout
 async def get_status_labels() -> str:
     """Get available ticket status labels."""
     client = get_client()
@@ -262,6 +329,7 @@ async def get_status_labels() -> str:
 
 
 @app.tool()
+@_with_timeout
 async def get_all_subtasks(ticket_id: int) -> str:
     """Get all subtasks for a ticket."""
     client = get_client()
@@ -270,6 +338,7 @@ async def get_all_subtasks(ticket_id: int) -> str:
 
 
 @app.tool()
+@_with_timeout
 async def upsert_subtask(
     parent_ticket: int,
     headline: str,
@@ -303,6 +372,7 @@ async def upsert_subtask(
 
 
 @app.tool()
+@_with_timeout
 async def list_agents() -> str:
     """List all configured agents with their roles and status.
 
@@ -336,6 +406,7 @@ async def list_agents() -> str:
 
 
 @app.tool()
+@_with_timeout
 async def get_agent_status(agent: str = "all") -> str:
     """Get agent status including tmux state and workload.
 
@@ -374,6 +445,7 @@ async def get_agent_status(agent: str = "all") -> str:
 
 
 @app.tool()
+@_with_timeout
 async def suggest_assignee(role: str = None, task_context: str = None) -> str:
     """Suggest the best agent for a new task based on workload, availability, and expertise.
 
@@ -475,6 +547,7 @@ async def suggest_assignee(role: str = None, task_context: str = None) -> str:
 
 
 @app.tool()
+@_with_timeout
 async def dispatch_agents(agent: str = "all") -> str:
     """Manually trigger dispatch for one or all agents.
 
@@ -507,6 +580,7 @@ async def dispatch_agents(agent: str = "all") -> str:
 
 
 @app.tool()
+@_with_timeout
 async def update_profile(
     agent_id: str,
     identity: str = None,
@@ -539,6 +613,7 @@ async def update_profile(
 
 
 @app.tool()
+@_with_timeout
 async def get_profile(agent_id: str) -> str:
     """Get an agent's profile including their self-description, context, and expertise.
 
@@ -556,6 +631,7 @@ async def get_profile(agent_id: str) -> str:
 
 
 @app.tool()
+@_with_timeout
 async def send_message(from_agent: str, to_agent: str, message: str) -> str:
     """Send a direct message to another agent.
 
@@ -574,6 +650,7 @@ async def send_message(from_agent: str, to_agent: str, message: str) -> str:
 
 
 @app.tool()
+@_with_timeout
 async def get_inbox(
     agent_id: str,
     unread_only: bool = True,
@@ -594,6 +671,7 @@ async def get_inbox(
 
 
 @app.tool()
+@_with_timeout
 async def get_conversation(
     agent_id: str,
     with_agent: str,
@@ -614,6 +692,7 @@ async def get_conversation(
 
 
 @app.tool()
+@_with_timeout
 async def mark_messages_read(agent_id: str, message_ids: str) -> str:
     """Mark messages as read.
 
@@ -628,6 +707,7 @@ async def mark_messages_read(agent_id: str, message_ids: str) -> str:
 
 
 @app.tool()
+@_with_timeout
 async def reassign_ticket(
     ticket_id: int,
     from_agent: str,
@@ -696,6 +776,177 @@ async def reassign_ticket(
 
 
 # ════════════════════════════════════════
+# Agent Lifecycle Tools
+# ════════════════════════════════════════
+
+
+@app.tool()
+@_with_timeout
+async def request_restart(agent_id: str, target_agent_id: str = "", reason: str = "") -> str:
+    """Request a restart of an agent session. Use when MCP tools are broken,
+    session is corrupted, or you need a fresh start.
+
+    Permission model:
+    - Admin agent can restart ANY agent (specify target_agent_id).
+    - All other agents can only restart THEMSELVES (target_agent_id must be empty or same as agent_id).
+
+    After restart, the target agent will receive a continuation message with
+    instructions to resume work. Conversation history is preserved via --resume.
+
+    Args:
+        agent_id: Your agent ID (the agent making the request).
+        target_agent_id: Agent to restart. If empty, restarts yourself. Admin can specify any agent.
+        reason: Why the restart is needed (e.g. 'MCP connections broken').
+    """
+    cfg = get_config()
+    agents_expanded = resolve_agents(cfg)
+
+    if agent_id not in agents_expanded:
+        return json.dumps({"error": f"Unknown caller agent: {agent_id}"})
+
+    # Determine target
+    target = target_agent_id.strip() if target_agent_id else agent_id
+    if target not in agents_expanded:
+        return json.dumps({"error": f"Unknown target agent: {target}"})
+
+    # Permission check: non-admin agents can only restart themselves
+    if agent_id != "admin" and target != agent_id:
+        return json.dumps({
+            "error": f"Permission denied: {agent_id} can only restart itself, not {target}. "
+                     f"Only admin can restart other agents."
+        })
+
+    # Send a continuation message that the target agent will receive after restart
+    store = await get_store()
+    if target == agent_id:
+        requester_info = "由你自己请求"
+    else:
+        requester_info = f"由 {agent_id} 请求"
+
+    continuation_msg = (
+        f"你的 session 已被重启（{requester_info}）。\n"
+        f"原因: {reason or '未指定'}\n\n"
+        f"请执行以下步骤:\n"
+        f"1. 检查 MCP 工具是否正常（尝试调用 list_tickets 或 get_inbox）\n"
+        f"2. 用 get_inbox(agent_id=\"{target}\") 检查未读消息\n"
+        f"3. 用 list_tickets(assignee=\"{target}\", status=\"3,4\") 检查待办任务\n"
+        f"4. 继续之前的工作"
+    )
+    await store.insert_message("system", target, continuation_msg)
+
+    # Run restart in background (don't block MCP response)
+    config_path = os.environ.get("AGENTS_CONFIG_PATH", ".")
+    root_dir = os.path.dirname(os.path.abspath(config_path))
+    restart_script = os.path.join(root_dir, "restart_all_agents.sh")
+
+    async def _do_restart():
+        await asyncio.sleep(2)  # Brief delay to let MCP response go through
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "bash", restart_script, target,
+                cwd=root_dir,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+            if proc.returncode == 0:
+                logger.info(f"Agent {target} restarted successfully (requested by {agent_id}: {reason})")
+            else:
+                logger.error(f"Agent {target} restart failed: {stderr.decode()}")
+        except asyncio.TimeoutError:
+            logger.error(f"Agent {target} restart timed out")
+        except Exception as e:
+            logger.error(f"Agent {target} restart error: {e}")
+
+    asyncio.create_task(_do_restart())
+
+    return json.dumps({
+        "status": "restart_scheduled",
+        "target_agent_id": target,
+        "requested_by": agent_id,
+        "message": f"Restart of {target} will happen in ~2 seconds. A continuation message has been sent.",
+    })
+
+
+# ════════════════════════════════════════
+# Schedule Management Tools
+# ════════════════════════════════════════
+
+
+@app.tool()
+@_with_timeout
+async def schedule_task(
+    agent_id: str,
+    interval_hours: float,
+    prompt: str,
+) -> str:
+    """Create a scheduled task that periodically dispatches an agent with a prompt.
+
+    The schedule runs automatically: when interval_hours elapses since the last
+    dispatch, the agent is woken up with the given prompt message.
+
+    Permission: Admin can create schedules for any agent. Other agents should
+    only create schedules for themselves (enforced by convention).
+
+    Args:
+        agent_id: Target agent ID for the schedule.
+        interval_hours: How often to dispatch (e.g. 24 for daily, 12 for twice daily).
+        prompt: The message to send when the schedule triggers.
+    """
+    store = await get_store()
+    result = await store.create_schedule(agent_id, interval_hours, prompt)
+    logger.info(f"Schedule created: #{result['id']} for {agent_id} every {interval_hours}h")
+    return json.dumps(result, indent=2)
+
+
+@app.tool()
+@_with_timeout
+async def get_schedules(agent_id: str = None) -> str:
+    """Get scheduled tasks for an agent or all agents.
+
+    Args:
+        agent_id: Agent ID to filter by. Pass 'all' or omit to get all schedules
+                  (admin only by convention). Other agents should pass their own ID.
+    """
+    store = await get_store()
+    if agent_id and agent_id != "all":
+        result = await store.get_agent_schedules(agent_id)
+    else:
+        result = await store.get_all_schedules()
+    return json.dumps(result, indent=2)
+
+
+@app.tool()
+@_with_timeout
+async def remove_schedule(schedule_id: int, agent_id: str) -> str:
+    """Remove a scheduled task.
+
+    Permission: Admin can remove any schedule. Other agents can only remove
+    their own schedules (server-side enforced).
+
+    Args:
+        schedule_id: ID of the schedule to remove.
+        agent_id: Your agent ID (for permission check).
+    """
+    store = await get_store()
+    schedule = await store.get_schedule(schedule_id)
+    if not schedule:
+        return json.dumps({"error": f"Schedule #{schedule_id} not found"})
+
+    # Permission check: non-admin agents can only remove their own schedules
+    if agent_id != "admin" and schedule["agent_id"] != agent_id:
+        return json.dumps({
+            "error": f"Permission denied: {agent_id} cannot remove schedule "
+                     f"belonging to {schedule['agent_id']}. Only admin or the "
+                     f"schedule owner can remove it."
+        })
+
+    deleted = await store.delete_schedule(schedule_id)
+    logger.info(f"Schedule #{schedule_id} removed by {agent_id}")
+    return json.dumps({"status": "deleted", "schedule_id": schedule_id})
+
+
+# ════════════════════════════════════════
 # Background auto-dispatch
 # ════════════════════════════════════════
 
@@ -741,40 +992,52 @@ async def _start_auto_dispatch_async():
         logger.info("No dispatchable agents, skipping auto-dispatch")
         return
 
-    # Extract schedule configs for agents that have them
-    schedules = {}
-    for name, info in agents_expanded.items():
-        sched = info.get("schedule")
-        if sched and "interval_hours" in sched and "prompt" in sched:
-            schedules[name] = sched
-
-    # Extract daily journal config and build all-agents list
-    journal_config = cfg.get("daily_journal")
-    all_agents_list = list(agents_expanded.keys())
-
     # Extract staleness detection config
     staleness_cfg = cfg.get("staleness", {})
     staleness_threshold = staleness_cfg.get("threshold_minutes", 30)
 
+    config_path = os.environ.get("AGENTS_CONFIG_PATH", ".")
+    root_dir = os.path.dirname(os.path.abspath(config_path))
+
     client = get_client()
     store = await get_store()
+
+    # Seed schedules from agents.yaml into DB (only for agents with no existing schedule)
+    import time as _time
+    start_time = _time.time()
+    seeded = 0
+    for name, info in agents_expanded.items():
+        sched = info.get("schedule")
+        if sched and "interval_hours" in sched and "prompt" in sched:
+            # Calculate initial last_dispatched_at from offset (stagger first dispatch)
+            offset = sched.get("offset_hours", 0)
+            interval_sec = sched["interval_hours"] * 3600
+            initial_last = start_time - interval_sec + offset * 3600
+            result = await store.seed_schedule(
+                name, sched["interval_hours"], sched["prompt"],
+                last_dispatched_at=initial_last,
+            )
+            if result:
+                seeded += 1
+                logger.info(f"Seeded schedule for {name}: every {sched['interval_hours']}h (offset {offset}h)")
+    if seeded:
+        logger.info(f"Seeded {seeded} schedule(s) from agents.yaml")
+
     _dispatch_task = asyncio.create_task(
         dispatch_loop(client, agents_list, tmux_session, store=store,
-                      interval=30, schedules=schedules,
-                      journal_config=journal_config,
-                      all_agents=all_agents_list,
-                      staleness_threshold=staleness_threshold)
+                      interval=30,
+                      staleness_threshold=staleness_threshold,
+                      root_dir=root_dir)
     )
     logger.info(f"Auto-dispatch background task started for {agents_list}")
 
-    # Start usage collection background task
+    # Start usage collection background task (collect from ALL agents, not just dispatchable)
     global _usage_task
-    config_path = os.environ.get("AGENTS_CONFIG_PATH", ".")
-    root_dir = os.path.dirname(os.path.abspath(config_path))
+    all_agents = list(agents_expanded.keys())
     _usage_task = asyncio.create_task(
-        _usage_collection_loop(root_dir, all_agents_list, interval=300)
+        _usage_collection_loop(root_dir, all_agents, interval=300)
     )
-    logger.info(f"Usage collection background task started for {all_agents_list}")
+    logger.info(f"Usage collection background task started for {all_agents}")
 
 
 # ════════════════════════════════════════
@@ -786,6 +1049,7 @@ def _check_port(host: str, port: int) -> bool:
     """Return True if port is available, False if in use."""
     import socket
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind((host, port))
             return True
@@ -926,9 +1190,21 @@ def main():
                     logger.warning(f"Auto-dispatch not started: {e}")
                 await server.serve()
 
-            asyncio.run(_run_with_dispatch())
+            try:
+                asyncio.run(_run_with_dispatch())
+            except KeyboardInterrupt:
+                logger.info("Daemon stopped by user (KeyboardInterrupt)")
+            except Exception as e:
+                logger.error(f"Daemon crashed: {e}", exc_info=True)
+                raise
         else:
-            asyncio.run(server.serve())
+            try:
+                asyncio.run(server.serve())
+            except KeyboardInterrupt:
+                logger.info("Daemon stopped by user (KeyboardInterrupt)")
+            except Exception as e:
+                logger.error(f"Daemon crashed: {e}", exc_info=True)
+                raise
     else:
         app.run()
 
