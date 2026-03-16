@@ -16,8 +16,8 @@ This guide walks you through setting up Agent-Hub from scratch.
 ## Step 1: Clone and Configure
 
 ```bash
-git clone https://github.com/anthropics/agent-hub.git
-cd agent-hub
+git clone https://github.com/dragonghy/agents.git
+cd agents
 ```
 
 Copy the environment template and fill in your values:
