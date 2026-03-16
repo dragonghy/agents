@@ -5,6 +5,8 @@ import logging
 import os
 import re
 import subprocess
+
+import yaml
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route, Router
@@ -476,6 +478,43 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
 
         return JSONResponse({"date": date, "content": content})
 
+    # ── Schedules ──
+
+    async def schedules_endpoint(request: Request) -> JSONResponse:
+        store = await get_store()
+        if request.method == "POST":
+            body = await request.json()
+            agent_id = body.get("agent_id")
+            interval_hours = body.get("interval_hours")
+            prompt = body.get("prompt")
+            if not all([agent_id, interval_hours, prompt]):
+                return JSONResponse(
+                    {"error": "agent_id, interval_hours, prompt required"},
+                    status_code=400,
+                )
+            result = await store.create_schedule(agent_id, float(interval_hours), prompt)
+            return JSONResponse(result)
+        # GET
+        params = request.query_params
+        agent_id = params.get("agent_id")
+        if agent_id:
+            result = await store.get_agent_schedules(agent_id)
+        else:
+            result = await store.get_all_schedules()
+        return JSONResponse(result)
+
+    async def delete_schedule(request: Request) -> JSONResponse:
+        schedule_id = int(request.path_params["id"])
+        store = await get_store()
+        schedule = await store.get_schedule(schedule_id)
+        if not schedule:
+            return JSONResponse(
+                {"error": f"Schedule #{schedule_id} not found"},
+                status_code=404,
+            )
+        await store.delete_schedule(schedule_id)
+        return JSONResponse({"status": "deleted", "schedule_id": schedule_id})
+
     # ── Health ──
 
     async def health(request: Request) -> JSONResponse:
@@ -514,6 +553,213 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
 
         return JSONResponse(result)
 
+    # ── Onboarding ──
+
+    # Preset team templates for the onboarding wizard
+    _TEAM_TEMPLATES = [
+        {
+            "id": "solo",
+            "name": "Solo Developer",
+            "description": "A single developer agent for personal projects",
+            "agents": [
+                {"name": "admin", "role": "admin", "description": "System administrator"},
+                {"name": "dev-alex", "template": "dev", "role": "dev", "description": "Full-stack developer"},
+            ],
+        },
+        {
+            "id": "standard",
+            "name": "Standard Team",
+            "description": "Balanced team with dev, QA, and product roles",
+            "agents": [
+                {"name": "admin", "role": "admin", "description": "System administrator"},
+                {"name": "product-kevin", "template": "product", "role": "product", "description": "Product manager"},
+                {"name": "dev-alex", "template": "dev", "role": "dev", "description": "Developer"},
+                {"name": "dev-emma", "template": "dev", "role": "dev", "description": "Developer"},
+                {"name": "qa-lucy", "template": "qa", "role": "qa", "description": "QA engineer"},
+            ],
+        },
+        {
+            "id": "full",
+            "name": "Full Team",
+            "description": "Complete team with multiple devs, QAs, product, and user testing",
+            "agents": [
+                {"name": "admin", "role": "admin", "description": "System administrator"},
+                {"name": "product-kevin", "template": "product", "role": "product", "description": "Product manager"},
+                {"name": "dev-alex", "template": "dev", "role": "dev", "description": "Developer"},
+                {"name": "dev-emma", "template": "dev", "role": "dev", "description": "Developer"},
+                {"name": "qa-lucy", "template": "qa", "role": "qa", "description": "QA engineer"},
+                {"name": "qa-oliver", "template": "qa", "role": "qa", "description": "QA engineer"},
+                {"name": "user-sophia", "template": "user", "role": "user", "description": "User experience tester"},
+            ],
+        },
+    ]
+
+    # Role metadata for the frontend
+    _ROLE_INFO = {
+        "admin": {"label": "Administrator", "description": "Manages system configuration and agent lifecycle", "icon": "shield"},
+        "dev": {"label": "Developer", "description": "Writes code, designs systems, runs tests", "icon": "code"},
+        "qa": {"label": "QA Engineer", "description": "Tests features, validates quality, reports bugs", "icon": "check-circle"},
+        "product": {"label": "Product Manager", "description": "Defines requirements, prioritizes work, accepts deliverables", "icon": "clipboard"},
+        "user": {"label": "User Tester", "description": "Tests from end-user perspective, provides UX feedback", "icon": "user"},
+    }
+
+    async def onboarding_status(request: Request) -> JSONResponse:
+        """Check whether onboarding has been completed.
+
+        Returns completed=True if agents.yaml has at least one agent configured
+        (beyond the bare minimum scaffolding).
+        """
+        try:
+            cfg = get_config()
+            agents = cfg.get("agents", {})
+            completed = len(agents) > 0
+        except Exception:
+            completed = False
+
+        return JSONResponse({"completed": completed})
+
+    async def onboarding_templates(request: Request) -> JSONResponse:
+        """Return available team templates and role metadata."""
+        # Check which template directories actually exist
+        root_dir = _get_root_dir()
+        templates_dir = os.path.join(root_dir, "templates")
+        available_roles = set()
+        if os.path.isdir(templates_dir):
+            for entry in os.listdir(templates_dir):
+                if os.path.isdir(os.path.join(templates_dir, entry)) and entry != "shared":
+                    available_roles.add(entry)
+
+        return JSONResponse({
+            "templates": _TEAM_TEMPLATES,
+            "roles": _ROLE_INFO,
+            "available_roles": sorted(available_roles),
+        })
+
+    async def onboarding_setup(request: Request) -> JSONResponse:
+        """Accept onboarding configuration and generate agents.yaml.
+
+        Expected body:
+        {
+            "workspace_dir": "~/workspace",
+            "agents": [
+                {"name": "admin", "role": "admin"},
+                {"name": "dev-alex", "template": "dev", "role": "dev"},
+                ...
+            ]
+        }
+        """
+        body = await request.json()
+        workspace_dir = body.get("workspace_dir", "~/workspace")
+        agent_list = body.get("agents", [])
+
+        if not agent_list:
+            return JSONResponse(
+                {"error": "At least one agent must be configured"},
+                status_code=400,
+            )
+
+        # Validate agent names (must be unique, alphanumeric + hyphens)
+        name_re = re.compile(r"^[a-z][a-z0-9-]*$")
+        seen_names = set()
+        for agent in agent_list:
+            name = agent.get("name", "")
+            if not name or not name_re.match(name):
+                return JSONResponse(
+                    {"error": f"Invalid agent name: '{name}'. Use lowercase letters, numbers, and hyphens."},
+                    status_code=400,
+                )
+            if name in seen_names:
+                return JSONResponse(
+                    {"error": f"Duplicate agent name: '{name}'"},
+                    status_code=400,
+                )
+            seen_names.add(name)
+
+        # Role descriptions
+        role_descriptions = {
+            "admin": ("管理员", "负责全局配置、Skill 管理和 Agent 重启"),
+            "dev": ("开发工程师", "负责技术方案设计、代码实现和开发测试"),
+            "qa": ("QA 工程师", "负责 E2E 测试和需求一致性验证"),
+            "product": ("产品经理", "负责需求分析、任务分发和最终验收"),
+            "user": ("用户体验测试员", "以用户视角测试完整工作流"),
+        }
+
+        # Build agents section
+        agents_section = {}
+        for agent in agent_list:
+            name = agent["name"]
+            role = agent.get("role", "dev")
+            template = agent.get("template", role)
+            role_label, role_desc = role_descriptions.get(role, (role, ""))
+
+            entry = {
+                "project": "default",
+                "work_stream": role,
+                "role": role_label,
+                "description": role_desc,
+                "dispatchable": True,
+            }
+            # Only set template if it differs from the name
+            if template != name:
+                entry["template"] = template
+
+            agents_section[name] = entry
+
+        # Build the full config
+        config = {
+            "workspace_dir": workspace_dir,
+            "tmux_session": "agents",
+            "daemon": {
+                "host": "127.0.0.1",
+                "port": 8765,
+            },
+            "mcp_servers": {
+                "agents": {
+                    "command": "uv",
+                    "args": [
+                        "run",
+                        "--directory",
+                        "{ROOT_DIR}/services/agents-mcp",
+                        "agents-mcp-proxy",
+                    ],
+                },
+            },
+            "name_pool": [
+                "lily", "ethan", "grace", "ryan", "zoe", "max",
+                "aria", "sam", "leo", "ruby", "finn", "ivy",
+            ],
+            "agents": agents_section,
+        }
+
+        # Write agents.yaml
+        root_dir = _get_root_dir()
+        config_path = os.path.join(root_dir, "agents.yaml")
+
+        try:
+            with open(config_path, "w") as f:
+                f.write("# Agent-Hub Configuration\n")
+                f.write("# Generated by the onboarding wizard\n\n")
+                yaml.dump(config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+            # Reload the config so subsequent API calls see the new agents
+            from agents_mcp.server import reload_config
+            reload_config()
+        except Exception as e:
+            return JSONResponse(
+                {"error": f"Failed to write config: {str(e)}"},
+                status_code=500,
+            )
+
+        return JSONResponse({
+            "status": "success",
+            "config_path": config_path,
+            "agents_count": len(agents_section),
+            "next_steps": [
+                "Run 'python3 setup-agents.py' to scaffold agent workspaces",
+                "Run 'python3 restart_all_agents.sh' to start all agents",
+            ],
+        })
+
     routes = [
         # Read endpoints
         Route("/v1/agents", list_agents),
@@ -541,6 +787,13 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
         Route("/v1/agents/{id}/dispatch", dispatch_agent, methods=["POST"]),
         Route("/v1/agents/dispatch-all", dispatch_all_agents, methods=["POST"]),
         Route("/v1/feedback", submit_feedback, methods=["POST"]),
+        # Schedule management
+        Route("/v1/schedules", schedules_endpoint, methods=["GET", "POST"]),
+        Route("/v1/schedules/{id}", delete_schedule, methods=["DELETE"]),
+        # Onboarding
+        Route("/v1/onboarding/status", onboarding_status),
+        Route("/v1/onboarding/templates", onboarding_templates),
+        Route("/v1/onboarding/setup", onboarding_setup, methods=["POST"]),
     ]
 
     return Router(routes=routes)

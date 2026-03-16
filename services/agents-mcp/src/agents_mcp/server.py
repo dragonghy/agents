@@ -93,6 +93,13 @@ def get_config() -> dict:
     return _config
 
 
+def reload_config() -> dict:
+    """Force reload of agents.yaml configuration."""
+    global _config
+    _config = None
+    return get_config()
+
+
 def resolve_agents(cfg: dict) -> dict:
     """Resolve agent templates. Each agent is listed individually in config."""
     resolved = {}
