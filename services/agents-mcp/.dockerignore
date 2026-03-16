@@ -1,0 +1,27 @@
+# Exclude unnecessary files from Docker build context
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Node (fresh install in Docker)
+web/node_modules/
+
+# Build artifacts (regenerated in Docker)
+src/agents_mcp/web/static/
+
+# Data files
+*.db
+*.db-shm
+*.db-wal
+
+# Config (bind-mounted at runtime)
+.env
+
+# Dev/docs
+*.md
+tests/
+.git/
+.gitignore

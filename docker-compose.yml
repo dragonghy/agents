@@ -1,0 +1,28 @@
+# Docker Compose for Agent-Hub (Daemon + Web UI)
+#
+# Quick start:
+#   1. cp .env.example .env        (optional, edit if needed)
+#   2. docker compose up --build
+#   3. Open http://localhost:3000
+#
+# The daemon serves both the REST API and Web UI on a single port.
+# SQLite databases are persisted in a Docker named volume.
+
+services:
+  daemon:
+    build:
+      context: services/agents-mcp
+    ports:
+      - "${WEB_PORT:-3000}:8765"
+    volumes:
+      # Persistent storage for SQLite databases (.agents-tasks.db, .agents-mcp.db)
+      - agents-data:/config
+      # Mount config from repo root (overlays on the named volume)
+      - ./agents.yaml:/config/agents.yaml:ro
+    env_file:
+      - path: .env
+        required: false
+    restart: unless-stopped
+
+volumes:
+  agents-data:
