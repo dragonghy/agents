@@ -40,7 +40,7 @@ LEAN_SESSION_PASSWORD=your_random_session_string
 
 # Optional
 LEANTIME_URL=http://localhost:9090             # Default Leantime URL
-VM_MCP_DIR=/path/to/vm-mcp                    # Only if using vm-mcp integration
+WORKSPACE_DIR=~/workspace                     # Root for external project repos
 ```
 
 ## Step 2: Start Leantime

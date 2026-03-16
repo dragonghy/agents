@@ -87,6 +87,6 @@ projects/
 当任务要求将项目部署或发布时，使用 `/publishing` skill 查看完整流程。要点：
 
 - **Web 项目**：开发完成后用 `npx vercel --prod --yes --token $VERCEL_TOKEN` 部署到 Vercel
-- **test-projects 仓库**：测试项目代码提交到 `$TEST_PROJECTS_DIR`，每个项目一个子文件夹
+- **test-projects 仓库**：测试项目代码提交到 `$WORKSPACE_DIR/test-projects`，每个项目一个子文件夹
 - 每个项目必须有 README（含运行方式和公开访问地址）
 - 发布后更新 test-projects 根 README 索引

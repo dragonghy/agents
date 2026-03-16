@@ -18,7 +18,18 @@ def load_config():
     load_dotenv(os.path.join(ROOT_DIR, ".env"))
     with open(CONFIG_PATH) as f:
         cfg = yaml.safe_load(f)
+    # Pre-resolve workspace_dir so ${WORKSPACE_DIR} in add_dirs works
+    # even when the env var is not explicitly set (falls back to default).
+    _bootstrap_workspace_dir(cfg)
     return resolve_env_vars(cfg)
+
+
+def _bootstrap_workspace_dir(cfg):
+    """If WORKSPACE_DIR is not set, derive it from workspace_dir config default."""
+    if "WORKSPACE_DIR" not in os.environ and "workspace_dir" in cfg:
+        raw = cfg["workspace_dir"]
+        resolved = resolve_env_vars(raw)
+        os.environ["WORKSPACE_DIR"] = os.path.expanduser(resolved)
 
 
 def resolve_agents(cfg):
@@ -100,7 +111,13 @@ def cmd_get_add_dirs(cfg, args):
             # Skip unresolved env vars (optional dependencies)
             continue
         else:
-            print(d)
+            # Expand ~ to home directory
+            resolved = os.path.expanduser(d)
+            # Skip directories that don't exist (optional workspace projects)
+            if not os.path.isdir(resolved):
+                print(f"Skipping {d}: directory not found", file=sys.stderr)
+                continue
+            print(resolved)
 
 
 def cmd_get_session(cfg, args):

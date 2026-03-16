@@ -64,9 +64,9 @@ def generate_mcp_json(cfg, config_path, agent_dir, source_dir):
 
     for name, server_cfg in mcp_servers.items():
         entry = {
-            "command": server_cfg["command"],
+            "command": os.path.expanduser(server_cfg["command"]),
             "args": [
-                a.replace("{ROOT_DIR}", source_dir)
+                os.path.expanduser(a.replace("{ROOT_DIR}", source_dir))
                 for a in server_cfg.get("args", [])
             ],
         }
@@ -330,6 +330,14 @@ def main():
 
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
+
+    # Pre-resolve workspace_dir so ${WORKSPACE_DIR} in add_dirs works
+    # even when the env var is not explicitly set (falls back to default).
+    if "WORKSPACE_DIR" not in os.environ and "workspace_dir" in cfg:
+        raw = cfg["workspace_dir"]
+        resolved = resolve_env_vars(raw)
+        os.environ["WORKSPACE_DIR"] = os.path.expanduser(resolved)
+
     cfg = resolve_env_vars(cfg)
 
     setup_all(cfg, config_path, source_dir, output_dir)
