@@ -10,7 +10,7 @@ allowed-tools: Bash, Read, Write, Glob, Grep
 
 测试项目统一保存在 `$TEST_PROJECTS_REPO`（Git remote URL，在 `.env` 中配置）。
 
-本地路径通过环境变量 `$TEST_PROJECTS_DIR` 获取。
+本地路径通过环境变量 `$WORKSPACE_DIR/test-projects` 获取。
 
 ### 仓库结构
 
@@ -55,7 +55,7 @@ test-projects/
 适用于：React, Next.js, Vue, 静态网站, 任何前端项目。
 
 ```bash
-cd $TEST_PROJECTS_DIR/<project-name>
+cd $WORKSPACE_DIR/test-projects/<project-name>
 
 # 部署到 Vercel（首次会自动创建项目）
 npx vercel --prod --yes --token $VERCEL_TOKEN
@@ -83,7 +83,7 @@ python3 main.py   # 或 npm install && node index.js
 ### Mobile 应用 → Expo
 
 ```bash
-cd $TEST_PROJECTS_DIR/<project-name>
+cd $WORKSPACE_DIR/test-projects/<project-name>
 npx expo publish
 ```
 
@@ -94,7 +94,7 @@ npx expo publish
 ### 提交项目代码
 
 ```bash
-cd $TEST_PROJECTS_DIR
+cd $WORKSPACE_DIR/test-projects
 
 # 确保在 main 分支
 git checkout main && git pull

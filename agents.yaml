@@ -1,3 +1,8 @@
+# Workspace: root directory for external project repos.
+# Agents reference projects as ${WORKSPACE_DIR}/project-name.
+# Set WORKSPACE_DIR in .env (default: ~/workspace).
+workspace_dir: ${WORKSPACE_DIR:-~/workspace}
+
 tmux_session: agents
 
 leantime:
@@ -25,7 +30,7 @@ mcp_servers:
       - "{ROOT_DIR}/services/agents-mcp"
       - agents-mcp-proxy
   agent-hub:
-    command: "${VM_MCP_DIR}/.venv/bin/python"
+    command: "${WORKSPACE_DIR}/vm-mcp/.venv/bin/python"
     args:
       - "-m"
       - agent_hub
@@ -84,8 +89,8 @@ agents:
     description: 负责需求分析、任务分发和最终验收
     dispatchable: true
     add_dirs:
-      - ${VM_MCP_DIR}
-      - ${TEST_PROJECTS_DIR}
+      - ${WORKSPACE_DIR}/vm-mcp
+      - ${WORKSPACE_DIR}/test-projects
   dev-alex:
     project: agents
     work_stream: dev
@@ -94,8 +99,8 @@ agents:
     description: 负责技术方案设计、代码实现和开发测试
     dispatchable: true
     add_dirs:
-      - ${VM_MCP_DIR}
-      - ${TEST_PROJECTS_DIR}
+      - ${WORKSPACE_DIR}/vm-mcp
+      - ${WORKSPACE_DIR}/test-projects
   dev-emma:
     project: agents
     work_stream: dev
@@ -104,8 +109,8 @@ agents:
     description: 负责技术方案设计、代码实现和开发测试
     dispatchable: true
     add_dirs:
-      - ${VM_MCP_DIR}
-      - ${TEST_PROJECTS_DIR}
+      - ${WORKSPACE_DIR}/vm-mcp
+      - ${WORKSPACE_DIR}/test-projects
   qa-lucy:
     project: agents
     work_stream: qa
@@ -114,8 +119,8 @@ agents:
     description: 负责 E2E 测试和需求一致性验证
     dispatchable: true
     add_dirs:
-      - ${VM_MCP_DIR}
-      - ${TEST_PROJECTS_DIR}
+      - ${WORKSPACE_DIR}/vm-mcp
+      - ${WORKSPACE_DIR}/test-projects
   qa-oliver:
     project: agents
     work_stream: qa
@@ -124,8 +129,8 @@ agents:
     description: 负责 E2E 测试和需求一致性验证
     dispatchable: true
     add_dirs:
-      - ${VM_MCP_DIR}
-      - ${TEST_PROJECTS_DIR}
+      - ${WORKSPACE_DIR}/vm-mcp
+      - ${WORKSPACE_DIR}/test-projects
   user-sophia:
     project: agents
     work_stream: user
@@ -135,7 +140,7 @@ agents:
     dispatchable: true
     add_dirs:
       - .
-      - ${TEST_PROJECTS_DIR}
+      - ${WORKSPACE_DIR}/test-projects
     schedule:
       interval_hours: 12
       offset_hours: 0
@@ -148,7 +153,7 @@ agents:
     description: 负责 Trading 项目的策略评估、回测分析和股票池管理
     dispatchable: true
     add_dirs:
-      - ${TRADING_DIR}
+      - ${WORKSPACE_DIR}/trading
     schedule:
       interval_hours: 24
       offset_hours: 6
@@ -161,7 +166,7 @@ agents:
     description: 负责 VM MCP 项目的产品规划和功能改进
     dispatchable: true
     add_dirs:
-      - ${VM_MCP_DIR}
+      - ${WORKSPACE_DIR}/vm-mcp
     schedule:
       interval_hours: 24
       offset_hours: 9
@@ -174,7 +179,7 @@ agents:
     description: 以用户视角测试 VM MCP 工具的各种使用场景
     dispatchable: true
     add_dirs:
-      - ${VM_MCP_DIR}
+      - ${WORKSPACE_DIR}/vm-mcp
     schedule:
       interval_hours: 12
       offset_hours: 3
@@ -188,7 +193,7 @@ agents:
     dispatchable: true
     add_dirs:
       - .
-      - ${TEST_PROJECTS_DIR}
+      - ${WORKSPACE_DIR}/test-projects
     schedule:
       interval_hours: 24
       offset_hours: 12
@@ -202,7 +207,7 @@ agents:
     dispatchable: true
     add_dirs:
       - .
-      - ${TEST_PROJECTS_DIR}
+      - ${WORKSPACE_DIR}/test-projects
   dev-liam:
     project: founder
     work_stream: dev
@@ -212,7 +217,7 @@ agents:
     dispatchable: true
     add_dirs:
       - .
-      - ${TEST_PROJECTS_DIR}
+      - ${WORKSPACE_DIR}/test-projects
   qa-chloe:
     project: founder
     work_stream: qa
@@ -222,7 +227,7 @@ agents:
     dispatchable: true
     add_dirs:
       - .
-      - ${TEST_PROJECTS_DIR}
+      - ${WORKSPACE_DIR}/test-projects
   user-james:
     project: founder
     work_stream: user
@@ -232,4 +237,4 @@ agents:
     dispatchable: true
     add_dirs:
       - .
-      - ${TEST_PROJECTS_DIR}
+      - ${WORKSPACE_DIR}/test-projects

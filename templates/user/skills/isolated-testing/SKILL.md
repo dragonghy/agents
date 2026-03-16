@@ -151,26 +151,26 @@ curl -s -X POST http://127.0.0.1:${PORT}/api/v1/tickets/2/update \
 
 ```bash
 # 1. 确保 test-projects repo 是最新的
-cd $TEST_PROJECTS_DIR
+cd $WORKSPACE_DIR/test-projects
 git checkout main && git pull
 
 # 2. 从隔离环境复制项目文件到 test-projects
 PROJECT_NAME=<项目名>
-cp -r /tmp/agents-e2e-<name>/projects/${PROJECT_NAME}/ $TEST_PROJECTS_DIR/${PROJECT_NAME}/
+cp -r /tmp/agents-e2e-<name>/projects/${PROJECT_NAME}/ $WORKSPACE_DIR/test-projects/${PROJECT_NAME}/
 
 # 3. 确保项目 README 存在且完整
 # 如果缺少 README，创建一个（参考 /publishing skill 的要求）
 
 # 4. 如果是 Web 项目，部署到 Vercel
-cd $TEST_PROJECTS_DIR/${PROJECT_NAME}
+cd $WORKSPACE_DIR/test-projects/${PROJECT_NAME}
 npx vercel --prod --yes --token $VERCEL_TOKEN
 # 记录返回的 URL，写入项目 README
 
 # 5. 更新根 README 索引
-# 在 $TEST_PROJECTS_DIR/README.md 的索引表中添加新项目
+# 在 $WORKSPACE_DIR/test-projects/README.md 的索引表中添加新项目
 
 # 6. 提交并推送
-cd $TEST_PROJECTS_DIR
+cd $WORKSPACE_DIR/test-projects
 git add ${PROJECT_NAME}/ README.md
 git commit -m "feat: add ${PROJECT_NAME} - <简短描述>"
 git push origin main

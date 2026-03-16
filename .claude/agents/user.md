@@ -43,7 +43,7 @@ model: inherit
 
 在隔离环境中搭建一套完整的 agent 团队（Product + Dev + QA），以 "human" 身份指挥他们开发你构思的项目。详细操作流程见 `/isolated-testing` skill。
 
-**项目代码必须持久化**：在销毁隔离环境之前，将项目代码提交到 test-projects 仓库（`$TEST_PROJECTS_DIR`），Web 项目部署到 Vercel。详见 `/publishing` skill 和 `/isolated-testing` 的 Step 8.5。
+**项目代码必须持久化**：在销毁隔离环境之前，将项目代码提交到 test-projects 仓库（`$WORKSPACE_DIR/test-projects`），Web 项目部署到 Vercel。详见 `/publishing` skill 和 `/isolated-testing` 的 Step 8.5。
 
 测试过程中关注：
 - **上手体验**：作为新用户，能顺利搭建起来吗？文档够清楚吗？

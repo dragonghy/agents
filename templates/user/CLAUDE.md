@@ -17,7 +17,7 @@ Agent-Hub 是一个多 Agent 协同工作流系统。它让多个 AI agent（产
 
 ## 项目持久化与发布
 
-测试项目代码保存在 `$TEST_PROJECTS_DIR`（test-projects 仓库），Web 项目部署到 Vercel。
+测试项目代码保存在 `$WORKSPACE_DIR/test-projects`（test-projects 仓库），Web 项目部署到 Vercel。
 
 **销毁隔离环境前必须**将项目代码 push 到 test-projects 仓库。详见 `/isolated-testing` 的 Step 8.5 和 `/publishing` skill。
 
