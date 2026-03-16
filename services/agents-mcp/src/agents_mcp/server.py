@@ -1,7 +1,7 @@
 """Agents Essentials MCP Server.
 
 Unified MCP providing:
-  - Task management (backed by Leantime)
+  - Task management (backed by SQLite)
   - Auto-dispatch (background loop)
   - Agent coordination (roster, lookup)
 """
@@ -16,7 +16,7 @@ import sys
 import yaml
 from fastmcp import FastMCP
 
-from agents_mcp.leantime_client import LeantimeClient
+from agents_mcp.sqlite_task_client import SQLiteTaskClient
 from agents_mcp.dispatcher import dispatch_loop
 from agents_mcp.store import AgentStore
 
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 app = FastMCP("agents-mcp")
 
 # Global state
-_client: LeantimeClient = None
+_client: SQLiteTaskClient = None
 _config: dict = None
 _store: AgentStore = None
 
@@ -103,16 +103,15 @@ def resolve_agents(cfg: dict) -> dict:
     return resolved
 
 
-def get_client() -> LeantimeClient:
+def get_client() -> SQLiteTaskClient:
     global _client
     if _client is None:
         cfg = get_config()
-        lt = cfg["leantime"]
-        _client = LeantimeClient(
-            base_url=lt["url"],
-            api_key=lt["api_key"],
-            project_id=lt.get("project_id", 3),
-        )
+        config_path = os.environ.get("AGENTS_CONFIG_PATH", ".")
+        root_dir = os.path.dirname(os.path.abspath(config_path))
+        db_path = os.path.join(root_dir, ".agents-tasks.db")
+        project_id = cfg.get("leantime", {}).get("project_id", 3)
+        _client = SQLiteTaskClient(db_path=db_path, project_id=project_id)
     return _client
 
 

@@ -1,4 +1,4 @@
-"""Auto-dispatch: periodically check Leantime and wake idle agents via tmux."""
+"""Auto-dispatch: periodically check task DB and wake idle agents via tmux."""
 
 import asyncio
 import logging
@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from agents_mcp.leantime_client import LeantimeClient
+from agents_mcp.sqlite_task_client import SQLiteTaskClient
 
 logger = logging.getLogger(__name__)
 
@@ -264,7 +264,7 @@ def get_agent_tmux_status(tmux_session: str, agent: str) -> str:
         return "unknown"
 
 
-async def dispatch_cycle(client: LeantimeClient, agents: list[str],
+async def dispatch_cycle(client: SQLiteTaskClient, agents: list[str],
                          tmux_session: str, store=None,
                          schedules: Optional[dict] = None,
                          journal_config: Optional[dict] = None,
@@ -415,7 +415,7 @@ async def dispatch_cycle(client: LeantimeClient, agents: list[str],
     return results
 
 
-async def dispatch_loop(client: LeantimeClient, agents: list[str],
+async def dispatch_loop(client: SQLiteTaskClient, agents: list[str],
                         tmux_session: str, store=None, interval: int = 30,
                         schedules: Optional[dict] = None,
                         journal_config: Optional[dict] = None,
