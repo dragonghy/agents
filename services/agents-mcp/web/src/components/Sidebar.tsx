@@ -5,6 +5,7 @@ const navItems = [
   { to: '/', label: 'Dashboard' },
   { to: '/agents', label: 'Agents' },
   { to: '/tokens', label: 'Tokens' },
+  { to: '/schedules', label: 'Schedules' },
   { to: '/tickets', label: 'Tickets' },
   { to: '/messages', label: 'Messages' },
   { to: '/feedback', label: 'Feedback' },

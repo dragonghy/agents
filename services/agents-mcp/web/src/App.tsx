@@ -8,6 +8,7 @@ import TicketDetail from './pages/TicketDetail';
 import Messages from './pages/Messages';
 import Feedback from './pages/Feedback';
 import Tokens from './pages/Tokens';
+import Schedules from './pages/Schedules';
 
 export default function App() {
   return (
@@ -18,6 +19,7 @@ export default function App() {
           <Route path="/agents" element={<Agents />} />
           <Route path="/agents/:id" element={<AgentDetail />} />
           <Route path="/tokens" element={<Tokens />} />
+          <Route path="/schedules" element={<Schedules />} />
           <Route path="/tickets" element={<Tickets />} />
           <Route path="/tickets/:id" element={<TicketDetail />} />
           <Route path="/messages" element={<Messages />} />
