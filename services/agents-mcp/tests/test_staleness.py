@@ -1,10 +1,9 @@
-"""Tests for staleness detection in dispatcher and leantime_client."""
+"""Tests for staleness detection in dispatcher."""
 
 import asyncio
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, patch, MagicMock
 
-from agents_mcp.leantime_client import LeantimeClient
 from agents_mcp.dispatcher import (
     _dispatch_agent_stale,
     dispatch_cycle,
@@ -30,63 +29,18 @@ def test_dispatch_agent_stale_message():
         print("PASS: _dispatch_agent_stale message format")
 
 
-def test_get_stale_in_progress():
-    """Test LeantimeClient.get_stale_in_progress filtering."""
-    now = datetime.utcnow()
-    old_date = (now - timedelta(minutes=60)).strftime("%Y-%m-%d %H:%M:%S")
-    recent_date = (now - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
-
-    mock_tickets = [
-        # Stale in_progress ticket (60 min old, > 30 min threshold)
-        {"id": "10", "headline": "Old task", "status": 4,
-         "tags": "agent:dev-alex", "date": old_date},
-        # Recent in_progress ticket (5 min old, < 30 min threshold)
-        {"id": "11", "headline": "New task", "status": 4,
-         "tags": "agent:dev-alex", "date": recent_date},
-        # Stale but status=3 (not in_progress)
-        {"id": "12", "headline": "New status task", "status": 3,
-         "tags": "agent:dev-alex", "date": old_date},
-        # Stale in_progress but different agent
-        {"id": "13", "headline": "Other agent", "status": 4,
-         "tags": "agent:qa-lucy", "date": old_date},
-    ]
-
-    client = LeantimeClient("http://localhost:9090", "test-key")
-    client._call = AsyncMock(return_value=mock_tickets)
-
-    result = asyncio.run(client.get_stale_in_progress("dev-alex", 30))
-
-    assert len(result) == 1, f"Expected 1 stale ticket, got {len(result)}"
-    assert result[0]["id"] == 10
-    assert result[0]["headline"] == "Old task"
-    print("PASS: get_stale_in_progress filtering")
-
-
-def test_get_stale_in_progress_empty():
-    """Test with no stale tickets."""
-    now = datetime.utcnow()
-    recent_date = (now - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
-
-    mock_tickets = [
-        {"id": "10", "headline": "Recent task", "status": 4,
-         "tags": "agent:dev-alex", "date": recent_date},
-    ]
-
-    client = LeantimeClient("http://localhost:9090", "test-key")
-    client._call = AsyncMock(return_value=mock_tickets)
-
-    result = asyncio.run(client.get_stale_in_progress("dev-alex", 30))
-    assert len(result) == 0
-    print("PASS: get_stale_in_progress empty result")
-
-
-def test_get_stale_in_progress_disabled():
-    """Test that threshold=0 is handled (caller should not call, but be safe)."""
-    client = LeantimeClient("http://localhost:9090", "test-key")
-    client._call = AsyncMock(return_value=[])
-    result = asyncio.run(client.get_stale_in_progress("dev-alex", 0))
-    assert len(result) == 0
-    print("PASS: get_stale_in_progress with threshold=0")
+def _make_mock_client(tickets):
+    """Create a mock task client with given ticket data."""
+    client = MagicMock()
+    client.has_pending_tasks = AsyncMock(return_value=bool(tickets))
+    client.get_stale_in_progress = AsyncMock(return_value=[
+        {"id": int(t["id"]), "headline": t["headline"], "date": t["date"]}
+        for t in tickets
+        if t.get("status") == 4
+    ])
+    client.get_unattended_new_tickets = AsyncMock(return_value=[])
+    client.check_and_unblock_deps = AsyncMock(return_value=[])
+    return client
 
 
 def test_dispatch_cycle_stale_detection():
@@ -99,12 +53,15 @@ def test_dispatch_cycle_stale_detection():
          "tags": "agent:dev-alex", "date": old_date},
     ]
 
-    client = LeantimeClient("http://localhost:9090", "test-key")
-    # Mock all API calls
-    client._call = AsyncMock(return_value=mock_all_tickets)
+    client = _make_mock_client(mock_all_tickets)
 
     mock_store = MagicMock()
     mock_store.get_unread_count = AsyncMock(return_value=0)
+    mock_store.log_dispatch_event = AsyncMock()
+
+    # Clear any cooldown from previous tests
+    from agents_mcp.dispatcher import _stale_dispatch_cooldown
+    _stale_dispatch_cooldown.pop("dev-alex", None)
 
     with patch("agents_mcp.dispatcher._tmux_window_exists", return_value=True), \
          patch("agents_mcp.dispatcher._is_idle", return_value=True), \
@@ -126,19 +83,22 @@ def test_dispatch_cycle_stale_detection():
 
 def test_dispatch_cycle_normal_when_not_stale():
     """Test that dispatch_cycle uses normal message for fresh tasks."""
-    now = datetime.utcnow()
-    recent_date = (now - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
-
     mock_all_tickets = [
         {"id": "42", "headline": "Fresh task", "status": 3,
-         "tags": "agent:dev-alex", "date": recent_date},
+         "tags": "agent:dev-alex", "date": "2099-01-01 00:00:00"},
     ]
 
-    client = LeantimeClient("http://localhost:9090", "test-key")
-    client._call = AsyncMock(return_value=mock_all_tickets)
+    client = _make_mock_client(mock_all_tickets)
+    # Override: no stale tickets
+    client.get_stale_in_progress = AsyncMock(return_value=[])
 
     mock_store = MagicMock()
     mock_store.get_unread_count = AsyncMock(return_value=0)
+    mock_store.log_dispatch_event = AsyncMock()
+
+    # Clear any cooldown from previous tests
+    from agents_mcp.dispatcher import _stale_dispatch_cooldown
+    _stale_dispatch_cooldown.pop("dev-alex", None)
 
     with patch("agents_mcp.dispatcher._tmux_window_exists", return_value=True), \
          patch("agents_mcp.dispatcher._is_idle", return_value=True), \
@@ -158,19 +118,20 @@ def test_dispatch_cycle_normal_when_not_stale():
 
 def test_dispatch_cycle_staleness_disabled():
     """Test that staleness_threshold=0 disables staleness detection."""
-    now = datetime.utcnow()
-    old_date = (now - timedelta(minutes=60)).strftime("%Y-%m-%d %H:%M:%S")
-
     mock_all_tickets = [
         {"id": "42", "headline": "Old task", "status": 4,
-         "tags": "agent:dev-alex", "date": old_date},
+         "tags": "agent:dev-alex", "date": "2020-01-01 00:00:00"},
     ]
 
-    client = LeantimeClient("http://localhost:9090", "test-key")
-    client._call = AsyncMock(return_value=mock_all_tickets)
+    client = _make_mock_client(mock_all_tickets)
 
     mock_store = MagicMock()
     mock_store.get_unread_count = AsyncMock(return_value=0)
+    mock_store.log_dispatch_event = AsyncMock()
+
+    # Clear any cooldown from previous tests
+    from agents_mcp.dispatcher import _stale_dispatch_cooldown
+    _stale_dispatch_cooldown.pop("dev-alex", None)
 
     with patch("agents_mcp.dispatcher._tmux_window_exists", return_value=True), \
          patch("agents_mcp.dispatcher._is_idle", return_value=True), \
@@ -188,9 +149,6 @@ def test_dispatch_cycle_staleness_disabled():
 
 if __name__ == "__main__":
     test_dispatch_agent_stale_message()
-    test_get_stale_in_progress()
-    test_get_stale_in_progress_empty()
-    test_get_stale_in_progress_disabled()
     test_dispatch_cycle_stale_detection()
     test_dispatch_cycle_normal_when_not_stale()
     test_dispatch_cycle_staleness_disabled()

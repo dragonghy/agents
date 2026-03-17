@@ -305,7 +305,7 @@ def _send_tmux_message(tmux_session: str, agent: str, msg: str):
 
 def _dispatch_agent(tmux_session: str, agent: str):
     msg = (
-        f"你有待处理的 Leantime 任务。"
+        f"你有待处理的任务。"
         f"请先用 get_inbox(agent_id=\"{agent}\") 检查是否有未读消息并处理，"
         f"然后查询分配给你的任务（tags 包含 agent:{agent}，status=3,4）并执行。"
     )
@@ -316,7 +316,7 @@ def _dispatch_agent_messages(tmux_session: str, agent: str, unread_count: int):
     msg = (
         f"你有 {unread_count} 条未读消息。"
         f"请使用 get_inbox(agent_id=\"{agent}\") 查看并处理消息，"
-        f"处理完毕后检查 Leantime 任务（tags 包含 agent:{agent}，status=3,4）。"
+        f"处理完毕后检查待处理任务（tags 包含 agent:{agent}，status=3,4）。"
     )
     _send_tmux_message(tmux_session, agent, msg)
 

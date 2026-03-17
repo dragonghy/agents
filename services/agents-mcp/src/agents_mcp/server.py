@@ -160,7 +160,7 @@ def get_client() -> SQLiteTaskClient:
         config_path = os.environ.get("AGENTS_CONFIG_PATH", ".")
         root_dir = os.path.dirname(os.path.abspath(config_path))
         db_path = os.path.join(root_dir, ".agents-tasks.db")
-        project_id = cfg.get("leantime", {}).get("project_id", 3)
+        project_id = cfg.get("project_id", 3)
         _client = SQLiteTaskClient(db_path=db_path, project_id=project_id)
     return _client
 
@@ -202,6 +202,7 @@ _TOOL_TIMEOUTS = {
     "update_ticket": 120,
     "reassign_ticket": 120,
     "upsert_subtask": 120,
+    "update_depends_on": 30,
     "suggest_assignee": 120,
     "get_agent_status": 120,
     "get_schedules": 120,
@@ -258,7 +259,7 @@ async def list_tickets(
         project_id: Filter by project ID.
         status: Comma-separated status codes (e.g. '3,4'). Defaults to '1,3,4'.
                 Pass 'all' to include Done/Archived.
-        assignee: Filter by agent name (e.g. 'dev'). Translates to tag filter internally.
+        assignee: Filter by agent name (e.g. 'dev'). Filters on native assignee column.
         tags: Filter by tags (e.g. 'agent:dev'). Use assignee param instead for agent filtering.
         dateFrom: Only tickets created on/after this date (YYYY-MM-DD).
         limit: Max tickets to return (for pagination).
@@ -361,10 +362,17 @@ async def get_comments(module: str, module_id: int) -> str:
 
 @app.tool()
 @_with_timeout
-async def add_comment(module: str, module_id: int, comment: str) -> str:
-    """Add a comment to a ticket or other module."""
+async def add_comment(module: str, module_id: int, comment: str, author: str = None) -> str:
+    """Add a comment to a ticket or other module.
+
+    Args:
+        module: Module type (e.g. 'ticket').
+        module_id: ID of the module entity.
+        comment: Comment text.
+        author: Agent ID of the comment author (e.g. 'dev-alex'). Optional.
+    """
     client = get_client()
-    result = await client.add_comment(module, module_id, comment)
+    result = await client.add_comment(module, module_id, comment, author=author)
     return json.dumps(result, indent=2)
 
 
@@ -397,7 +405,17 @@ async def upsert_subtask(
     tags: str = None,
     assignedTo: str = None,
 ) -> str:
-    """Create or update a subtask."""
+    """Create or update a subtask.
+
+    Args:
+        parent_ticket: Parent ticket ID.
+        headline: Subtask title.
+        description: Subtask description.
+        status: Subtask status.
+        priority: Subtask priority.
+        tags: Raw tags string.
+        assignedTo: Agent name to assign (e.g. 'dev-alex'). Writes native assignee column.
+    """
     client = get_client()
     kwargs = {}
     if description is not None:
@@ -406,12 +424,29 @@ async def upsert_subtask(
         kwargs["status"] = status
     if priority is not None:
         kwargs["priority"] = priority
-    if assignedTo is not None:
-        kwargs["assignedTo"] = assignedTo
     result = await client.upsert_subtask(
         parent_ticket_id=parent_ticket, headline=headline,
-        tags=tags, **kwargs,
+        tags=tags, assignee=assignedTo, **kwargs,
     )
+    return json.dumps(result, indent=2)
+
+
+@app.tool()
+@_with_timeout
+async def update_depends_on(ticket_id: int, depends_on: str) -> str:
+    """Update the dependency list for a ticket.
+
+    Sets the depends_on field to a comma-separated list of ticket IDs that
+    this ticket depends on. The auto-dispatch system uses this to auto-lock
+    tickets with unresolved dependencies (status→1) and auto-unlock when
+    all dependencies are done (status→3).
+
+    Args:
+        ticket_id: The ticket to update.
+        depends_on: Comma-separated ticket IDs (e.g. '10,20,30').
+    """
+    client = get_client()
+    result = await client.update_depends_on(ticket_id, depends_on)
     return json.dumps(result, indent=2)
 
 
@@ -685,7 +720,7 @@ async def send_message(from_agent: str, to_agent: str, message: str) -> str:
     """Send a direct message to another agent.
 
     Use for quick questions, status updates, or coordination that doesn't
-    warrant a full Leantime ticket. The recipient will see it in their inbox
+    warrant a full ticket. The recipient will see it in their inbox
     on the next dispatch cycle.
 
     Args:
@@ -783,7 +818,9 @@ async def reassign_ticket(
     if comment:
         try:
             await client.add_comment(
-                "ticket", ticket_id, f"[Handoff {from_agent} → {to_agent}] {comment}"
+                "ticket", ticket_id,
+                f"[Handoff {from_agent} → {to_agent}] {comment}",
+                author=from_agent,
             )
         except Exception as e:
             comment_added = False

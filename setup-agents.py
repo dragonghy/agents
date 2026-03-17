@@ -58,7 +58,6 @@ def generate_mcp_json(cfg, config_path, agent_dir, source_dir):
     """Generate .mcp.json from agents.yaml mcp_servers config."""
     mcp_servers = cfg.get("mcp_servers", {})
     daemon = cfg.get("daemon", {})
-    leantime = cfg.get("leantime", {})
 
     result = {"mcpServers": {}}
 
@@ -72,7 +71,7 @@ def generate_mcp_json(cfg, config_path, agent_dir, source_dir):
         }
 
         # Build env vars: start with any env defined in config, then apply
-        # server-specific overrides for agents/leantime.
+        # server-specific overrides.
         env = dict(server_cfg.get("env", {}))
 
         if name == "agents":
@@ -85,12 +84,6 @@ def generate_mcp_json(cfg, config_path, agent_dir, source_dir):
             else:
                 # Direct mode: pass config path to full server
                 env["AGENTS_CONFIG_PATH"] = config_path
-        elif name == "leantime" and leantime:
-            env.update({
-                "LEANTIME_URL": leantime.get("url", ""),
-                "LEANTIME_API_KEY": leantime.get("api_key", ""),
-                "LEANTIME_USER_EMAIL": leantime.get("user_email", ""),
-            })
 
         if env:
             entry["env"] = env
@@ -181,8 +174,8 @@ def generate_instance_agent(agent_name, base_name, source_dir, output_dir):
         f"**你的 Agent ID**: `{agent_name}`",
     )
     content = content.replace(
-        f"**你的 Leantime tag**: `agent:{base_name}`",
-        f"**你的 Leantime tag**: `agent:{agent_name}`",
+        f"**你的 Agent tag**: `agent:{base_name}`",
+        f"**你的 Agent tag**: `agent:{agent_name}`",
     )
 
     agents_defs_dir = os.path.join(output_dir, ".claude", "agents")
@@ -199,7 +192,7 @@ def generate_roster(cfg, agents_expanded, output_agents_dir):
         "",
         "> 此文件由 `setup-agents.py` 从 `agents.yaml` 自动生成，请勿手动编辑。",
         "",
-        "| Agent ID | 角色 | 职责 | Leantime Tag | tmux window |",
+        "| Agent ID | 角色 | 职责 | Agent Tag | tmux window |",
         "|----------|------|------|-------------|-------------|",
     ]
     for name, info in agents_expanded.items():

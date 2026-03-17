@@ -1,8 +1,4 @@
-"""SQLite-based task management client — drop-in replacement for LeantimeClient.
-
-Method signatures and return formats are identical to LeantimeClient so that
-server.py only needs to swap the import + init line.
-"""
+"""SQLite-based task management client for ticket/comment/subtask operations."""
 
 import logging
 import re
@@ -13,26 +9,31 @@ import aiosqlite
 
 logger = logging.getLogger(__name__)
 
-# ── Field sets (match Leantime pruning) ──
+# ── Field sets ──
 
 SUMMARY_FIELDS = {
     "id", "headline", "status", "tags", "priority",
     "date", "dateToEdit", "type", "dependingTicketId",
-    "projectId", "milestoneid",
+    "projectId", "milestoneid", "assignee",
 }
 
 DETAIL_FIELDS = SUMMARY_FIELDS | {
     "description", "userId", "editFrom", "editTo",
     "storypoints", "sprint", "acceptanceCriteria",
+    "depends_on",
 }
 
-COMMENT_FIELDS = {"id", "text", "userId", "date", "moduleId"}
+COMMENT_FIELDS = {"id", "text", "userId", "date", "moduleId", "author"}
 
-# ── Helpers (same logic as leantime_client.py) ──
+# ── Helpers ──
 
 
 def extract_assignee(ticket: dict) -> Optional[str]:
-    """Extract agent assignee from tags (e.g. 'agent:dev' -> 'dev')."""
+    """Extract agent assignee from tags (e.g. 'agent:dev' -> 'dev').
+
+    DEPRECATED: Use the native 'assignee' column instead.
+    Kept for backward compatibility during transition.
+    """
     tags = ticket.get("tags") or ""
     for part in tags.split(","):
         part = part.strip()
@@ -42,14 +43,23 @@ def extract_assignee(ticket: dict) -> Optional[str]:
 
 
 def inject_assignee(ticket: dict) -> dict:
-    """Add 'assignee' field extracted from tags."""
+    """Add 'assignee' field extracted from tags.
+
+    DEPRECATED: The 'assignee' column is now native in the DB schema.
+    Kept for backward compatibility during transition.
+    """
     ticket = dict(ticket)
-    ticket["assignee"] = extract_assignee(ticket)
+    # Prefer native assignee column if set, fall back to tags extraction
+    if not ticket.get("assignee"):
+        ticket["assignee"] = extract_assignee(ticket)
     return ticket
 
 
 def tags_with_assignee(existing_tags: Optional[str], assignee: str) -> str:
-    """Add/replace agent: tag in a tags string."""
+    """Add/replace agent: tag in a tags string.
+
+    Still used to maintain tag redundancy during transition period.
+    """
     parts = []
     if existing_tags:
         parts = [p.strip() for p in existing_tags.split(",") if not p.strip().startswith("agent:")]
@@ -78,7 +88,9 @@ CREATE TABLE IF NOT EXISTS tickets (
     milestoneid         INTEGER DEFAULT 0,
     storypoints         INTEGER DEFAULT 0,
     sprint              INTEGER DEFAULT 0,
-    acceptanceCriteria  TEXT DEFAULT ''
+    acceptanceCriteria  TEXT DEFAULT '',
+    assignee            TEXT DEFAULT '',
+    depends_on          TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS comments (
@@ -87,7 +99,8 @@ CREATE TABLE IF NOT EXISTS comments (
     module      TEXT DEFAULT 'ticket',
     moduleId    INTEGER NOT NULL,
     userId      INTEGER DEFAULT 1,
-    date        TEXT DEFAULT ''
+    date        TEXT DEFAULT '',
+    author      TEXT DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_comments_module
@@ -96,7 +109,7 @@ CREATE INDEX IF NOT EXISTS idx_comments_module
 
 
 class SQLiteTaskClient:
-    """Drop-in replacement for LeantimeClient backed by local SQLite."""
+    """SQLite-backed task management client."""
 
     def __init__(self, db_path: str, project_id: int = 3):
         self.db_path = db_path
@@ -109,7 +122,54 @@ class SQLiteTaskClient:
             self._db.row_factory = aiosqlite.Row
             await self._db.executescript(_TASK_SCHEMA)
             await self._db.commit()
+            await self._migrate(self._db)
         return self._db
+
+    async def _migrate(self, db: aiosqlite.Connection):
+        """Run incremental migrations for existing databases.
+
+        Adds columns that may not exist in older schemas and backfills data.
+        ALTER TABLE ADD COLUMN is idempotent-safe: we catch errors for
+        already-existing columns.
+        """
+        migrations = [
+            ("tickets", "assignee", "TEXT DEFAULT ''"),
+            ("tickets", "depends_on", "TEXT DEFAULT ''"),
+            ("comments", "author", "TEXT DEFAULT ''"),
+        ]
+        changed = False
+        for table, column, col_type in migrations:
+            try:
+                await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+                changed = True
+                logger.info("Migration: added %s.%s", table, column)
+            except Exception:
+                # Column already exists — expected for new DBs or re-runs
+                pass
+
+        # Backfill: populate assignee column from agent:xxx tags where empty
+        async with db.execute(
+            "SELECT id, tags FROM tickets WHERE (assignee IS NULL OR assignee = '') AND tags LIKE '%agent:%'"
+        ) as cur:
+            rows = await cur.fetchall()
+        if rows:
+            for row in rows:
+                assignee = extract_assignee(dict(row))
+                if assignee:
+                    await db.execute(
+                        "UPDATE tickets SET assignee = ? WHERE id = ?",
+                        (assignee, row["id"]),
+                    )
+            changed = True
+            logger.info("Migration: backfilled assignee for %d tickets", len(rows))
+
+        # Create index if not exists (idempotent)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tickets_assignee ON tickets(assignee)"
+        )
+
+        if changed:
+            await db.commit()
 
     async def close(self):
         if self._db is not None:
@@ -125,7 +185,7 @@ class SQLiteTaskClient:
     # ── Ticket operations ──
 
     async def get_ticket(self, ticket_id: int, prune: bool = True) -> dict:
-        """Get ticket by ID. If prune=True, returns DETAIL_FIELDS + assignee."""
+        """Get ticket by ID. If prune=True, returns DETAIL_FIELDS (includes assignee, depends_on)."""
         db = await self._get_db()
         async with db.execute("SELECT * FROM tickets WHERE id = ?", (ticket_id,)) as cur:
             row = await cur.fetchone()
@@ -133,7 +193,7 @@ class SQLiteTaskClient:
             return {}
         raw = self._row_to_dict(row)
         if not prune:
-            return raw
+            return inject_assignee(raw)
         pruned = {k: v for k, v in raw.items() if k in DETAIL_FIELDS}
         return inject_assignee(pruned)
 
@@ -166,13 +226,15 @@ class SQLiteTaskClient:
             conditions.append(f"status IN ({placeholders})")
             params.extend(allowed)
 
-        # Assignee → tag filter
-        effective_tags = tags
+        # Assignee filter — use native column
         if assignee:
-            effective_tags = f"agent:{assignee}"
-        if effective_tags:
+            conditions.append("assignee = ?")
+            params.append(assignee)
+
+        # Tags filter (independent of assignee)
+        if tags:
             conditions.append("tags LIKE ?")
-            params.append(f"%{effective_tags}%")
+            params.append(f"%{tags}%")
 
         # Date filter
         if dateFrom:
@@ -216,7 +278,7 @@ class SQLiteTaskClient:
         assignee: Optional[str] = None,
         **kwargs,
     ) -> Any:
-        """Create ticket. If assignee is set, translates to agent:xxx tag."""
+        """Create ticket. Writes assignee to native column AND agent:xxx tag (compat)."""
         effective_tags = tags
         if assignee:
             effective_tags = tags_with_assignee(tags, assignee)
@@ -230,6 +292,8 @@ class SQLiteTaskClient:
         }
         if effective_tags is not None:
             values["tags"] = effective_tags
+        if assignee:
+            values["assignee"] = assignee
 
         db = await self._get_db()
         columns = ", ".join(values.keys())
@@ -249,7 +313,7 @@ class SQLiteTaskClient:
         assignee: Optional[str] = None,
         **kwargs,
     ) -> Any:
-        """Update ticket. If assignee is set, translates to agent:xxx tag."""
+        """Update ticket. Writes assignee to native column AND agent:xxx tag (compat)."""
         db = await self._get_db()
 
         # Build update values
@@ -258,7 +322,9 @@ class SQLiteTaskClient:
             update_values["projectId"] = project_id
 
         if assignee:
-            # Get current tags to merge
+            # Write native assignee column
+            update_values["assignee"] = assignee
+            # Also update tags for backward compatibility
             async with db.execute("SELECT tags FROM tickets WHERE id = ?", (ticket_id,)) as cur:
                 row = await cur.fetchone()
             current_tags = row["tags"] if row else ""
@@ -282,14 +348,16 @@ class SQLiteTaskClient:
             return "ticket"
         return module
 
-    async def add_comment(self, module: str, module_id: int, comment: str) -> Any:
-        """Add a comment. No length splitting needed for SQLite."""
+    async def add_comment(
+        self, module: str, module_id: int, comment: str, author: Optional[str] = None
+    ) -> Any:
+        """Add a comment with optional author attribution."""
         module = self._normalize_module(module)
         db = await self._get_db()
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         async with db.execute(
-            "INSERT INTO comments (text, module, moduleId, date) VALUES (?, ?, ?, ?)",
-            (comment, module, module_id, now),
+            "INSERT INTO comments (text, module, moduleId, date, author) VALUES (?, ?, ?, ?, ?)",
+            (comment, module, module_id, now, author or ""),
         ) as cur:
             comment_id = cur.lastrowid
         await db.commit()
@@ -299,7 +367,7 @@ class SQLiteTaskClient:
         """Get comments for a module entity."""
         module = self._normalize_module(module)
         db = await self._get_db()
-        # Query both normalized and legacy module names (match Leantime behavior)
+        # Query both normalized and legacy module names for compatibility
         modules = [module]
         if module == "ticket":
             modules.append("tickets")
@@ -331,12 +399,17 @@ class SQLiteTaskClient:
         parent_ticket_id: int,
         headline: str,
         tags: Optional[str] = None,
+        assignee: Optional[str] = None,
         **kwargs,
     ) -> Any:
         """Create a subtask under a parent ticket."""
         parent = await self.get_ticket(parent_ticket_id, prune=False)
         if not parent:
             raise ValueError(f"Parent ticket {parent_ticket_id} not found")
+
+        effective_tags = tags
+        if assignee:
+            effective_tags = tags_with_assignee(tags, assignee)
 
         values = {
             "headline": headline,
@@ -348,8 +421,10 @@ class SQLiteTaskClient:
             "milestoneid": parent.get("milestoneid") or 0,
             **kwargs,
         }
-        if tags is not None:
-            values["tags"] = tags
+        if effective_tags is not None:
+            values["tags"] = effective_tags
+        if assignee:
+            values["assignee"] = assignee
 
         db = await self._get_db()
         columns = ", ".join(values.keys())
@@ -365,7 +440,7 @@ class SQLiteTaskClient:
     # ── Status labels ──
 
     async def get_status_labels(self) -> Any:
-        """Return fixed status labels matching the Leantime convention."""
+        """Return fixed status labels."""
         return {
             "-1": "Archived",
             "0": "Done",
@@ -379,18 +454,48 @@ class SQLiteTaskClient:
     # Statuses considered "done": 0=已完成, -1=已归档, 5=agents also use this
     DONE_STATUSES = (0, -1, 5)
 
+    def _extract_dep_ids(self, ticket: dict) -> list[int]:
+        """Extract dependency IDs from both depends_on column and description DEPENDS_ON.
+
+        Sources (merged, deduplicated):
+        1. Native depends_on column (comma-separated IDs, e.g. "10,20,30")
+        2. Legacy DEPENDS_ON in description (e.g. "DEPENDS_ON: #10, #20")
+        """
+        dep_ids = set()
+
+        # Source 1: native depends_on column
+        depends_on = ticket.get("depends_on") or ""
+        for part in depends_on.split(","):
+            part = part.strip()
+            if part.isdigit():
+                dep_ids.add(int(part))
+
+        # Source 2: description DEPENDS_ON (legacy)
+        desc = ticket.get("description") or ""
+        match = re.search(
+            r"DEPENDS_ON:\s*((?:#\d+|&#35;\d+)(?:\s*,\s*(?:#\d+|&#35;\d+))*)",
+            desc,
+        )
+        if match:
+            for num in re.findall(r"(\d+)", match.group(1)):
+                dep_ids.add(int(num))
+
+        return sorted(dep_ids)
+
     async def check_and_unblock_deps(self) -> list[str]:
-        """Check DEPENDS_ON across tickets and auto-correct status.
+        """Check dependencies across tickets and auto-correct status.
+
+        Uses both native depends_on column and legacy DEPENDS_ON in description.
 
         Two passes:
-        1. Auto-lock: status=3 tickets with unresolved DEPENDS_ON → set to status=1
-        2. Auto-unlock: status=1 tickets whose DEPENDS_ON are all done → set to status=3
+        1. Auto-lock: status=3 tickets with unresolved deps → set to status=1
+        2. Auto-unlock: status=1 tickets whose deps are all done → set to status=3
         """
         db = await self._get_db()
 
         # Get all tickets for the project
         async with db.execute(
-            "SELECT id, status, description FROM tickets WHERE projectId = ?",
+            "SELECT id, status, description, depends_on FROM tickets WHERE projectId = ?",
             (self.project_id,),
         ) as cur:
             rows = await cur.fetchall()
@@ -400,18 +505,11 @@ class SQLiteTaskClient:
 
         messages = []
 
-        # Pass 1: Auto-lock status=3 tickets with unresolved DEPENDS_ON
+        # Pass 1: Auto-lock status=3 tickets with unresolved deps
         for t in tickets:
             if t["status"] != 3:
                 continue
-            desc = t.get("description") or ""
-            match = re.search(
-                r"DEPENDS_ON:\s*((?:#\d+|&#35;\d+)(?:\s*,\s*(?:#\d+|&#35;\d+))*)",
-                desc,
-            )
-            if not match:
-                continue
-            dep_ids = [int(x) for x in re.findall(r"(\d+)", match.group(1))]
+            dep_ids = self._extract_dep_ids(t)
             if not dep_ids:
                 continue
             # If all deps are done, leave as status=3 (actionable)
@@ -422,20 +520,13 @@ class SQLiteTaskClient:
             await db.execute(
                 "UPDATE tickets SET status = 1 WHERE id = ?", (ticket_id,)
             )
-            messages.append(f"Auto-locked #{ticket_id} (DEPENDS_ON {dep_ids} not all done)")
+            messages.append(f"Auto-locked #{ticket_id} (deps {dep_ids} not all done)")
 
-        # Pass 2: Unblock status=1 tickets whose DEPENDS_ON are all done
+        # Pass 2: Unblock status=1 tickets whose deps are all done
         for t in tickets:
             if t["status"] != 1:
                 continue
-            desc = t.get("description") or ""
-            match = re.search(
-                r"DEPENDS_ON:\s*((?:#\d+|&#35;\d+)(?:\s*,\s*(?:#\d+|&#35;\d+))*)",
-                desc,
-            )
-            if not match:
-                continue
-            dep_ids = [int(x) for x in re.findall(r"(\d+)", match.group(1))]
+            dep_ids = self._extract_dep_ids(t)
             if not dep_ids:
                 continue
             if not all(status_map.get(d, 99) in self.DONE_STATUSES for d in dep_ids):
@@ -451,13 +542,30 @@ class SQLiteTaskClient:
             await db.commit()
         return messages
 
+    async def update_depends_on(self, ticket_id: int, depends_on: str) -> bool:
+        """Update the depends_on field for a ticket.
+
+        Args:
+            ticket_id: Ticket ID to update.
+            depends_on: Comma-separated ticket IDs (e.g. "10,20,30").
+        """
+        db = await self._get_db()
+        # Normalize: strip spaces, remove empty parts
+        parts = [p.strip() for p in depends_on.split(",") if p.strip()]
+        normalized = ",".join(parts)
+        await db.execute(
+            "UPDATE tickets SET depends_on = ? WHERE id = ?",
+            (normalized, ticket_id),
+        )
+        await db.commit()
+        return True
+
     async def has_pending_tasks(self, agent: str) -> bool:
         """Check if an agent has pending tasks (status 3 or 4)."""
         db = await self._get_db()
-        tag = f"agent:{agent}"
         async with db.execute(
-            "SELECT COUNT(*) as cnt FROM tickets WHERE tags LIKE ? AND status IN (3, 4) AND projectId = ?",
-            (f"%{tag}%", self.project_id),
+            "SELECT COUNT(*) as cnt FROM tickets WHERE assignee = ? AND status IN (3, 4) AND projectId = ?",
+            (agent, self.project_id),
         ) as cur:
             row = await cur.fetchone()
         return row["cnt"] > 0 if row else False
@@ -465,15 +573,14 @@ class SQLiteTaskClient:
     async def get_stale_in_progress(self, agent: str, threshold_minutes: int = 30) -> list[dict]:
         """Get in_progress (status=4) tickets for agent older than threshold."""
         db = await self._get_db()
-        tag = f"agent:{agent}"
         cutoff = (datetime.utcnow() - timedelta(minutes=threshold_minutes)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
         async with db.execute(
             "SELECT id, headline, date FROM tickets "
-            "WHERE tags LIKE ? AND status = 4 AND projectId = ? "
+            "WHERE assignee = ? AND status = 4 AND projectId = ? "
             "AND date < ? AND date > '0001-01-01'",
-            (f"%{tag}%", self.project_id, cutoff),
+            (agent, self.project_id, cutoff),
         ) as cur:
             rows = await cur.fetchall()
         return [
@@ -487,15 +594,14 @@ class SQLiteTaskClient:
         These are tickets that were assigned but never picked up (never moved to status=4).
         """
         db = await self._get_db()
-        tag = f"agent:{agent}"
         cutoff = (datetime.utcnow() - timedelta(minutes=threshold_minutes)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
         async with db.execute(
             "SELECT id, headline, date FROM tickets "
-            "WHERE tags LIKE ? AND status = 3 AND projectId = ? "
+            "WHERE assignee = ? AND status = 3 AND projectId = ? "
             "AND date < ? AND date > '0001-01-01'",
-            (f"%{tag}%", self.project_id, cutoff),
+            (agent, self.project_id, cutoff),
         ) as cur:
             rows = await cur.fetchall()
         return [
@@ -508,12 +614,11 @@ class SQLiteTaskClient:
         db = await self._get_db()
         workloads = {}
         for agent in agents:
-            tag = f"agent:{agent}"
             async with db.execute(
                 "SELECT status, COUNT(*) as cnt FROM tickets "
-                "WHERE tags LIKE ? AND projectId = ? "
+                "WHERE assignee = ? AND projectId = ? "
                 "GROUP BY status",
-                (f"%{tag}%", self.project_id),
+                (agent, self.project_id),
             ) as cur:
                 rows = await cur.fetchall()
 

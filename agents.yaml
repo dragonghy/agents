@@ -5,12 +5,8 @@ workspace_dir: ${WORKSPACE_DIR:-~/workspace}
 
 tmux_session: agents
 
-leantime:
-  url: ${LEANTIME_URL:-http://localhost:9090}
-  api_key: ${LEANTIME_API_KEY}
-  project_id: 3
-  user_id: 1
-  user_email: ${LEANTIME_USER_EMAIL}
+# Project ID used by the built-in task database.
+project_id: 3
 
 # Daemon config: central agents-mcp process that all agents connect to via proxy.
 # Start daemon: uv run --directory services/agents-mcp agents-mcp --daemon --port 8765

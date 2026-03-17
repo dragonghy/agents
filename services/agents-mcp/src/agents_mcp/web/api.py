@@ -20,7 +20,7 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
     """Create a Starlette Router with REST API endpoints.
 
     Args:
-        get_client: Callable returning LeantimeClient
+        get_client: Callable returning SQLiteTaskClient
         get_store: Async callable returning AgentStore
         get_config: Callable returning config dict
         resolve_agents: Callable taking config dict, returning resolved agents
@@ -163,7 +163,8 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
             comment = body.get("comment")
             if not comment:
                 return JSONResponse({"error": "comment required"}, status_code=400)
-            result = await client.add_comment("ticket", ticket_id, comment)
+            author = body.get("author")
+            result = await client.add_comment("ticket", ticket_id, comment, author=author)
             return JSONResponse({"status": "added", "result": result})
         # GET
         result = await client.get_comments("ticket", ticket_id)
@@ -300,6 +301,7 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
                 await client.add_comment(
                     "ticket", ticket_id,
                     f"[Handoff {from_agent} → {to_agent}] {comment}",
+                    author=from_agent,
                 )
             except Exception as e:
                 logger.warning(
@@ -554,11 +556,11 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
         cfg = get_config()
         tmux_session = cfg.get("tmux_session", "agents")
 
-        leantime_ok = False
+        task_db_ok = False
         try:
             client = get_client()
             await client.get_status_labels()
-            leantime_ok = True
+            task_db_ok = True
         except Exception:
             pass
 
@@ -574,7 +576,7 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
 
         result = {
             "status": "ok",
-            "leantime": leantime_ok,
+            "task_db": task_db_ok,
             "tmux_session": tmux_session,
             "tmux_active": tmux_ok,
         }

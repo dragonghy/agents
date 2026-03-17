@@ -55,9 +55,9 @@ class TestUnattendedNewTickets:
             client = SQLiteTaskClient(db_path)
             db = await client._get_db()
             await db.execute(
-                "INSERT INTO tickets (headline, status, tags, projectId, date) "
-                "VALUES (?, ?, ?, ?, ?)",
-                ("Old unattended", 3, "agent:dev-emma", 3, _old_utc_str(60)),
+                "INSERT INTO tickets (headline, status, tags, assignee, projectId, date) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("Old unattended", 3, "agent:dev-emma", "dev-emma", 3, _old_utc_str(60)),
             )
             await db.commit()
 
@@ -75,9 +75,9 @@ class TestUnattendedNewTickets:
             db = await client._get_db()
             # Insert with explicit recent UTC time (5 min ago)
             await db.execute(
-                "INSERT INTO tickets (headline, status, tags, projectId, date) "
-                "VALUES (?, ?, ?, ?, ?)",
-                ("Recent new", 3, "agent:dev-emma", 3, _old_utc_str(5)),
+                "INSERT INTO tickets (headline, status, tags, assignee, projectId, date) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("Recent new", 3, "agent:dev-emma", "dev-emma", 3, _old_utc_str(5)),
             )
             await db.commit()
 
@@ -93,9 +93,9 @@ class TestUnattendedNewTickets:
             client = SQLiteTaskClient(db_path)
             db = await client._get_db()
             await db.execute(
-                "INSERT INTO tickets (headline, status, tags, projectId, date) "
-                "VALUES (?, ?, ?, ?, ?)",
-                ("In progress", 4, "agent:dev-emma", 3, _old_utc_str(60)),
+                "INSERT INTO tickets (headline, status, tags, assignee, projectId, date) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("In progress", 4, "agent:dev-emma", "dev-emma", 3, _old_utc_str(60)),
             )
             await db.commit()
 
@@ -111,9 +111,9 @@ class TestUnattendedNewTickets:
             client = SQLiteTaskClient(db_path)
             db = await client._get_db()
             await db.execute(
-                "INSERT INTO tickets (headline, status, tags, projectId, date) "
-                "VALUES (?, ?, ?, ?, ?)",
-                ("Other agent ticket", 3, "agent:dev-alex", 3, _old_utc_str(60)),
+                "INSERT INTO tickets (headline, status, tags, assignee, projectId, date) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("Other agent ticket", 3, "agent:dev-alex", "dev-alex", 3, _old_utc_str(60)),
             )
             await db.commit()
 
@@ -234,9 +234,9 @@ class TestDispatchCycleUnattended:
             db = await client._get_db()
             # Old status=3 ticket (1 hour ago in UTC)
             await db.execute(
-                "INSERT INTO tickets (headline, status, tags, projectId, date) "
-                "VALUES (?, ?, ?, ?, ?)",
-                ("Old ticket", 3, "agent:dev-emma", 3, _old_utc_str(60)),
+                "INSERT INTO tickets (headline, status, tags, assignee, projectId, date) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("Old ticket", 3, "agent:dev-emma", "dev-emma", 3, _old_utc_str(60)),
             )
             await db.commit()
 
@@ -278,9 +278,9 @@ class TestDispatchCycleUnattended:
             db = await client._get_db()
             # Insert a recent ticket with explicit UTC time (5 min ago)
             await db.execute(
-                "INSERT INTO tickets (headline, status, tags, projectId, date) "
-                "VALUES (?, ?, ?, ?, ?)",
-                ("Fresh task", 3, "agent:dev-emma", 3, _old_utc_str(5)),
+                "INSERT INTO tickets (headline, status, tags, assignee, projectId, date) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("Fresh task", 3, "agent:dev-emma", "dev-emma", 3, _old_utc_str(5)),
             )
             await db.commit()
 
@@ -386,9 +386,9 @@ class TestDispatchEventLogging:
             db = await client._get_db()
             # Insert a recent ticket with explicit UTC time
             await db.execute(
-                "INSERT INTO tickets (headline, status, tags, projectId, date) "
-                "VALUES (?, ?, ?, ?, ?)",
-                ("Test task", 3, "agent:dev-emma", 3, _old_utc_str(5)),
+                "INSERT INTO tickets (headline, status, tags, assignee, projectId, date) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("Test task", 3, "agent:dev-emma", "dev-emma", 3, _old_utc_str(5)),
             )
             await db.commit()
 
