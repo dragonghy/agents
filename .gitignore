@@ -31,7 +31,22 @@ services/agents-mcp/src/agents_mcp/web/static/
 
 # Daemon runtime files
 .daemon.log
+.daemon.log.prev
 .daemon.pid
+.watchdog.log
+
+# Test outputs (screenshots, results)
+test-results/
+tests/screenshots/
+**/screenshots/*.png
+
+# External projects (managed in their own repos)
+projects/shopify-seo-app/
+projects/showcase/
+projects/seopilot-landing/
+projects/seopilot-chrome-ext/
+projects/business-research/
+projects/pomodoro-timer/
 
 # OS files
 .DS_Store
