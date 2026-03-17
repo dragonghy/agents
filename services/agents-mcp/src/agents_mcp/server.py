@@ -70,17 +70,55 @@ def _load_dotenv(dotenv_path):
                 os.environ[key] = value
 
 
+def _find_project_root() -> str:
+    """Auto-detect the project root by looking for known markers.
+
+    Checks the package's own location first (server.py is at
+    services/agents-mcp/src/agents_mcp/server.py, so root is 4 levels up),
+    then walks up from CWD.
+    """
+    # Try from this file's location: root is 4 levels up
+    pkg_dir = os.path.dirname(os.path.abspath(__file__))
+    candidate = os.path.normpath(os.path.join(pkg_dir, "..", "..", "..", ".."))
+    if os.path.isfile(os.path.join(candidate, "setup-agents.py")):
+        return candidate
+
+    # Walk up from CWD
+    d = os.path.abspath(".")
+    for _ in range(10):
+        if os.path.isfile(os.path.join(d, "setup-agents.py")):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+
+    # Fallback to CWD
+    return os.path.abspath(".")
+
+
 def _load_config() -> dict:
-    """Load agents.yaml from AGENTS_CONFIG_PATH env var, resolving ${VAR} references.
+    """Load agents.yaml, resolving ${VAR} references.
+
+    Config path resolution order:
+    1. AGENTS_CONFIG_PATH env var (explicit)
+    2. Auto-detect project root and look for agents.yaml there
 
     If the config file does not exist yet (first-time setup / onboarding),
     returns a minimal empty config so the daemon can start and serve the
     onboarding wizard which will generate the real agents.yaml.
     """
     config_path = os.environ.get("AGENTS_CONFIG_PATH")
-    if not config_path or not os.path.isfile(config_path):
+    if not config_path:
+        # Auto-detect: find project root and set AGENTS_CONFIG_PATH
+        root = _find_project_root()
+        config_path = os.path.join(root, "agents.yaml")
+        os.environ["AGENTS_CONFIG_PATH"] = config_path
+
+    if not os.path.isfile(config_path):
         # No config yet — return minimal config for onboarding mode
         return {"agents": {}}
+
     # Load .env from the same directory as agents.yaml
     root_dir = os.path.dirname(os.path.abspath(config_path))
     _load_dotenv(os.path.join(root_dir, ".env"))
