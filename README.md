@@ -21,7 +21,7 @@
 
 ## What is Agent Hub?
 
-Agent Hub is a framework for running multiple AI agents as a coordinated software team. Each agent is an independent [Claude Code](https://docs.anthropic.com/en/docs/claude-code) instance with a specialized role (Product Manager, Developer, QA Engineer), connected through a central MCP daemon that handles task dispatch, inter-agent messaging, and project management via [Leantime](https://leantime.io).
+Agent Hub is a framework for running multiple AI agents as a coordinated software team. Each agent is an independent [Claude Code](https://docs.anthropic.com/en/docs/claude-code) instance with a specialized role (Product Manager, Developer, QA Engineer), connected through a central MCP daemon that handles task dispatch, inter-agent messaging, and project management.
 
 **Key idea:** You describe what you want built, and the agents handle the rest — breaking it into milestones, implementing code, writing tests, and verifying quality — all without human intervention.
 
@@ -99,36 +99,45 @@ Each agent runs as an independent Claude Code instance inside a **tmux** window,
 4. **QA** runs verification tests — approves or sends back with a bug report
 5. **Product** does final acceptance and closes the ticket
 
-Agents communicate through Leantime ticket comments for formal handoffs and P2P messages for quick coordination. The daemon runs a dispatch loop every 30 seconds, checking for pending work and idle agents.
+Agents communicate through ticket comments for formal handoffs and P2P messages for quick coordination. The daemon runs a dispatch loop every 30 seconds, checking for pending work and idle agents.
 
 ## Quick Start
 
-### Prerequisites
-
-- Python 3.11+ with [uv](https://docs.astral.sh/uv/)
-- Docker & Docker Compose
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) with an Anthropic API key
-- Node.js 18+ (for Web UI)
-
-### Setup
+### Web UI Only (Docker)
 
 ```bash
-# 1. Clone
+git clone https://github.com/dragonghy/agents.git
+cd agents
+docker compose up --build -d
+# Open http://localhost:3000
+```
+
+### Full System in Docker
+
+Run daemon + Claude Code agents entirely in Docker:
+
+```bash
+git clone https://github.com/dragonghy/agents.git
+cd agents
+cp .env.example .env
+# Edit .env — set CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY
+docker compose --profile agents up --build -d
+# Open http://localhost:3000
+```
+
+Observe agents: `docker exec -it agents-agents-1 tmux attach -t agents`
+
+### Full System (Bare Metal)
+
+```bash
 git clone https://github.com/dragonghy/agents.git
 cd agents
 
-# 2. Configure environment
+# Configure
 cp .env.example .env
-# Edit .env — fill in your Leantime API key and Anthropic API key
 
-# 3. Start Leantime (project management backend)
-source .env
-docker compose -f services/leantime/docker-compose.yml up -d
-
-# 4. Generate agent workspaces
+# Generate agent workspaces and start everything
 python3 setup-agents.py
-
-# 5. Start the daemon and all agents
 ./restart_all_agents.sh
 ```
 
@@ -140,7 +149,7 @@ tmux attach -t agents
 # Detach: Ctrl-b d
 ```
 
-The Web UI is available at **http://localhost:8765** when the daemon is running.
+The Web UI is available at **http://localhost:8765** (local) or **http://localhost:3000** (Docker).
 
 For detailed setup instructions, see [docs/getting-started.md](docs/getting-started.md).
 
@@ -160,10 +169,9 @@ agent-hub/
 │   └── shared/              #   Shared skills (leantime, daily-journal, etc.)
 ├── agents/                  # Generated workspaces (gitignored)
 ├── services/
-│   ├── agents-mcp/          # Central MCP daemon (Python/FastMCP)
-│   │   ├── src/agents_mcp/  #   Server, dispatcher, Leantime client
-│   │   └── web/             #   React dashboard (Vite + Tailwind)
-│   └── leantime/            # Leantime Docker setup + custom plugins
+│   └── agents-mcp/          # Central MCP daemon (Python/FastMCP)
+│       ├── src/agents_mcp/  #   Server, dispatcher, SQLite storage
+│       └── web/             #   React dashboard (Vite + Tailwind)
 ├── projects/                # Project-specific code and skills
 └── tests/                   # E2E test scripts
 ```

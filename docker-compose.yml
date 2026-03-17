@@ -1,9 +1,12 @@
-# Docker Compose for Agent-Hub (Daemon + Web UI)
+# Docker Compose for Agent-Hub
 #
-# Quick start:
-#   1. cp .env.example .env        (optional, edit if needed)
-#   2. docker compose up --build
-#   3. Open http://localhost:3000
+# Daemon only (Web UI + API):
+#   docker compose up --build
+#   Open http://localhost:3000
+#
+# Full system (Daemon + Claude Code Agents):
+#   docker compose --profile agents up --build
+#   docker exec -it agents-agents-1 tmux attach -t agents
 #
 # The daemon serves both the REST API and Web UI on a single port.
 # SQLite databases are persisted in a Docker named volume.
@@ -22,6 +25,30 @@ services:
     env_file:
       - path: .env
         required: false
+    restart: unless-stopped
+
+  # Claude Code agents running in tmux sessions.
+  # Requires authentication: set CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY in .env
+  # Activate with: docker compose --profile agents up
+  agents:
+    build:
+      context: .
+      dockerfile: docker/agent/Dockerfile
+    environment:
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # Connect to daemon container via Docker DNS
+      - DAEMON_HOST=daemon
+      # Skip local daemon management (daemon runs in separate container)
+      - SKIP_DAEMON=1
+    volumes:
+      # Mount repo for agent workspaces, config, and code access
+      - .:/app
+    depends_on:
+      daemon:
+        condition: service_started
+    profiles:
+      - agents
     restart: unless-stopped
 
 volumes:

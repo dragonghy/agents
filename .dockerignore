@@ -1,0 +1,13 @@
+# Docker build context filter for agent image (context: repo root)
+# Only the entrypoint script is COPYed; everything else is bind-mounted at runtime.
+.git
+.daemon.log*
+.watchdog.log
+.agent-sessions
+.agents-*.db
+*.pyc
+__pycache__
+node_modules
+agents/
+services/agents-mcp/web/node_modules/
+services/agents-mcp/.venv/

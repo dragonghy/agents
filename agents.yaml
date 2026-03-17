@@ -15,7 +15,7 @@ leantime:
 # Daemon config: central agents-mcp process that all agents connect to via proxy.
 # Start daemon: uv run --directory services/agents-mcp agents-mcp --daemon --port 8765
 daemon:
-  host: 127.0.0.1
+  host: ${DAEMON_HOST:-127.0.0.1}
   port: 8765
 
 # MCP servers spawned per-agent by Claude Code.

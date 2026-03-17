@@ -19,6 +19,8 @@ WORKERS="$(python3 "$CONFIG" list-workers | tr '\n' ' ')"
 mkdir -p "$PROJECT_DIR"
 
 # --- Daemon management ---
+# Set SKIP_DAEMON=1 to skip daemon start/stop (e.g., in Docker agent mode
+# where the daemon runs in a separate container).
 
 DAEMON_LOG="${ROOT_DIR}/.daemon.log"
 DAEMON_PID_FILE="${ROOT_DIR}/.daemon.pid"
@@ -91,11 +93,16 @@ start_daemon() {
   # Build Web UI if not already built
   build_web_ui
 
+  # Rotate log: keep previous crash log for diagnosis
+  if [[ -f "$DAEMON_LOG" ]] && [[ -s "$DAEMON_LOG" ]]; then
+    mv "$DAEMON_LOG" "${DAEMON_LOG}.prev"
+  fi
+
   echo "  Starting daemon on ${host}:${port}..."
   AGENTS_CONFIG_PATH="${ROOT_DIR}/agents.yaml" \
     nohup uv run --directory "${ROOT_DIR}/services/agents-mcp" \
     agents-mcp --daemon --host "$host" --port "$port" \
-    > "$DAEMON_LOG" 2>&1 &
+    >> "$DAEMON_LOG" 2>&1 &
   local pid=$!
   echo "$pid" > "$DAEMON_PID_FILE"
 
@@ -234,8 +241,10 @@ case "${1:-__all__}" in
     stop_daemon
     ;;
   --workers)
-    echo "=== Ensuring daemon ==="
-    start_daemon
+    if [[ "${SKIP_DAEMON:-}" != "1" ]]; then
+      echo "=== Ensuring daemon ==="
+      start_daemon
+    fi
     echo "=== Restarting workers ==="
     ensure_session
     for agent in $WORKERS; do
@@ -246,8 +255,10 @@ case "${1:-__all__}" in
     tmux select-window -t "$TMUX_SESSION:$(tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' | head -1)"
     ;;
   --all|__all__)
-    echo "=== Ensuring daemon ==="
-    start_daemon
+    if [[ "${SKIP_DAEMON:-}" != "1" ]]; then
+      echo "=== Ensuring daemon ==="
+      start_daemon
+    fi
     echo "=== Restarting all agents ==="
     ensure_session
     for agent in $ALL_AGENTS; do
@@ -264,8 +275,10 @@ case "${1:-__all__}" in
   *)
     agent="$1"
     if echo "$ALL_AGENTS" | grep -qw "$agent"; then
-      echo "=== Ensuring daemon ==="
-      start_daemon
+      if [[ "${SKIP_DAEMON:-}" != "1" ]]; then
+        echo "=== Ensuring daemon ==="
+        start_daemon
+      fi
       echo "=== Restarting $agent ==="
       ensure_session
       start_agent "$agent"
@@ -279,11 +292,13 @@ case "${1:-__all__}" in
 esac
 
 echo ""
-# Print Web UI URL if daemon is running
-DAEMON_PORT="$(get_daemon_port)"
-DAEMON_HOST="$(get_daemon_host)"
-if [[ -n "$DAEMON_PORT" ]] && daemon_is_running; then
-  echo "  Web UI:  http://${DAEMON_HOST}:${DAEMON_PORT}/"
+# Print Web UI URL if daemon is running (skip in Docker agent mode)
+if [[ "${SKIP_DAEMON:-}" != "1" ]]; then
+  DAEMON_PORT="$(get_daemon_port)"
+  DAEMON_HOST="$(get_daemon_host)"
+  if [[ -n "$DAEMON_PORT" ]] && daemon_is_running; then
+    echo "  Web UI:  http://${DAEMON_HOST}:${DAEMON_PORT}/"
+  fi
 fi
 echo "  tmux attach -t $TMUX_SESSION"
 echo ""
