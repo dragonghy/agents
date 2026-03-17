@@ -754,20 +754,43 @@ async def reassign_ticket(
     result = await client.update_ticket(ticket_id, assignee=to_agent, status=3)
 
     # Auto-dispatch target agent (best-effort)
+    # If agent is idle → dispatch immediately
+    # If agent is busy → schedule deferred dispatch (retry until idle or timeout)
     dispatch_result = None
+    deferred_result = None
     try:
-        from agents_mcp.dispatcher import _tmux_window_exists, _is_idle, _dispatch_agent
+        from agents_mcp.dispatcher import (
+            _tmux_window_exists, _is_idle, _dispatch_agent,
+            schedule_deferred_dispatch,
+        )
 
         cfg = get_config()
         tmux_session = cfg.get("tmux_session", "agents")
+        store = await get_store()
+
         if not _tmux_window_exists(tmux_session, to_agent):
             dispatch_result = "no_window"
         elif not _is_idle(tmux_session, to_agent):
             dispatch_result = "busy"
+            # Schedule deferred dispatch: retry until agent becomes idle
+            deferred_result = schedule_deferred_dispatch(
+                tmux_session, to_agent, ticket_id, store=store,
+            )
         else:
             _dispatch_agent(tmux_session, to_agent)
             dispatch_result = "dispatched"
-        logger.info(f"Reassign #{ticket_id} → {to_agent}: auto-dispatch={dispatch_result}")
+            # Log dispatch event
+            try:
+                await store.log_dispatch_event(
+                    to_agent, "reassign",
+                    f"Immediate dispatch after reassign #{ticket_id} from {from_agent}",
+                )
+            except Exception:
+                pass  # Logging is best-effort
+        logger.info(
+            f"Reassign #{ticket_id} → {to_agent}: "
+            f"auto-dispatch={dispatch_result}, deferred={deferred_result}"
+        )
     except Exception as e:
         dispatch_result = f"error"
         logger.warning(f"Auto-dispatch failed for {to_agent} after reassign #{ticket_id}: {e}")
@@ -777,6 +800,8 @@ async def reassign_ticket(
         "to": to_agent, "auto_dispatch": dispatch_result,
         "comment_added": comment_added,
     }
+    if deferred_result:
+        response["deferred_dispatch"] = deferred_result
     if comment_error:
         response["comment_error"] = comment_error
     return json.dumps(response)

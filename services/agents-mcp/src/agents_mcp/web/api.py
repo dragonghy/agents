@@ -326,6 +326,13 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
         client = get_client()
         store = await get_store()
         results = await dispatch_cycle(client, [agent_id], tmux_session, store=store)
+        # Log manual dispatch event
+        result_str = results.get(agent_id, "unknown")
+        if result_str.startswith("dispatched"):
+            try:
+                await store.log_dispatch_event(agent_id, "manual", f"Manual dispatch via Web UI: {result_str}")
+            except Exception:
+                pass
         # Broadcast dispatch result
         from agents_mcp.web.events import event_bus
         await event_bus.broadcast("dispatch_completed", results)
@@ -514,6 +521,30 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
             )
         await store.delete_schedule(schedule_id)
         return JSONResponse({"status": "deleted", "schedule_id": schedule_id})
+
+    # ── Dispatch Events ──
+
+    async def list_dispatch_events(request: Request) -> JSONResponse:
+        store = await get_store()
+        params = request.query_params
+        agent_id = params.get("agent_id")
+        limit = int(params.get("limit", "50"))
+        offset = int(params.get("offset", "0"))
+        result = await store.get_dispatch_events(
+            agent_id=agent_id, limit=limit, offset=offset,
+        )
+        return JSONResponse(result)
+
+    async def get_agent_dispatch_events(request: Request) -> JSONResponse:
+        agent_id = request.path_params["id"]
+        store = await get_store()
+        params = request.query_params
+        limit = int(params.get("limit", "50"))
+        offset = int(params.get("offset", "0"))
+        result = await store.get_dispatch_events(
+            agent_id=agent_id, limit=limit, offset=offset,
+        )
+        return JSONResponse(result)
 
     # ── Health ──
 
@@ -766,6 +797,7 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
         Route("/v1/agents/{id}/terminal", get_agent_terminal),
         Route("/v1/agents/{id}/usage", get_agent_usage),
         Route("/v1/agents/{id}/usage/refresh", refresh_agent_usage, methods=["POST"]),
+        Route("/v1/agents/{id}/dispatch-events", get_agent_dispatch_events),
         Route("/v1/agents/{id}/journals/{date}", get_agent_journal),
         Route("/v1/agents/{id}/journals", list_agent_journals),
         Route("/v1/agents/{id}", get_agent),
@@ -787,6 +819,7 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
         Route("/v1/agents/{id}/dispatch", dispatch_agent, methods=["POST"]),
         Route("/v1/agents/dispatch-all", dispatch_all_agents, methods=["POST"]),
         Route("/v1/feedback", submit_feedback, methods=["POST"]),
+        Route("/v1/dispatch-events", list_dispatch_events),
         # Schedule management
         Route("/v1/schedules", schedules_endpoint, methods=["GET", "POST"]),
         Route("/v1/schedules/{id}", delete_schedule, methods=["DELETE"]),

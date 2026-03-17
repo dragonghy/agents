@@ -358,8 +358,15 @@ class LeantimeClient:
 
     # ── Dependency checking (for auto-dispatch) ──
 
+    # Statuses considered "done": 0=已完成, -1=已归档, 5=agents also use this
+    DONE_STATUSES = (0, -1, 5)
+
     async def check_and_unblock_deps(self) -> list[str]:
-        """Check blocked tickets' DEPENDS_ON and unblock if all deps are done.
+        """Check DEPENDS_ON across tickets and auto-correct status.
+
+        Two passes:
+        1. Auto-lock: status=3 tickets with unresolved DEPENDS_ON → set to status=1
+        2. Auto-unlock: status=1 tickets whose DEPENDS_ON are all done → set to status=3
 
         Returns list of log messages.
         """
@@ -377,6 +384,37 @@ class LeantimeClient:
                 status_map[int(tid)] = int(t.get("status", 99))
 
         messages = []
+
+        # Pass 1: Auto-lock status=3 tickets with unresolved DEPENDS_ON
+        for t in result:
+            if int(t.get("status", 99)) != 3:
+                continue
+            desc = t.get("description") or ""
+            match = re.search(
+                r"DEPENDS_ON:\s*((?:#\d+|&#35;\d+)(?:\s*,\s*(?:#\d+|&#35;\d+))*)",
+                desc,
+            )
+            if not match:
+                continue
+            dep_ids = [int(x) for x in re.findall(r"(\d+)", match.group(1))]
+            if not dep_ids:
+                continue
+            # If all deps are done, leave as status=3 (actionable)
+            if all(status_map.get(d, 99) in self.DONE_STATUSES for d in dep_ids):
+                continue
+
+            ticket_id = int(t["id"])
+            current = await self.get_ticket(ticket_id, prune=False)
+            if current:
+                current["status"] = 1
+                current["id"] = ticket_id
+                await self._call(
+                    "leantime.rpc.Tickets.Tickets.updateTicket",
+                    {"values": current},
+                )
+                messages.append(f"Auto-locked #{ticket_id} (DEPENDS_ON {dep_ids} not all done)")
+
+        # Pass 2: Unblock status=1 tickets whose DEPENDS_ON are all done
         for t in result:
             if int(t.get("status", 99)) != 1:
                 continue
@@ -390,7 +428,7 @@ class LeantimeClient:
             dep_ids = [int(x) for x in re.findall(r"(\d+)", match.group(1))]
             if not dep_ids:
                 continue
-            if not all(status_map.get(d, 99) in (0, -1) for d in dep_ids):
+            if not all(status_map.get(d, 99) in self.DONE_STATUSES for d in dep_ids):
                 continue
 
             ticket_id = int(t["id"])

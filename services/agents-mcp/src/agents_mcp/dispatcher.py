@@ -2,10 +2,11 @@
 
 import asyncio
 import logging
+import os
 import re
 import subprocess
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -13,14 +14,27 @@ from agents_mcp.sqlite_task_client import SQLiteTaskClient
 
 logger = logging.getLogger(__name__)
 
-# Track last dispatch time per agent (for schedule-based dispatch)
-_last_dispatched: dict[str, float] = {}
+# Per-agent rate limit tracking: agent -> {"reset_ts": float, "first_detected": float}
+_agent_rate_limits: dict[str, dict] = {}
 
-# Track journal dispatch per agent per day (agent -> "YYYY-MM-DD")
-_journal_dispatched: dict[str, str] = {}
+# Auto-restart cooldown: agent -> last restart attempt timestamp
+_auto_restart_cooldown: dict[str, float] = {}
+AUTO_RESTART_COOLDOWN = 300  # 5 minutes between restart attempts
 
-# Rate limit: when set, all dispatch is paused until this Unix timestamp
-_rate_limit_until: Optional[float] = None
+# Stale dispatch cooldown: agent -> last stale dispatch timestamp
+# Prevents spamming agents with the same stale ticket message every 30s.
+_stale_dispatch_cooldown: dict[str, float] = {}
+STALE_DISPATCH_COOLDOWN = 3600  # 1 hour between stale reminders for the same agent
+
+# Deferred dispatch: track active deferred tasks to avoid duplicates
+# agent -> asyncio.Task
+_deferred_dispatch_tasks: dict[str, asyncio.Task] = {}
+
+# Deferred dispatch configuration
+DEFERRED_DISPATCH_INTERVAL = 10  # seconds between retries
+DEFERRED_DISPATCH_MAX_WAIT = 120  # max seconds to keep retrying
+
+_SUBPROCESS_TIMEOUT = 10  # seconds; prevent tmux hangs from blocking the event loop
 
 
 def _tmux_window_exists(tmux_session: str, agent: str) -> bool:
@@ -29,9 +43,10 @@ def _tmux_window_exists(tmux_session: str, agent: str) -> bool:
             ["tmux", "list-windows", "-t", tmux_session, "-F", "#{window_name}"],
             stderr=subprocess.DEVNULL,
             text=True,
+            timeout=_SUBPROCESS_TIMEOUT,
         )
         return agent in out.strip().split("\n")
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return False
 
 
@@ -41,27 +56,58 @@ def _is_idle(tmux_session: str, agent: str) -> bool:
             ["tmux", "capture-pane", "-t", f"{tmux_session}:{agent}", "-p"],
             stderr=subprocess.DEVNULL,
             text=True,
+            timeout=_SUBPROCESS_TIMEOUT,
         )
         lines = [l for l in out.split("\n") if l.strip()]
-        tail = "\n".join(lines[-10:])
+        tail_lines = lines[-10:]
 
-        if any(marker in tail for marker in ["Running…", "Wandering…", "esc to interrupt"]):
+        # The ❯ prompt is the definitive idle indicator.
+        # Check if it appears in the last few lines (before the status bar).
+        has_prompt = any(l.startswith("❯") for l in tail_lines)
+        if not has_prompt:
             return False
-        return any(l.startswith("❯") for l in lines[-10:])
-    except subprocess.CalledProcessError:
+
+        # Agent has ❯ prompt. Check for active work indicators above it.
+        # "esc to interrupt" in the status bar is ALWAYS present in Claude Code
+        # v2.1+, so we must NOT use it as a busy indicator.
+        # Instead, check for active spinner/thinking indicators (lines above ❯).
+        above_prompt = []
+        for l in reversed(tail_lines):
+            if l.startswith("❯"):
+                break
+            above_prompt.append(l)
+        above_prompt.reverse()
+        above_text = "\n".join(above_prompt)
+
+        # Active work markers that appear ABOVE the prompt (not in status bar)
+        active_markers = ["Running…", "Wandering…", "thinking"]
+        if any(marker in above_text for marker in active_markers):
+            return False
+
+        return True
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return False
 
 
-def _capture_pane(tmux_session: str, agent: str, lines: int = 30) -> str:
-    """Capture tmux pane content. Returns empty string on failure."""
+def _capture_pane(tmux_session: str, agent: str, lines: int = 0) -> str:
+    """Capture tmux pane content. Returns empty string on failure.
+
+    Args:
+        lines: If > 0, return only the last N non-empty lines.
+               If 0 (default), return full visible pane content.
+    """
     try:
-        return subprocess.check_output(
-            ["tmux", "capture-pane", "-t", f"{tmux_session}:{agent}",
-             "-p", "-S", f"-{lines}"],
+        out = subprocess.check_output(
+            ["tmux", "capture-pane", "-t", f"{tmux_session}:{agent}", "-p"],
             stderr=subprocess.DEVNULL,
             text=True,
+            timeout=_SUBPROCESS_TIMEOUT,
         )
-    except subprocess.CalledProcessError:
+        if lines > 0:
+            non_empty = [l for l in out.split("\n") if l.strip()]
+            return "\n".join(non_empty[-lines:])
+        return out
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return ""
 
 
@@ -95,7 +141,8 @@ def _parse_reset_time(text: str) -> Optional[float]:
     now = datetime.now(tz)
     reset_dt = now.replace(hour=hour, minute=0, second=0, microsecond=0)
     if reset_dt <= now:
-        reset_dt += timedelta(days=1)
+        # Reset time is in the past — this is stale rate limit text, ignore it
+        return None
 
     return reset_dt.timestamp()
 
@@ -103,9 +150,13 @@ def _parse_reset_time(text: str) -> Optional[float]:
 def _check_rate_limited(tmux_session: str, agent: str) -> Optional[float]:
     """Check if an agent's terminal shows a rate limit message.
 
+    Only checks the last 5 lines to avoid false positives from stale
+    rate limit text still visible in terminal scrollback.
+
     Returns the reset timestamp if rate limited, None otherwise.
+    Returns None for stale rate limit text (reset time in the past).
     """
-    out = _capture_pane(tmux_session, agent)
+    out = _capture_pane(tmux_session, agent, lines=5)
     if not out:
         return None
 
@@ -114,35 +165,127 @@ def _check_rate_limited(tmux_session: str, agent: str) -> Optional[float]:
         return None
 
     reset_ts = _parse_reset_time(out)
-    if reset_ts is None:
-        # Rate limit detected but couldn't parse reset time; default 1 hour
-        reset_ts = time.time() + 3600
-
+    # Only rate-limit if we can parse a FUTURE reset time.
+    # If reset time is in the past or unparseable, this is likely stale text
+    # left over from a previous rate limit — ignore it.
     return reset_ts
 
 
 def is_rate_limited() -> bool:
-    """Check if dispatch is currently paused due to rate limit."""
-    global _rate_limit_until
-    if _rate_limit_until is None:
+    """Check if ANY agent is currently rate limited."""
+    now = time.time()
+    return any(info["reset_ts"] > now for info in _agent_rate_limits.values())
+
+
+def is_agent_rate_limited(agent: str) -> bool:
+    """Check if a specific agent is rate limited."""
+    info = _agent_rate_limits.get(agent)
+    if info is None:
         return False
-    if time.time() >= _rate_limit_until:
-        _rate_limit_until = None
+    if time.time() >= info["reset_ts"]:
+        del _agent_rate_limits[agent]
         return False
     return True
 
 
 def get_rate_limit_info() -> Optional[dict]:
-    """Get rate limit info if active. Used by API/WebSocket."""
-    global _rate_limit_until
-    if _rate_limit_until is None or time.time() >= _rate_limit_until:
+    """Get rate limit info if any agent is limited. Used by API/WebSocket."""
+    now = time.time()
+    active = {a: info for a, info in _agent_rate_limits.items() if info["reset_ts"] > now}
+    if not active:
         return None
-    remaining = int(_rate_limit_until - time.time())
+    # Return info about the latest rate limit
+    max_agent = max(active, key=lambda a: active[a]["reset_ts"])
+    max_info = active[max_agent]
+    remaining = int(max_info["reset_ts"] - now)
     return {
-        "until": _rate_limit_until,
-        "until_iso": datetime.fromtimestamp(_rate_limit_until).isoformat(),
+        "until": max_info["reset_ts"],
+        "until_iso": datetime.fromtimestamp(max_info["reset_ts"]).isoformat(),
         "remaining_seconds": remaining,
+        "agents": {
+            a: {
+                "reset_ts": info["reset_ts"],
+                "reset_iso": datetime.fromtimestamp(info["reset_ts"]).isoformat(),
+                "first_detected": info["first_detected"],
+                "first_detected_iso": datetime.fromtimestamp(info["first_detected"]).isoformat(),
+            }
+            for a, info in active.items()
+        },
     }
+
+
+def _is_agent_process_alive(tmux_session: str, agent: str) -> bool:
+    """Check if the Claude Code process is still running in the agent's tmux pane.
+
+    Each agent runs in a tmux pane with zsh as the base shell.
+    When Claude Code is running, it's a child process of that zsh.
+    If Claude crashes or exits, zsh has no children.
+    """
+    try:
+        pane_pid = subprocess.check_output(
+            ["tmux", "list-panes", "-t", f"{tmux_session}:{agent}",
+             "-F", "#{pane_pid}"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=_SUBPROCESS_TIMEOUT,
+        ).strip()
+        if not pane_pid:
+            return False
+        # Check if the pane's shell has any child processes
+        children = subprocess.check_output(
+            ["pgrep", "-P", pane_pid],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=_SUBPROCESS_TIMEOUT,
+        ).strip()
+        return bool(children)
+    except subprocess.CalledProcessError:
+        # pgrep returns exit code 1 if no processes found
+        return False
+    except subprocess.TimeoutExpired:
+        return True  # Assume alive if we can't check
+
+
+async def _auto_restart_agent(agent: str, root_dir: str, store=None):
+    """Auto-restart a crashed agent and send continuation message."""
+    now = time.time()
+    last_attempt = _auto_restart_cooldown.get(agent, 0)
+    if now - last_attempt < AUTO_RESTART_COOLDOWN:
+        logger.debug(f"Skipping auto-restart of {agent}: cooldown ({int(AUTO_RESTART_COOLDOWN - (now - last_attempt))}s remaining)")
+        return
+
+    _auto_restart_cooldown[agent] = now
+    logger.info(f"Auto-restarting crashed agent: {agent}")
+
+    # Send continuation message
+    if store:
+        msg = (
+            f"你的 session 被系统自动重启（检测到进程异常退出）。\n\n"
+            f"请执行以下步骤:\n"
+            f"1. 检查 MCP 工具是否正常（尝试调用 list_tickets 或 get_inbox）\n"
+            f"2. 用 get_inbox(agent_id=\"{agent}\") 检查未读消息\n"
+            f"3. 用 list_tickets(assignee=\"{agent}\", status=\"3,4\") 检查待办任务\n"
+            f"4. 继续之前的工作"
+        )
+        await store.insert_message("system", agent, msg)
+
+    restart_script = os.path.join(root_dir, "restart_all_agents.sh")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "bash", restart_script, agent,
+            cwd=root_dir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+        if proc.returncode == 0:
+            logger.info(f"Auto-restarted {agent} successfully")
+        else:
+            logger.error(f"Auto-restart {agent} failed: {stderr.decode()}")
+    except asyncio.TimeoutError:
+        logger.error(f"Auto-restart {agent} timed out")
+    except Exception as e:
+        logger.error(f"Auto-restart {agent} error: {e}")
 
 
 def _send_tmux_message(tmux_session: str, agent: str, msg: str):
@@ -150,11 +293,13 @@ def _send_tmux_message(tmux_session: str, agent: str, msg: str):
     subprocess.run(
         ["tmux", "send-keys", "-l", "-t", f"{tmux_session}:{agent}", msg],
         check=True,
+        timeout=_SUBPROCESS_TIMEOUT,
     )
     time.sleep(2)
     subprocess.run(
         ["tmux", "send-keys", "-t", f"{tmux_session}:{agent}", "Enter"],
         check=True,
+        timeout=_SUBPROCESS_TIMEOUT,
     )
 
 
@@ -189,64 +334,133 @@ def _dispatch_agent_stale(tmux_session: str, agent: str, stale_tickets: list[dic
     _send_tmux_message(tmux_session, agent, msg)
 
 
-def _dispatch_agent_schedule(tmux_session: str, agent: str, prompt: str):
-    _send_tmux_message(tmux_session, agent, prompt)
-
-
-def _check_journal_due(agent: str, journal_config: dict, agent_index: int) -> bool:
-    """Check if it's time for this agent's daily journal.
-
-    Returns True if:
-    - journal_config is set
-    - Current time >= configured time + stagger offset for this agent
-    - Journal hasn't been dispatched for this agent today
-    """
-    if not journal_config:
-        return False
-
-    today = datetime.now().strftime("%Y-%m-%d")
-    if _journal_dispatched.get(agent) == today:
-        return False
-
-    time_str = journal_config.get("time", "01:00")
-    stagger = journal_config.get("stagger_minutes", 5)
-    hour, minute = map(int, time_str.split(":"))
-
-    # Add stagger offset per agent
-    target_minute = minute + agent_index * stagger
-    target_hour = hour + target_minute // 60
-    target_minute = target_minute % 60
-
-    now = datetime.now()
-    target = now.replace(hour=target_hour % 24, minute=target_minute, second=0, microsecond=0)
-
-    return now >= target
-
-
-def _dispatch_agent_journal(tmux_session: str, agent: str):
-    """Send daily journal prompt to an agent."""
-    today = datetime.now().strftime("%Y-%m-%d")
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+def _dispatch_agent_unattended(tmux_session: str, agent: str, tickets: list[dict]):
+    """Dispatch agent about unattended new tickets (status=3) that haven't been picked up."""
+    ticket_list = ", ".join(f"#{t['id']}" for t in tickets)
     msg = (
-        f"每日工作日志：请总结你过去 24 小时的工作。"
-        f"1. 查询你的 Leantime 活动：list_tickets(assignee=\"{agent}\", status=\"all\", dateFrom=\"{yesterday}\") "
-        f"2. 查看收件箱：get_inbox(agent_id=\"{agent}\") "
-        f"3. 按 /daily-journal skill 的格式写日志 "
-        f"4. 保存到 agents/{agent}/journal/{today}.md "
-        f"如果今天没有任何活动，也请记录\"今日无任务\"。"
+        f"你有 {len(tickets)} 个未处理的新 ticket：{ticket_list}。"
+        f"请查看并领取任务（设为进行中并开始工作）。"
+        f"先用 get_inbox(agent_id=\"{agent}\") 检查未读消息，"
+        f"然后查询分配给你的任务（tags 包含 agent:{agent}，status=3,4）并执行。"
     )
     _send_tmux_message(tmux_session, agent, msg)
 
 
+def _dispatch_agent_schedule(tmux_session: str, agent: str, prompt: str):
+    _send_tmux_message(tmux_session, agent, prompt)
+
+
+async def deferred_dispatch(
+    tmux_session: str,
+    agent: str,
+    ticket_id: int,
+    store=None,
+    interval: int = DEFERRED_DISPATCH_INTERVAL,
+    max_wait: int = DEFERRED_DISPATCH_MAX_WAIT,
+) -> str:
+    """Retry dispatching an agent until it becomes idle or timeout.
+
+    Used by reassign_ticket when the target agent is busy. Runs as a background
+    asyncio task, checking every `interval` seconds for up to `max_wait` seconds.
+
+    Returns the final dispatch result: 'dispatched', 'timeout', 'no_window', or 'error'.
+    """
+    start = time.time()
+    attempt = 0
+
+    while time.time() - start < max_wait:
+        attempt += 1
+        await asyncio.sleep(interval)
+
+        if not _tmux_window_exists(tmux_session, agent):
+            logger.info(f"Deferred dispatch {agent}: no tmux window, giving up")
+            return "no_window"
+
+        if _is_idle(tmux_session, agent):
+            try:
+                _dispatch_agent(tmux_session, agent)
+                elapsed = int(time.time() - start)
+                logger.info(
+                    f"Deferred dispatch {agent}: dispatched after {elapsed}s "
+                    f"({attempt} attempts, ticket #{ticket_id})"
+                )
+                # Log dispatch event if store available
+                if store:
+                    try:
+                        await store.log_dispatch_event(
+                            agent, "deferred",
+                            f"Deferred dispatch after {elapsed}s ({attempt} retries) for ticket #{ticket_id}",
+                        )
+                    except Exception:
+                        pass  # Logging is best-effort
+                return "dispatched"
+            except Exception as e:
+                logger.warning(f"Deferred dispatch {agent}: dispatch failed: {e}")
+                return "error"
+
+        logger.debug(
+            f"Deferred dispatch {agent}: still busy "
+            f"(attempt {attempt}, {int(time.time() - start)}s elapsed)"
+        )
+
+    elapsed = int(time.time() - start)
+    logger.info(
+        f"Deferred dispatch {agent}: timed out after {elapsed}s "
+        f"({attempt} attempts, ticket #{ticket_id})"
+    )
+    return "timeout"
+
+
+def schedule_deferred_dispatch(
+    tmux_session: str,
+    agent: str,
+    ticket_id: int,
+    store=None,
+) -> str:
+    """Schedule a deferred dispatch as a background task.
+
+    If a deferred dispatch is already running for this agent, skip it.
+    Returns: 'scheduled', 'already_pending', or 'error'.
+    """
+    # Clean up completed tasks
+    done_agents = [
+        a for a, task in _deferred_dispatch_tasks.items()
+        if task.done()
+    ]
+    for a in done_agents:
+        del _deferred_dispatch_tasks[a]
+
+    # Don't stack multiple deferred dispatches for the same agent
+    if agent in _deferred_dispatch_tasks:
+        logger.debug(f"Deferred dispatch already pending for {agent}, skipping")
+        return "already_pending"
+
+    try:
+        task = asyncio.create_task(
+            deferred_dispatch(tmux_session, agent, ticket_id, store=store)
+        )
+        _deferred_dispatch_tasks[agent] = task
+        logger.info(f"Scheduled deferred dispatch for {agent} (ticket #{ticket_id})")
+        return "scheduled"
+    except Exception as e:
+        logger.warning(f"Failed to schedule deferred dispatch for {agent}: {e}")
+        return "error"
+
+
 def get_agent_tmux_status(tmux_session: str, agent: str) -> str:
-    """Get agent's tmux status: 'idle', 'busy', 'rate_limited', 'no_window', or 'unknown'."""
+    """Get agent's tmux status: 'idle', 'busy', 'rate_limited', 'crashed', 'no_window', or 'unknown'."""
     if not _tmux_window_exists(tmux_session, agent):
         return "no_window"
+
+    # Check if Claude process is still running
+    if not _is_agent_process_alive(tmux_session, agent):
+        return "crashed"
+
     if _is_idle(tmux_session, agent):
-        # Check if idle due to rate limit
-        out = _capture_pane(tmux_session, agent)
-        lower = out.lower()
-        if "hit your limit" in lower or "rate limit" in lower:
+        # Check if idle due to rate limit — must verify reset time is in the future
+        # (stale rate limit text persists on screen long after the limit expires)
+        reset_ts = _check_rate_limited(tmux_session, agent)
+        if reset_ts is not None:
             return "rate_limited"
         return "idle"
     try:
@@ -254,60 +468,56 @@ def get_agent_tmux_status(tmux_session: str, agent: str) -> str:
             ["tmux", "capture-pane", "-t", f"{tmux_session}:{agent}", "-p"],
             stderr=subprocess.DEVNULL,
             text=True,
+            timeout=_SUBPROCESS_TIMEOUT,
         )
         lines = [l for l in out.split("\n") if l.strip()]
         tail = "\n".join(lines[-10:])
-        if any(marker in tail for marker in ["Running…", "Wandering…", "esc to interrupt"]):
+        # Note: "esc to interrupt" is always present in Claude Code v2.1+ status bar,
+        # even when idle. Only use content-area markers for busy detection.
+        if any(marker in tail for marker in ["Running…", "Wandering…"]):
             return "busy"
         return "unknown"
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return "unknown"
 
 
 async def dispatch_cycle(client: SQLiteTaskClient, agents: list[str],
                          tmux_session: str, store=None,
-                         schedules: Optional[dict] = None,
-                         journal_config: Optional[dict] = None,
-                         all_agents: Optional[list[str]] = None,
-                         staleness_threshold: int = 30) -> dict:
+                         staleness_threshold: int = 30,
+                         root_dir: Optional[str] = None) -> dict:
     """Run one dispatch cycle. Returns status dict for each agent.
 
     Args:
-        schedules: {agent_name: {"interval_hours": N, "prompt": "..."}}
-        journal_config: {"time": "01:00", "stagger_minutes": 5}
-        all_agents: All agent names (including non-dispatchable) for journal dispatch.
         staleness_threshold: Minutes before in_progress tickets are considered stale (0=disabled).
+        root_dir: Project root directory.
     """
-    global _rate_limit_until
-
-    # Check if rate limit is still active
-    if _rate_limit_until is not None:
-        if time.time() < _rate_limit_until:
-            remaining = int(_rate_limit_until - time.time())
-            logger.debug(f"Dispatch paused (rate limit, {remaining}s remaining)")
-            return {agent: "rate_limited" for agent in agents}
-        else:
-            logger.info("Rate limit expired, resuming dispatch")
-            _rate_limit_until = None
-            # Broadcast rate limit cleared via WebSocket (best-effort)
-            try:
-                from agents_mcp.web.events import event_bus
-                if event_bus.client_count > 0:
-                    import asyncio
-                    asyncio.ensure_future(
-                        event_bus.broadcast("rate_limit_cleared", {})
-                    )
-            except Exception:
-                pass
+    # Clean up expired per-agent rate limits
+    now = time.time()
+    expired = [a for a, info in _agent_rate_limits.items() if info["reset_ts"] <= now]
+    for a in expired:
+        del _agent_rate_limits[a]
+        logger.info(f"Rate limit expired for {a}, resuming dispatch")
 
     # Check blocked deps first
     unblocked = await client.check_and_unblock_deps()
     for msg in unblocked:
         logger.info(msg)
 
-    now = time.time()
+    # Load schedules from DB (once per cycle, shared across all agents)
+    all_schedules = []
+    if store:
+        try:
+            all_schedules = await store.get_all_schedules()
+        except Exception as e:
+            logger.warning(f"Failed to load schedules: {e}")
+
     results = {}
     for agent in agents:
+        # Skip agent if it's individually rate limited
+        if is_agent_rate_limited(agent):
+            results[agent] = "rate_limited"
+            continue
+
         # Check for unread messages first
         unread_count = 0
         if store:
@@ -315,14 +525,21 @@ async def dispatch_cycle(client: SQLiteTaskClient, agents: list[str],
 
         has_tasks = await client.has_pending_tasks(agent)
 
-        # Check schedule trigger
-        schedule_due = False
-        schedule_cfg = (schedules or {}).get(agent)
-        if schedule_cfg and not unread_count and not has_tasks:
-            interval_sec = schedule_cfg["interval_hours"] * 3600
-            last = _last_dispatched.get(agent, 0)
-            if now - last >= interval_sec:
-                schedule_due = True
+        # Collect due schedule prompts from DB
+        schedule_prompts = []
+        due_schedule_ids = []
+
+        if not unread_count and not has_tasks:
+            for sched in all_schedules:
+                if sched["agent_id"] != agent:
+                    continue
+                interval_sec = sched["interval_hours"] * 3600
+                last = sched["last_dispatched_at"] or 0
+                if now - last >= interval_sec:
+                    schedule_prompts.append(sched["prompt"])
+                    due_schedule_ids.append(sched["id"])
+
+        schedule_due = bool(schedule_prompts)
 
         if not unread_count and not has_tasks and not schedule_due:
             results[agent] = "no_work"
@@ -339,100 +556,128 @@ async def dispatch_cycle(client: SQLiteTaskClient, agents: list[str],
         # Check if this idle agent shows rate limit in terminal
         reset_ts = _check_rate_limited(tmux_session, agent)
         if reset_ts is not None:
-            _rate_limit_until = reset_ts
+            existing = _agent_rate_limits.get(agent)
+            _agent_rate_limits[agent] = {
+                "reset_ts": reset_ts,
+                "first_detected": existing["first_detected"] if existing else time.time(),
+            }
             reset_str = datetime.fromtimestamp(reset_ts).strftime("%Y-%m-%d %H:%M:%S")
             logger.warning(
-                f"Rate limit detected on {agent}, pausing dispatch until {reset_str}"
+                f"Rate limit detected on {agent}, skipping until {reset_str}"
             )
-            # Mark all remaining agents as rate_limited
-            for a in agents:
-                if a not in results:
-                    results[a] = "rate_limited"
-            # Broadcast rate limit event via WebSocket (best-effort)
-            try:
-                from agents_mcp.web.events import event_bus
-                if event_bus.client_count > 0:
-                    import asyncio
-                    asyncio.ensure_future(
-                        event_bus.broadcast("rate_limit_detected", {
-                            "agent": agent,
-                            "until": reset_str,
-                            "remaining_seconds": int(reset_ts - time.time()),
-                        })
-                    )
-            except Exception:
-                pass
-            return results
+            results[agent] = "rate_limited"
+            continue
 
         # Priority: messages > tasks > schedule
         if unread_count:
             _dispatch_agent_messages(tmux_session, agent, unread_count)
             results[agent] = f"dispatched_messages({unread_count})"
             logger.info(f"Dispatched {agent} (messages: {unread_count})")
+            if store:
+                try:
+                    await store.log_dispatch_event(agent, "messages", f"{unread_count} unread messages")
+                except Exception:
+                    pass
         elif has_tasks:
             stale = await client.get_stale_in_progress(agent, staleness_threshold) if staleness_threshold > 0 else []
-            if stale:
-                _dispatch_agent_stale(tmux_session, agent, stale)
-                results[agent] = f"dispatched_stale({len(stale)})"
-                logger.info(f"Dispatched {agent} (stale tickets: {[t['id'] for t in stale]})")
+            unattended = await client.get_unattended_new_tickets(agent, staleness_threshold) if staleness_threshold > 0 else []
+            if stale or unattended:
+                # Cooldown: don't spam the same stale/unattended reminder every 30s.
+                last_stale = _stale_dispatch_cooldown.get(agent, 0)
+                if now - last_stale >= STALE_DISPATCH_COOLDOWN:
+                    if unattended:
+                        # Prioritize unattended new tickets — agent hasn't started them yet
+                        _dispatch_agent_unattended(tmux_session, agent, unattended)
+                        _stale_dispatch_cooldown[agent] = now
+                        results[agent] = f"dispatched_unattended({len(unattended)})"
+                        logger.info(f"Dispatched {agent} (unattended new tickets: {[t['id'] for t in unattended]})")
+                        if store:
+                            try:
+                                ticket_ids = [t['id'] for t in unattended]
+                                await store.log_dispatch_event(
+                                    agent, "unattended",
+                                    f"Unattended new tickets: {ticket_ids}",
+                                )
+                            except Exception:
+                                pass
+                    elif stale:
+                        _dispatch_agent_stale(tmux_session, agent, stale)
+                        _stale_dispatch_cooldown[agent] = now
+                        results[agent] = f"dispatched_stale({len(stale)})"
+                        logger.info(f"Dispatched {agent} (stale tickets: {[t['id'] for t in stale]})")
+                        if store:
+                            try:
+                                ticket_ids = [t['id'] for t in stale]
+                                await store.log_dispatch_event(
+                                    agent, "staleness",
+                                    f"Stale in-progress tickets: {ticket_ids}",
+                                )
+                            except Exception:
+                                pass
+                else:
+                    results[agent] = "stale_cooldown"
             else:
                 _dispatch_agent(tmux_session, agent)
                 results[agent] = "dispatched_tasks"
                 logger.info(f"Dispatched {agent} (tasks)")
+                if store:
+                    try:
+                        await store.log_dispatch_event(agent, "periodic", "Pending tasks found")
+                    except Exception:
+                        pass
         elif schedule_due:
-            _dispatch_agent_schedule(tmux_session, agent, schedule_cfg["prompt"])
+            combined_prompt = "\n\n".join(schedule_prompts)
+            _dispatch_agent_schedule(tmux_session, agent, combined_prompt)
             results[agent] = "dispatched_schedule"
-            logger.info(f"Dispatched {agent} (schedule, interval={schedule_cfg['interval_hours']}h)")
+            logger.info(f"Dispatched {agent} (schedule, {len(schedule_prompts)} trigger(s))")
+            if store:
+                try:
+                    await store.log_dispatch_event(
+                        agent, "schedule",
+                        f"{len(schedule_prompts)} schedule trigger(s)",
+                    )
+                except Exception:
+                    pass
+            # Persist schedule dispatch timestamps in DB
+            if store and due_schedule_ids:
+                for sid in due_schedule_ids:
+                    try:
+                        await store.update_schedule_dispatched(sid, now)
+                    except Exception as e:
+                        logger.warning(f"Failed to update schedule #{sid} dispatch time: {e}")
 
-        # Update last dispatch time for any dispatch type
-        _last_dispatched[agent] = now
-
-    # Journal dispatch pass: check ALL agents (including non-dispatchable like admin)
-    journal_agents = all_agents or agents
-    for idx, agent in enumerate(journal_agents):
-        # Skip if already dispatched in this cycle
-        if agent in results and results[agent].startswith("dispatched"):
-            continue
-
-        if not _check_journal_due(agent, journal_config, idx):
-            continue
-
-        if not _tmux_window_exists(tmux_session, agent):
-            if agent not in results:
-                results[agent] = "journal_no_window"
-            continue
-
-        if not _is_idle(tmux_session, agent):
-            if agent not in results:
-                results[agent] = "journal_deferred"
-            continue
-
-        _dispatch_agent_journal(tmux_session, agent)
-        _journal_dispatched[agent] = datetime.now().strftime("%Y-%m-%d")
-        results[agent] = "dispatched_journal"
-        logger.info(f"Dispatched {agent} (daily journal)")
+    # Health check pass: detect and auto-restart crashed agents
+    # Skip admin agent — it manages others and should never be auto-restarted.
+    if root_dir:
+        for agent in agents:
+            if agent == "admin":
+                continue
+            if agent in results and results[agent] in ("rate_limited", "no_window", "auto_restarted"):
+                continue
+            if not _tmux_window_exists(tmux_session, agent):
+                continue
+            if not _is_agent_process_alive(tmux_session, agent):
+                logger.warning(f"Agent {agent} process not running (crashed/exited), scheduling auto-restart")
+                results[agent] = "auto_restarted"
+                asyncio.create_task(_auto_restart_agent(agent, root_dir, store))
 
     return results
 
 
 async def dispatch_loop(client: SQLiteTaskClient, agents: list[str],
                         tmux_session: str, store=None, interval: int = 30,
-                        schedules: Optional[dict] = None,
-                        journal_config: Optional[dict] = None,
-                        all_agents: Optional[list[str]] = None,
-                        staleness_threshold: int = 30):
+                        staleness_threshold: int = 30,
+                        root_dir: Optional[str] = None):
     """Run dispatch cycles in a loop."""
-    sched_info = {a: f"{s['interval_hours']}h" for a, s in (schedules or {}).items()}
-    journal_info = f", journal={journal_config['time']}" if journal_config else ""
     stale_info = f", staleness={staleness_threshold}m" if staleness_threshold else ""
-    logger.info(f"Auto-dispatch started, interval={interval}s, agents={agents}, schedules={sched_info}{journal_info}{stale_info}")
+    logger.info(f"Auto-dispatch started, interval={interval}s, agents={agents}{stale_info} (schedules from DB)")
+
     while True:
         try:
             results = await dispatch_cycle(client, agents, tmux_session,
-                                           store=store, schedules=schedules,
-                                           journal_config=journal_config,
-                                           all_agents=all_agents,
-                                           staleness_threshold=staleness_threshold)
+                                           store=store,
+                                           staleness_threshold=staleness_threshold,
+                                           root_dir=root_dir)
             summary = " ".join(f"{a}:{s}" for a, s in results.items())
             logger.info(f"Dispatch cycle: {summary}")
             # Broadcast events via WebSocket (best-effort)

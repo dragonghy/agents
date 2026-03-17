@@ -376,8 +376,16 @@ class SQLiteTaskClient:
 
     # ── Dependency checking (for auto-dispatch) ──
 
+    # Statuses considered "done": 0=已完成, -1=已归档, 5=agents also use this
+    DONE_STATUSES = (0, -1, 5)
+
     async def check_and_unblock_deps(self) -> list[str]:
-        """Check blocked tickets' DEPENDS_ON and unblock if all deps are done."""
+        """Check DEPENDS_ON across tickets and auto-correct status.
+
+        Two passes:
+        1. Auto-lock: status=3 tickets with unresolved DEPENDS_ON → set to status=1
+        2. Auto-unlock: status=1 tickets whose DEPENDS_ON are all done → set to status=3
+        """
         db = await self._get_db()
 
         # Get all tickets for the project
@@ -391,6 +399,32 @@ class SQLiteTaskClient:
         status_map = {t["id"]: t["status"] for t in tickets}
 
         messages = []
+
+        # Pass 1: Auto-lock status=3 tickets with unresolved DEPENDS_ON
+        for t in tickets:
+            if t["status"] != 3:
+                continue
+            desc = t.get("description") or ""
+            match = re.search(
+                r"DEPENDS_ON:\s*((?:#\d+|&#35;\d+)(?:\s*,\s*(?:#\d+|&#35;\d+))*)",
+                desc,
+            )
+            if not match:
+                continue
+            dep_ids = [int(x) for x in re.findall(r"(\d+)", match.group(1))]
+            if not dep_ids:
+                continue
+            # If all deps are done, leave as status=3 (actionable)
+            if all(status_map.get(d, 99) in self.DONE_STATUSES for d in dep_ids):
+                continue
+
+            ticket_id = t["id"]
+            await db.execute(
+                "UPDATE tickets SET status = 1 WHERE id = ?", (ticket_id,)
+            )
+            messages.append(f"Auto-locked #{ticket_id} (DEPENDS_ON {dep_ids} not all done)")
+
+        # Pass 2: Unblock status=1 tickets whose DEPENDS_ON are all done
         for t in tickets:
             if t["status"] != 1:
                 continue
@@ -404,7 +438,7 @@ class SQLiteTaskClient:
             dep_ids = [int(x) for x in re.findall(r"(\d+)", match.group(1))]
             if not dep_ids:
                 continue
-            if not all(status_map.get(d, 99) in (0, -1) for d in dep_ids):
+            if not all(status_map.get(d, 99) in self.DONE_STATUSES for d in dep_ids):
                 continue
 
             ticket_id = t["id"]
@@ -438,6 +472,28 @@ class SQLiteTaskClient:
         async with db.execute(
             "SELECT id, headline, date FROM tickets "
             "WHERE tags LIKE ? AND status = 4 AND projectId = ? "
+            "AND date < ? AND date > '0001-01-01'",
+            (f"%{tag}%", self.project_id, cutoff),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [
+            {"id": r["id"], "headline": r["headline"], "date": r["date"]}
+            for r in rows
+        ]
+
+    async def get_unattended_new_tickets(self, agent: str, threshold_minutes: int = 30) -> list[dict]:
+        """Get new (status=3) tickets assigned to agent that have been sitting for too long.
+
+        These are tickets that were assigned but never picked up (never moved to status=4).
+        """
+        db = await self._get_db()
+        tag = f"agent:{agent}"
+        cutoff = (datetime.utcnow() - timedelta(minutes=threshold_minutes)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        async with db.execute(
+            "SELECT id, headline, date FROM tickets "
+            "WHERE tags LIKE ? AND status = 3 AND projectId = ? "
             "AND date < ? AND date > '0001-01-01'",
             (f"%{tag}%", self.project_id, cutoff),
         ) as cur:

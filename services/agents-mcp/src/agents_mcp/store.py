@@ -53,7 +53,33 @@ CREATE TABLE IF NOT EXISTS usage_scan_state (
     byte_offset     INTEGER DEFAULT 0,
     PRIMARY KEY (agent_id, filename)
 );
+
+CREATE TABLE IF NOT EXISTS schedules (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id        TEXT NOT NULL,
+    interval_hours  REAL NOT NULL,
+    prompt          TEXT NOT NULL,
+    last_dispatched_at REAL DEFAULT 0,
+    created_at      TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_sched_agent
+    ON schedules(agent_id);
+
+CREATE TABLE IF NOT EXISTS dispatch_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id        TEXT NOT NULL,
+    trigger_type    TEXT NOT NULL,
+    message         TEXT DEFAULT '',
+    created_at      TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_dispatch_agent
+    ON dispatch_events(agent_id, created_at DESC);
 """
+
+# Max dispatch events to keep per agent (auto-cleanup on insert)
+_MAX_DISPATCH_EVENTS_PER_AGENT = 200
 
 
 class AgentStore:
@@ -429,6 +455,67 @@ class AgentStore:
             "daily_totals": daily_totals,
         }
 
+    # ── Schedule methods ──
+
+    async def create_schedule(self, agent_id: str, interval_hours: float, prompt: str,
+                              last_dispatched_at: float = None) -> dict:
+        async with self._db.execute(
+            "INSERT INTO schedules (agent_id, interval_hours, prompt, last_dispatched_at) VALUES (?, ?, ?, ?)",
+            (agent_id, interval_hours, prompt, last_dispatched_at),
+        ) as cursor:
+            sched_id = cursor.lastrowid
+        await self._db.commit()
+        return await self.get_schedule(sched_id)
+
+    async def seed_schedule(self, agent_id: str, interval_hours: float, prompt: str,
+                            last_dispatched_at: float = None) -> Optional[dict]:
+        """Create a schedule only if the agent has no existing schedules.
+
+        Used on daemon startup to seed agents.yaml schedules into DB.
+        Returns the new schedule if created, None if agent already has one.
+        """
+        existing = await self.get_agent_schedules(agent_id)
+        if existing:
+            return None
+        return await self.create_schedule(agent_id, interval_hours, prompt,
+                                          last_dispatched_at=last_dispatched_at)
+
+    async def get_schedule(self, schedule_id: int) -> Optional[dict]:
+        async with self._db.execute(
+            "SELECT * FROM schedules WHERE id = ?", (schedule_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def get_agent_schedules(self, agent_id: str) -> list[dict]:
+        async with self._db.execute(
+            "SELECT * FROM schedules WHERE agent_id = ? ORDER BY id", (agent_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def get_all_schedules(self) -> list[dict]:
+        async with self._db.execute(
+            "SELECT * FROM schedules ORDER BY agent_id, id"
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def delete_schedule(self, schedule_id: int) -> bool:
+        async with self._db.execute(
+            "DELETE FROM schedules WHERE id = ?", (schedule_id,)
+        ) as cursor:
+            deleted = cursor.rowcount > 0
+        await self._db.commit()
+        return deleted
+
+    async def update_schedule_dispatched(self, schedule_id: int, timestamp: float):
+        await self._db.execute(
+            "UPDATE schedules SET last_dispatched_at = ? WHERE id = ?",
+            (timestamp, schedule_id),
+        )
+        await self._db.commit()
+
     async def get_all_agents_usage_summary(self) -> list[dict]:
         """Get usage summary for all agents (for dashboard)."""
         from datetime import datetime, timezone
@@ -487,3 +574,74 @@ class AgentStore:
             })
 
         return result
+
+    # ── Dispatch event logging ──
+
+    async def log_dispatch_event(
+        self, agent_id: str, trigger_type: str, message: str = ""
+    ) -> int:
+        """Log a dispatch event.
+
+        Args:
+            agent_id: Target agent that was dispatched.
+            trigger_type: One of 'periodic', 'reassign', 'deferred', 'staleness',
+                         'unattended', 'messages', 'schedule', 'manual'.
+            message: Human-readable description of what happened.
+
+        Returns:
+            The event ID.
+        """
+        async with self._db.execute(
+            "INSERT INTO dispatch_events (agent_id, trigger_type, message) VALUES (?, ?, ?)",
+            (agent_id, trigger_type, message),
+        ) as cursor:
+            event_id = cursor.lastrowid
+        await self._db.commit()
+
+        # Auto-cleanup: keep only the most recent events per agent
+        await self._db.execute(
+            """DELETE FROM dispatch_events
+               WHERE agent_id = ? AND id NOT IN (
+                   SELECT id FROM dispatch_events
+                   WHERE agent_id = ?
+                   ORDER BY created_at DESC
+                   LIMIT ?
+               )""",
+            (agent_id, agent_id, _MAX_DISPATCH_EVENTS_PER_AGENT),
+        )
+        await self._db.commit()
+        return event_id
+
+    async def get_dispatch_events(
+        self,
+        agent_id: str = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict:
+        """Get dispatch events, optionally filtered by agent.
+
+        Returns:
+            {"events": [...], "total": N}
+        """
+        if agent_id:
+            where = "WHERE agent_id = ?"
+            params: list = [agent_id]
+        else:
+            where = ""
+            params = []
+
+        async with self._db.execute(
+            f"SELECT COUNT(*) FROM dispatch_events {where}", params
+        ) as cursor:
+            total = (await cursor.fetchone())[0]
+
+        async with self._db.execute(
+            f"SELECT * FROM dispatch_events {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            params + [limit, offset],
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        return {
+            "events": [dict(r) for r in rows],
+            "total": total,
+        }
