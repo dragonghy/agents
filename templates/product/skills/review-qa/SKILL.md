@@ -41,6 +41,16 @@ allowed-tools: mcp__agents__list_tickets, mcp__agents__get_ticket, mcp__agents__
 2. **测试环境是否匹配真实使用场景？**（本地 ≠ VM 内，mock API ≠ 真实 API）
 3. **如果我是最终用户，这份报告能让我相信功能确实能用吗？**
 
+## 第二步半：前端改动必须验证构建
+
+**涉及前端代码改动时，以下检查是硬性前置条件，不通过直接打回：**
+
+1. QA 报告中必须包含 `npm run build` 的成功输出（不是 `vite dev`，不是 Playwright 通过）
+2. `tsc -b` 编译零错误 — **TypeScript 编译失败 = 直接打回，不存在"非阻塞"**
+3. 如果报告中没有 build 输出，Product 自己执行 `npm run build` 验证
+
+**原因**：`vite dev` 模式会跳过类型检查，Playwright 测试可以在有 TS 错误的情况下通过。只有 `npm run build`（包含 `tsc -b`）才能验证代码真正可交付。
+
 ## 第三步：做出判断
 
 ### 通过条件（必须全部满足）
@@ -50,6 +60,7 @@ allowed-tools: mcp__agents__list_tickets, mcp__agents__get_ticket, mcp__agents__
 - [ ] 没有依赖 mock/unit test 作为核心证据
 - [ ] 测试环境与真实使用场景匹配
 - [ ] **涉及 UI/前端的功能有浏览器截图**（文字描述不算证据，必须有截图文件路径）
+- [ ] **前端改动时 `npm run build` 成功**（编译失败不是"非阻塞观察"，是硬性失败）
 
 ### 打回时必须说清楚
 
@@ -65,3 +76,12 @@ allowed-tools: mcp__agents__list_tickets, mcp__agents__get_ticket, mcp__agents__
 - M4 报告：Stub 仅在宿主机本地测试，未通过 VM IP 验证端到端链路
 
 **根因**：看到"通过"结论就接受了，没有逐项核实证据。不要重蹈覆辙。
+
+2026-03-16：Onboarding (#316) 验收通过了 `tsc` 编译失败的代码。
+- `Onboarding.tsx` 缺少 `import { type JSX } from 'react'`，`npm run build` 直接报错
+- QA 用 `vite dev` 跑 Playwright 测试（跳过类型检查），报告 "21/21 通过"
+- Product 在验收时把编译错误标记为"非阻塞观察"放过了
+- 后续 #317 声称 dev-alex 修复了此问题，但修复从未被 commit
+- Human 手动测试时发现 build 失败
+
+**根因**：编译失败被当成小问题而不是阻塞性问题。**任何导致 `npm run build` 失败的错误都是 P0，必须打回。**

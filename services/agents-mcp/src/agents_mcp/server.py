@@ -71,12 +71,16 @@ def _load_dotenv(dotenv_path):
 
 
 def _load_config() -> dict:
-    """Load agents.yaml from AGENTS_CONFIG_PATH env var, resolving ${VAR} references."""
+    """Load agents.yaml from AGENTS_CONFIG_PATH env var, resolving ${VAR} references.
+
+    If the config file does not exist yet (first-time setup / onboarding),
+    returns a minimal empty config so the daemon can start and serve the
+    onboarding wizard which will generate the real agents.yaml.
+    """
     config_path = os.environ.get("AGENTS_CONFIG_PATH")
     if not config_path or not os.path.isfile(config_path):
-        raise ValueError(
-            "AGENTS_CONFIG_PATH env var must point to agents.yaml"
-        )
+        # No config yet — return minimal config for onboarding mode
+        return {"agents": {}}
     # Load .env from the same directory as agents.yaml
     root_dir = os.path.dirname(os.path.abspath(config_path))
     _load_dotenv(os.path.join(root_dir, ".env"))
