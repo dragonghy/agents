@@ -168,8 +168,39 @@ class SQLiteTaskClient:
             "CREATE INDEX IF NOT EXISTS idx_tickets_assignee ON tickets(assignee)"
         )
 
+        # FTS5 virtual table for full-text search on headline + description
+        await self._migrate_fts(db)
+
         if changed:
             await db.commit()
+
+    async def _migrate_fts(self, db: aiosqlite.Connection):
+        """Create or rebuild FTS5 index for ticket search.
+
+        The FTS table stores its own copy of headline + description,
+        rebuilt on startup and kept in sync on insert/update.
+        """
+        # Check if FTS table exists
+        async with db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='tickets_fts'"
+        ) as cur:
+            exists = await cur.fetchone()
+
+        if not exists:
+            await db.execute(
+                "CREATE VIRTUAL TABLE tickets_fts USING fts5(headline, description)"
+            )
+            logger.info("Migration: created FTS5 table tickets_fts")
+
+        # Rebuild: clear and re-populate from tickets table
+        # This ensures FTS is always in sync, even after manual DB edits
+        await db.execute("DELETE FROM tickets_fts")
+        await db.execute(
+            "INSERT INTO tickets_fts(rowid, headline, description) "
+            "SELECT id, headline, COALESCE(description, '') FROM tickets"
+        )
+        await db.commit()
+        logger.info("Migration: FTS5 index rebuilt")
 
     async def close(self):
         if self._db is not None:
@@ -204,7 +235,7 @@ class SQLiteTaskClient:
         assignee: Optional[str] = None,
         tags: Optional[str] = None,
         dateFrom: Optional[str] = None,
-        limit: Optional[int] = None,
+        limit: int = 20,
         offset: int = 0,
     ) -> dict:
         """List tickets with summary fields and pagination.
@@ -250,10 +281,10 @@ class SQLiteTaskClient:
         all_tickets = [self._row_to_dict(r) for r in rows]
         total = len(all_tickets)
 
-        # Pagination
+        # Pagination (limit=0 means no limit, for backward compatibility)
         if offset > 0:
             all_tickets = all_tickets[offset:]
-        if limit is not None and limit > 0:
+        if limit > 0:
             all_tickets = all_tickets[:limit]
 
         # Field pruning + assignee injection
@@ -266,7 +297,89 @@ class SQLiteTaskClient:
             "tickets": pruned,
             "total": total,
             "offset": offset,
-            "limit": limit or total,
+            "limit": limit if limit > 0 else total,
+        }
+
+    async def search_tickets(
+        self,
+        query: str,
+        limit: int = 10,
+        time_range: Optional[str] = None,
+        status: Optional[str] = None,
+        assignee: Optional[str] = None,
+    ) -> dict:
+        """Full-text search on ticket headline and description using FTS5.
+
+        Args:
+            query: Search keywords (FTS5 query syntax supported).
+            limit: Max results (default 10, max 50).
+            time_range: Filter by recency, e.g. "7d" = last 7 days, "30d" = last 30 days.
+            status: Comma-separated status codes to filter (e.g. "3,4").
+            assignee: Filter by agent name.
+
+        Returns:
+            {"tickets": [...], "total": N, "query": str}
+        """
+        db = await self._get_db()
+        limit = min(max(limit, 1), 50)
+
+        # Build the FTS query — escape special chars for safety
+        # FTS5 supports implicit AND between terms
+        fts_query = query.strip()
+        if not fts_query:
+            return {"tickets": [], "total": 0, "query": query}
+
+        # Join FTS results with tickets table for filtering and full data
+        conditions = ["t.projectId = ?"]
+        params: list[Any] = [self.project_id]
+
+        if status:
+            allowed = [int(s.strip()) for s in status.split(",")]
+            placeholders = ",".join("?" for _ in allowed)
+            conditions.append(f"t.status IN ({placeholders})")
+            params.extend(allowed)
+
+        if assignee:
+            conditions.append("t.assignee = ?")
+            params.append(assignee)
+
+        if time_range:
+            # Parse "7d", "30d", "1d" etc.
+            match = re.match(r"^(\d+)d$", time_range.strip())
+            if match:
+                days = int(match.group(1))
+                cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+                conditions.append("t.date >= ?")
+                params.append(cutoff)
+
+        where = " AND ".join(conditions)
+        params.append(fts_query)
+
+        sql = (
+            "SELECT t.*, fts.rank "
+            "FROM tickets_fts fts "
+            "JOIN tickets t ON t.id = fts.rowid "
+            f"WHERE {where} AND tickets_fts MATCH ? "
+            "ORDER BY fts.rank "
+            f"LIMIT {limit}"
+        )
+
+        try:
+            async with db.execute(sql, params) as cur:
+                rows = await cur.fetchall()
+        except Exception as e:
+            logger.warning("FTS search failed: %s", e)
+            return {"tickets": [], "total": 0, "query": query, "error": str(e)}
+
+        tickets = [
+            inject_assignee({k: v for k, v in self._row_to_dict(r).items() if k in SUMMARY_FIELDS})
+            for r in rows
+        ]
+
+        return {
+            "tickets": tickets,
+            "total": len(tickets),
+            "query": query,
         }
 
     async def create_ticket(
@@ -303,8 +416,23 @@ class SQLiteTaskClient:
             list(values.values()),
         ) as cur:
             ticket_id = cur.lastrowid
+
+        # Sync FTS index
+        await self._fts_upsert(db, ticket_id, values.get("headline", ""), values.get("description", ""))
         await db.commit()
         return ticket_id
+
+    async def _fts_upsert(self, db: aiosqlite.Connection, ticket_id: int, headline: str, description: str):
+        """Insert or update FTS index entry for a ticket."""
+        try:
+            # Delete existing entry (if any), then insert new
+            await db.execute("DELETE FROM tickets_fts WHERE rowid = ?", (ticket_id,))
+            await db.execute(
+                "INSERT INTO tickets_fts(rowid, headline, description) VALUES(?, ?, ?)",
+                (ticket_id, headline or "", description or ""),
+            )
+        except Exception:
+            pass  # FTS table may not exist yet (pre-migration)
 
     async def update_ticket(
         self,
@@ -336,6 +464,16 @@ class SQLiteTaskClient:
         set_clause = ", ".join(f"{k} = ?" for k in update_values.keys())
         params = list(update_values.values()) + [ticket_id]
         await db.execute(f"UPDATE tickets SET {set_clause} WHERE id = ?", params)
+
+        # Sync FTS if headline or description changed
+        if "headline" in update_values or "description" in update_values:
+            async with db.execute(
+                "SELECT headline, description FROM tickets WHERE id = ?", (ticket_id,)
+            ) as cur:
+                row = await cur.fetchone()
+            if row:
+                await self._fts_upsert(db, ticket_id, row["headline"], row["description"] or "")
+
         await db.commit()
         return True
 

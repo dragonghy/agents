@@ -185,6 +185,7 @@ async def get_store() -> AgentStore:
 _TOOL_TIMEOUTS = {
     # Fast tools: simple DB reads/writes (30s)
     "list_tickets": 30,
+    "search_tickets": 30,
     "get_ticket": 30,
     "get_comments": 30,
     "add_comment": 30,
@@ -250,10 +251,13 @@ async def list_tickets(
     assignee: str = None,
     tags: str = None,
     dateFrom: str = None,
-    limit: int = None,
+    limit: int = 20,
     offset: int = 0,
 ) -> str:
     """List tickets (summary view). Returns only active tickets by default.
+
+    Paginated: returns at most `limit` tickets (default 20). Use offset to
+    page through results. The response includes `total` for the full count.
 
     Args:
         project_id: Filter by project ID.
@@ -262,13 +266,43 @@ async def list_tickets(
         assignee: Filter by agent name (e.g. 'dev'). Filters on native assignee column.
         tags: Filter by tags (e.g. 'agent:dev'). Use assignee param instead for agent filtering.
         dateFrom: Only tickets created on/after this date (YYYY-MM-DD).
-        limit: Max tickets to return (for pagination).
+        limit: Max tickets per page (default 20, 0 for unlimited).
         offset: Skip first N tickets (for pagination).
     """
     client = get_client()
     result = await client.list_tickets(
         project_id=project_id, status=status, assignee=assignee,
         tags=tags, dateFrom=dateFrom, limit=limit, offset=offset,
+    )
+    return json.dumps(result, indent=2)
+
+
+@app.tool()
+@_with_timeout
+async def search_tickets(
+    query: str,
+    limit: int = 10,
+    time_range: str = None,
+    status: str = None,
+    assignee: str = None,
+) -> str:
+    """Full-text search for tickets by keyword. Matches against headline and description.
+
+    Returns results ranked by relevance (best matches first). Use this instead of
+    list_tickets when looking for specific topics or past tickets.
+
+    Args:
+        query: Search keywords (required). Supports FTS5 syntax (e.g. "agent hub",
+               "scroll OR drag", "desktop NOT browser").
+        limit: Max results to return (default 10, max 50).
+        time_range: Only search recent tickets, e.g. "7d" for last 7 days, "30d" for last month.
+        status: Filter by status codes (e.g. "3,4" for active only).
+        assignee: Filter by agent name (e.g. "dev-alex").
+    """
+    client = get_client()
+    result = await client.search_tickets(
+        query=query, limit=limit, time_range=time_range,
+        status=status, assignee=assignee,
     )
     return json.dumps(result, indent=2)
 

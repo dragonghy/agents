@@ -668,3 +668,222 @@ class TestSubtaskAssignee:
             await client.close()
 
         run(_test())
+
+
+# ── Pagination default tests ──
+
+
+class TestPaginationDefault:
+    """Tests for the default limit=20 pagination behavior."""
+
+    def test_default_limit_is_20(self, db_path):
+        """list_tickets should return at most 20 tickets by default."""
+        async def _test():
+            client = SQLiteTaskClient(db_path)
+            # Create 25 tickets
+            for i in range(25):
+                await client.create_ticket(f"Ticket {i}")
+
+            result = await client.list_tickets()
+            assert result["total"] == 25
+            assert len(result["tickets"]) == 20
+            assert result["limit"] == 20
+            await client.close()
+
+        run(_test())
+
+    def test_limit_zero_returns_all(self, db_path):
+        """limit=0 should return all tickets (backward compat)."""
+        async def _test():
+            client = SQLiteTaskClient(db_path)
+            for i in range(25):
+                await client.create_ticket(f"Ticket {i}")
+
+            result = await client.list_tickets(limit=0)
+            assert result["total"] == 25
+            assert len(result["tickets"]) == 25
+            await client.close()
+
+        run(_test())
+
+    def test_custom_limit(self, db_path):
+        async def _test():
+            client = SQLiteTaskClient(db_path)
+            for i in range(10):
+                await client.create_ticket(f"Ticket {i}")
+
+            result = await client.list_tickets(limit=5, offset=3)
+            assert result["total"] == 10
+            assert len(result["tickets"]) == 5
+            assert result["offset"] == 3
+            assert result["limit"] == 5
+            await client.close()
+
+        run(_test())
+
+
+# ── FTS search tests ──
+
+
+class TestSearchTickets:
+    """Tests for FTS5 full-text search."""
+
+    def test_basic_search(self, db_path):
+        async def _test():
+            client = SQLiteTaskClient(db_path)
+            await client.create_ticket("Desktop scroll tool", description="Add scroll support to desktop module")
+            await client.create_ticket("Browser navigation", description="Fix browser back button")
+            await client.create_ticket("Desktop drag tool", description="Add drag support to desktop")
+
+            result = await client.search_tickets("desktop")
+            assert result["total"] == 2
+            headlines = [t["headline"] for t in result["tickets"]]
+            assert "Desktop scroll tool" in headlines
+            assert "Desktop drag tool" in headlines
+            await client.close()
+
+        run(_test())
+
+    def test_search_description(self, db_path):
+        """Search should match description content too."""
+        async def _test():
+            client = SQLiteTaskClient(db_path)
+            await client.create_ticket("Generic title", description="Contains FTS5 keyword")
+            await client.create_ticket("Another title", description="Nothing special here")
+
+            result = await client.search_tickets("FTS5")
+            assert result["total"] == 1
+            assert result["tickets"][0]["headline"] == "Generic title"
+            await client.close()
+
+        run(_test())
+
+    def test_search_with_status_filter(self, db_path):
+        async def _test():
+            client = SQLiteTaskClient(db_path)
+            await client.create_ticket("Open task", status=3, description="agent hub feature")
+            await client.create_ticket("Done task", status=0, description="agent hub bugfix")
+
+            # Only status=3
+            result = await client.search_tickets("agent hub", status="3")
+            assert result["total"] == 1
+            assert result["tickets"][0]["headline"] == "Open task"
+            await client.close()
+
+        run(_test())
+
+    def test_search_with_assignee_filter(self, db_path):
+        async def _test():
+            client = SQLiteTaskClient(db_path)
+            await client.create_ticket("Alex task", assignee="dev-alex", description="MCP optimization")
+            await client.create_ticket("Emma task", assignee="dev-emma", description="MCP bugfix")
+
+            result = await client.search_tickets("MCP", assignee="dev-alex")
+            assert result["total"] == 1
+            assert result["tickets"][0]["assignee"] == "dev-alex"
+            await client.close()
+
+        run(_test())
+
+    def test_search_with_time_range(self, db_path):
+        """time_range='7d' should only return recent tickets."""
+        async def _test():
+            import aiosqlite
+            client = SQLiteTaskClient(db_path)
+
+            # Recent ticket (via normal create)
+            await client.create_ticket("Recent feature", description="New MCP search")
+
+            # Old ticket (manually insert with old date)
+            db = await client._get_db()
+            await db.execute(
+                "INSERT INTO tickets (headline, description, status, projectId, date, assignee) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("Old feature", "Old MCP search", 3, 3, "2020-01-01 00:00:00", ""),
+            )
+            await db.commit()
+            # Rebuild FTS to include the manually inserted ticket
+            await client._migrate_fts(db)
+
+            # Without time range: both
+            result = await client.search_tickets("MCP search")
+            assert result["total"] == 2
+
+            # With time range: only recent
+            result = await client.search_tickets("MCP search", time_range="7d")
+            assert result["total"] == 1
+            assert result["tickets"][0]["headline"] == "Recent feature"
+            await client.close()
+
+        run(_test())
+
+    def test_search_empty_query(self, db_path):
+        async def _test():
+            client = SQLiteTaskClient(db_path)
+            await client.create_ticket("Some ticket")
+
+            result = await client.search_tickets("")
+            assert result["total"] == 0
+            assert result["tickets"] == []
+            await client.close()
+
+        run(_test())
+
+    def test_search_no_results(self, db_path):
+        async def _test():
+            client = SQLiteTaskClient(db_path)
+            await client.create_ticket("Some ticket", description="Regular content")
+
+            result = await client.search_tickets("nonexistent_keyword_xyz")
+            assert result["total"] == 0
+            await client.close()
+
+        run(_test())
+
+    def test_search_limit(self, db_path):
+        async def _test():
+            client = SQLiteTaskClient(db_path)
+            for i in range(15):
+                await client.create_ticket(f"Feature {i}", description="common keyword")
+
+            result = await client.search_tickets("common keyword", limit=5)
+            assert len(result["tickets"]) == 5
+            await client.close()
+
+        run(_test())
+
+    def test_fts_syncs_on_create(self, db_path):
+        """FTS should be updated when new tickets are created."""
+        async def _test():
+            client = SQLiteTaskClient(db_path)
+            # Create initial tickets
+            await client.create_ticket("Initial", description="first ticket")
+            result = await client.search_tickets("Initial")
+            assert result["total"] == 1
+
+            # Create another ticket (FTS should auto-sync)
+            await client.create_ticket("Second ticket", description="added later")
+            result = await client.search_tickets("Second")
+            assert result["total"] == 1
+            await client.close()
+
+        run(_test())
+
+    def test_fts_syncs_on_update(self, db_path):
+        """FTS should be updated when tickets are modified."""
+        async def _test():
+            client = SQLiteTaskClient(db_path)
+            tid = await client.create_ticket("Alpha headline", description="some content")
+
+            # Update headline to something completely different
+            await client.update_ticket(tid, headline="Beta headline")
+
+            result = await client.search_tickets("Beta")
+            assert result["total"] == 1
+
+            # Old unique keyword should no longer match
+            result = await client.search_tickets("Alpha")
+            assert result["total"] == 0
+            await client.close()
+
+        run(_test())
