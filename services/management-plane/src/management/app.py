@@ -16,6 +16,7 @@ from .db import close_db
 from .instance_manager import MOCK_MODE, health_check_loop
 from .routes.auth import routes as auth_routes
 from .routes.companies import routes as company_routes
+from .routes.usage import routes as usage_routes
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -56,6 +57,7 @@ def create_app() -> Starlette:
         Route("/api/health", health, methods=["GET"]),
         *auth_routes,
         *company_routes,
+        *usage_routes,
     ]
 
     # SPA static files

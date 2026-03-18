@@ -229,3 +229,111 @@ async def get_events(company_id: str, limit: int = 50) -> list[dict]:
                 pass
         results.append(r)
     return results
+
+
+# ── Token usage ──
+
+
+async def record_usage(
+    company_id: str,
+    date: str,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    model: str = "",
+) -> int:
+    """Record token usage for a company on a given date."""
+    total = input_tokens + output_tokens
+    db = await get_db()
+    cursor = await db.execute(
+        """INSERT INTO token_usage
+        (company_id, date, input_tokens, output_tokens, total_tokens, model)
+        VALUES (?, ?, ?, ?, ?, ?)""",
+        (company_id, date, input_tokens, output_tokens, total, model),
+    )
+    await db.commit()
+    return cursor.lastrowid
+
+
+async def get_usage(
+    company_id: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> list[dict]:
+    """Get token usage records, optionally filtered by date range."""
+    db = await get_db()
+    sql = "SELECT * FROM token_usage WHERE company_id = ?"
+    params: list = [company_id]
+
+    if date_from:
+        sql += " AND date >= ?"
+        params.append(date_from)
+    if date_to:
+        sql += " AND date <= ?"
+        params.append(date_to)
+
+    sql += " ORDER BY date DESC, id DESC"
+
+    cursor = await db.execute(sql, params)
+    rows = await cursor.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def get_usage_summary(company_id: str) -> dict:
+    """Get aggregated token usage summary for a company."""
+    db = await get_db()
+
+    # Total usage
+    cursor = await db.execute(
+        """SELECT
+            COALESCE(SUM(input_tokens), 0) as total_input,
+            COALESCE(SUM(output_tokens), 0) as total_output,
+            COALESCE(SUM(total_tokens), 0) as total_tokens
+        FROM token_usage WHERE company_id = ?""",
+        (company_id,),
+    )
+    row = await cursor.fetchone()
+    totals = dict(row)
+
+    # Daily breakdown (last 30 days)
+    cursor = await db.execute(
+        """SELECT date,
+            SUM(input_tokens) as input_tokens,
+            SUM(output_tokens) as output_tokens,
+            SUM(total_tokens) as total_tokens
+        FROM token_usage
+        WHERE company_id = ?
+        GROUP BY date
+        ORDER BY date DESC
+        LIMIT 30""",
+        (company_id,),
+    )
+    daily = [dict(r) for r in await cursor.fetchall()]
+
+    # By model
+    cursor = await db.execute(
+        """SELECT model,
+            SUM(input_tokens) as input_tokens,
+            SUM(output_tokens) as output_tokens,
+            SUM(total_tokens) as total_tokens
+        FROM token_usage
+        WHERE company_id = ? AND model != ''
+        GROUP BY model
+        ORDER BY total_tokens DESC""",
+        (company_id,),
+    )
+    by_model = [dict(r) for r in await cursor.fetchall()]
+
+    return {
+        **totals,
+        "daily": daily,
+        "by_model": by_model,
+    }
+
+
+def format_tokens(count: int) -> str:
+    """Format token count for display (e.g., 3200000 -> '3.2M')."""
+    if count >= 1_000_000:
+        return f"{count / 1_000_000:.1f}M"
+    if count >= 1_000:
+        return f"{count / 1_000:.1f}K"
+    return str(count)

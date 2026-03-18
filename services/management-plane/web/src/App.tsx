@@ -5,6 +5,7 @@ import Register from "./pages/Register";
 import Dashboard from "./pages/Dashboard";
 import CreateCompany from "./pages/CreateCompany";
 import CompanySettings from "./pages/CompanySettings";
+import CompanyUsage from "./pages/CompanyUsage";
 import AuthGuard from "./components/AuthGuard";
 
 export default function App() {
@@ -25,6 +26,10 @@ export default function App() {
         <Route
           path="/companies/:id/settings"
           element={<AuthGuard>{(user) => <CompanySettings user={user} />}</AuthGuard>}
+        />
+        <Route
+          path="/companies/:id/usage"
+          element={<AuthGuard>{(user) => <CompanyUsage user={user} />}</AuthGuard>}
         />
       </Routes>
     </BrowserRouter>

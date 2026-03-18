@@ -5,6 +5,8 @@ import {
   startInstance,
   stopInstance,
   deleteCompany,
+  getUsage,
+  formatTokens,
   type Company,
   type User,
 } from "../lib/api";
@@ -35,11 +37,25 @@ export default function Dashboard({ user }: Props) {
   const [companies, setCompanies] = useState<Company[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [usageTotals, setUsageTotals] = useState<Record<string, number>>({});
 
   const refresh = async () => {
     try {
       const data = await listCompanies();
       setCompanies(data);
+      // Fetch usage summary for each company
+      const totals: Record<string, number> = {};
+      await Promise.all(
+        data.map(async (c) => {
+          try {
+            const u = await getUsage(c.id);
+            totals[c.id] = u.summary.total_tokens;
+          } catch {
+            totals[c.id] = 0;
+          }
+        })
+      );
+      setUsageTotals(totals);
     } catch {
       // Ignore errors
     } finally {
@@ -116,6 +132,8 @@ export default function Dashboard({ user }: Props) {
                       {" \u00b7 "}
                       {STATUS_LABELS[c.status] || c.status}
                       {c.port ? ` \u00b7 Port ${c.port}` : ""}
+                      {" \u00b7 "}
+                      {formatTokens(usageTotals[c.id] || 0)} tokens
                     </p>
                   </div>
                   <div className="flex gap-2">

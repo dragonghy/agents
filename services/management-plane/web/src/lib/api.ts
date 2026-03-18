@@ -180,3 +180,51 @@ export async function updateAuth(
   });
   return data.company;
 }
+
+// ── Usage ──
+
+export interface UsageSummary {
+  total_input: number;
+  total_output: number;
+  total_tokens: number;
+  daily: Array<{
+    date: string;
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+  }>;
+  by_model: Array<{
+    model: string;
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+  }>;
+}
+
+export async function getUsage(
+  id: string,
+  from?: string,
+  to?: string
+): Promise<{ records: unknown[]; summary: UsageSummary }> {
+  const params = new URLSearchParams();
+  if (from) params.set("from", from);
+  if (to) params.set("to", to);
+  const qs = params.toString();
+  return request(`/companies/${id}/usage${qs ? "?" + qs : ""}`);
+}
+
+export async function getBilling(
+  id: string
+): Promise<{
+  plan: { id: string; name: string; price_monthly: number; features: string[] };
+  stripe_enabled: boolean;
+  usage_summary: { total_tokens: number; total_input: number; total_output: number };
+}> {
+  return request(`/companies/${id}/billing`);
+}
+
+export function formatTokens(count: number): string {
+  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
+  if (count >= 1_000) return `${(count / 1_000).toFixed(1)}K`;
+  return String(count);
+}
