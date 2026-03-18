@@ -99,6 +99,7 @@ export interface Company {
   template: string;
   auth_type: string | null;
   port: number | null;
+  url?: string;
   created_at: string;
   updated_at: string;
 }

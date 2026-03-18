@@ -26,6 +26,14 @@ from ..instance_manager import (
     start_instance,
     stop_instance,
 )
+from ..nginx_config import get_instance_url
+
+
+def _enrich_company(company: dict) -> dict:
+    """Add computed fields (url) to a company dict."""
+    if company and company.get("slug"):
+        company["url"] = get_instance_url(company["slug"])
+    return company
 
 
 def _require_auth(handler):
@@ -57,7 +65,7 @@ async def _get_owned_company(request: Request) -> tuple[dict | None, JSONRespons
 async def list_companies_route(request: Request) -> JSONResponse:
     """GET /api/companies"""
     companies = await list_companies(request.state.user_id)
-    return JSONResponse({"companies": companies})
+    return JSONResponse({"companies": [_enrich_company(c) for c in companies]})
 
 
 @_require_auth
@@ -97,9 +105,9 @@ async def create_company_route(request: Request) -> JSONResponse:
     except Exception as e:
         await update_company(company["id"], status="error")
         company = await get_company(company["id"])
-        return JSONResponse({"company": company, "warning": str(e)}, status_code=201)
+        return JSONResponse({"company": _enrich_company(company), "warning": str(e)}, status_code=201)
 
-    return JSONResponse({"company": company}, status_code=201)
+    return JSONResponse({"company": _enrich_company(company)}, status_code=201)
 
 
 @_require_auth
@@ -108,7 +116,7 @@ async def get_company_route(request: Request) -> JSONResponse:
     company, err = await _get_owned_company(request)
     if err:
         return err
-    return JSONResponse({"company": company})
+    return JSONResponse({"company": _enrich_company(company)})
 
 
 @_require_auth
@@ -128,10 +136,10 @@ async def update_company_route(request: Request) -> JSONResponse:
     updates = {k: v for k, v in body.items() if k in allowed}
 
     if not updates:
-        return JSONResponse({"company": company})
+        return JSONResponse({"company": _enrich_company(company)})
 
     updated = await update_company(company["id"], **updates)
-    return JSONResponse({"company": updated})
+    return JSONResponse({"company": _enrich_company(updated)})
 
 
 @_require_auth
@@ -253,7 +261,7 @@ async def update_auth_route(request: Request) -> JSONResponse:
     updated = await update_company(
         company["id"], auth_type=auth_type, auth_token=auth_token
     )
-    return JSONResponse({"company": updated})
+    return JSONResponse({"company": _enrich_company(updated)})
 
 
 @_require_auth

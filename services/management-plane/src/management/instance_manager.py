@@ -19,6 +19,7 @@ from textwrap import dedent
 import yaml
 
 from . import models
+from .nginx_config import update_nginx_config, remove_nginx_config
 
 logger = logging.getLogger(__name__)
 
@@ -373,7 +374,10 @@ async def create_instance(company_id: str) -> dict:
         await models.log_event(company_id, "error", {"stage": "docker_compose_up", "reason": "timeout"})
         return {"status": "error", "port": port, "error": "Docker compose timed out"}
 
-    # 6. Update status
+    # 6. Update Nginx reverse-proxy config
+    await update_nginx_config(slug, port)
+
+    # 7. Update status
     await models.update_company(company_id, status="running", port=port)
     await models.log_event(company_id, "started", {"port": port})
     return {"status": "running", "port": port}
@@ -503,6 +507,9 @@ async def delete_instance(company_id: str) -> dict:
         if instance_dir.exists():
             shutil.rmtree(instance_dir)
             logger.info("Removed instance directory: %s", instance_dir)
+
+    # Remove Nginx reverse-proxy config
+    await remove_nginx_config(slug)
 
     await models.delete_company(company_id)
     return {"status": "deleted"}

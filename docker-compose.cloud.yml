@@ -1,0 +1,55 @@
+# Docker Compose for Agent Hub Cloud (Management Plane + Nginx Proxy)
+#
+# Prerequisites:
+#   1. Generate self-signed certs:  bash services/nginx-proxy/generate-certs.sh
+#   2. Build the web frontend:     cd services/management-plane/web && npm run build
+#
+# Start:
+#   docker compose -f docker-compose.cloud.yml up --build
+#
+# Access:
+#   https://agenthub.local       — Management dashboard
+#   https://<slug>.agenthub.local — Individual instance UI
+#
+# Requires DNS setup — see services/nginx-proxy/README.md
+
+services:
+  nginx-proxy:
+    build:
+      context: services/nginx-proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - nginx-conf:/etc/nginx/conf.d
+      - ./services/nginx-proxy/certs:/etc/nginx/certs:ro
+    environment:
+      - MGMT_DOMAIN=${MGMT_DOMAIN:-agenthub.local}
+    depends_on:
+      - management
+    networks:
+      - agenthub
+    restart: unless-stopped
+
+  management:
+    build:
+      context: services/management-plane
+    environment:
+      - MGMT_DOMAIN=${MGMT_DOMAIN:-agenthub.local}
+      - MGMT_NGINX_CONF_DIR=/nginx-conf
+      - MGMT_MOCK_MODE=${MGMT_MOCK_MODE:-false}
+      - MGMT_PORT=3000
+    volumes:
+      - nginx-conf:/nginx-conf
+      - mgmt-data:/app/data
+    networks:
+      - agenthub
+    restart: unless-stopped
+
+networks:
+  agenthub:
+    driver: bridge
+
+volumes:
+  nginx-conf:
+  mgmt-data:

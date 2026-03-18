@@ -121,9 +121,9 @@ export default function Dashboard({ user }: Props) {
                   <div className="flex gap-2">
                     {c.status === "running" && (
                       <>
-                        {c.port && (
+                        {(c.url || c.port) && (
                           <a
-                            href={`http://localhost:${c.port}`}
+                            href={c.url || `http://localhost:${c.port}`}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
