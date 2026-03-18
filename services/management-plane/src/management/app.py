@@ -12,19 +12,35 @@ from starlette.responses import JSONResponse, FileResponse, HTMLResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from .db import close_db
+from .db import close_db, get_db
 from .instance_manager import MOCK_MODE, health_check_loop
 from .routes.auth import routes as auth_routes
 from .routes.companies import routes as company_routes
 from .routes.usage import routes as usage_routes
+from .security import get_cors_origins
+from .billing import STRIPE_ENABLED
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
 
 async def health(request: Request) -> JSONResponse:
-    """GET /api/health — health check endpoint."""
-    return JSONResponse({"status": "ok", "service": "management-plane"})
+    """GET /api/health — health check with subsystem status."""
+    db_ok = False
+    try:
+        db = await get_db()
+        await db.execute("SELECT 1")
+        db_ok = True
+    except Exception:
+        pass
+
+    return JSONResponse({
+        "status": "ok" if db_ok else "degraded",
+        "service": "management-plane",
+        "database": db_ok,
+        "stripe": STRIPE_ENABLED,
+        "mock_mode": MOCK_MODE,
+    })
 
 
 async def on_shutdown():
@@ -74,7 +90,7 @@ def create_app() -> Starlette:
     middleware = [
         Middleware(
             CORSMiddleware,
-            allow_origins=["*"],
+            allow_origins=get_cors_origins(),
             allow_methods=["*"],
             allow_headers=["*"],
         ),

@@ -15,6 +15,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+production = [
+    "cryptography>=42.0",
+]
 stripe = [
     "stripe>=8.0",
 ]

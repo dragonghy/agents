@@ -9,12 +9,23 @@ from starlette.routing import Route
 
 from ..auth import create_token, get_current_user, hash_password, verify_password
 from ..models import create_user, get_user_by_email, get_user_by_id
+from ..security import auth_limiter
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
+def _get_client_ip(request: Request) -> str:
+    """Get client IP for rate limiting."""
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
 async def register(request: Request) -> JSONResponse:
     """POST /api/auth/register"""
+    if not auth_limiter.is_allowed(_get_client_ip(request)):
+        return JSONResponse({"error": "Too many requests"}, status_code=429)
     try:
         body = await request.json()
     except json.JSONDecodeError:
@@ -51,6 +62,8 @@ async def register(request: Request) -> JSONResponse:
 
 async def login(request: Request) -> JSONResponse:
     """POST /api/auth/login"""
+    if not auth_limiter.is_allowed(_get_client_ip(request)):
+        return JSONResponse({"error": "Too many requests"}, status_code=429)
     try:
         body = await request.json()
     except json.JSONDecodeError:

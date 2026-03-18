@@ -15,4 +15,8 @@ COPY web/dist/ web/dist/
 
 EXPOSE 3000
 
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:3000/api/health')" || exit 1
+
 CMD ["uv", "run", "python", "-m", "management.app"]

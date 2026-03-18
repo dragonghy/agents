@@ -278,48 +278,65 @@ async def get_usage(
     return [dict(r) for r in rows]
 
 
-async def get_usage_summary(company_id: str) -> dict:
-    """Get aggregated token usage summary for a company."""
+async def get_usage_summary(
+    company_id: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> dict:
+    """Get aggregated token usage summary for a company.
+
+    If date_from/date_to are provided, filters all aggregations by the range.
+    """
     db = await get_db()
+
+    # Build date filter clause
+    date_clause = ""
+    date_params: list = []
+    if date_from:
+        date_clause += " AND date >= ?"
+        date_params.append(date_from)
+    if date_to:
+        date_clause += " AND date <= ?"
+        date_params.append(date_to)
 
     # Total usage
     cursor = await db.execute(
-        """SELECT
+        f"""SELECT
             COALESCE(SUM(input_tokens), 0) as total_input,
             COALESCE(SUM(output_tokens), 0) as total_output,
             COALESCE(SUM(total_tokens), 0) as total_tokens
-        FROM token_usage WHERE company_id = ?""",
-        (company_id,),
+        FROM token_usage WHERE company_id = ?{date_clause}""",
+        [company_id, *date_params],
     )
     row = await cursor.fetchone()
     totals = dict(row)
 
-    # Daily breakdown (last 30 days)
+    # Daily breakdown (last 30 days or within range)
     cursor = await db.execute(
-        """SELECT date,
+        f"""SELECT date,
             SUM(input_tokens) as input_tokens,
             SUM(output_tokens) as output_tokens,
             SUM(total_tokens) as total_tokens
         FROM token_usage
-        WHERE company_id = ?
+        WHERE company_id = ?{date_clause}
         GROUP BY date
         ORDER BY date DESC
         LIMIT 30""",
-        (company_id,),
+        [company_id, *date_params],
     )
     daily = [dict(r) for r in await cursor.fetchall()]
 
     # By model
     cursor = await db.execute(
-        """SELECT model,
+        f"""SELECT model,
             SUM(input_tokens) as input_tokens,
             SUM(output_tokens) as output_tokens,
             SUM(total_tokens) as total_tokens
         FROM token_usage
-        WHERE company_id = ? AND model != ''
+        WHERE company_id = ? AND model != ''{date_clause}
         GROUP BY model
         ORDER BY total_tokens DESC""",
-        (company_id,),
+        [company_id, *date_params],
     )
     by_model = [dict(r) for r in await cursor.fetchall()]
 

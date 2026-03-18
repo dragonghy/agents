@@ -16,6 +16,10 @@ def temp_db(tmp_path):
     import management.db as db_mod
     db_mod._db = None
     db_mod.DB_PATH = db_path
+    # Reset rate limiters between tests
+    import management.security as sec_mod
+    sec_mod.auth_limiter._requests.clear()
+    sec_mod.usage_limiter._requests.clear()
     yield db_path
     # Cleanup
     import asyncio

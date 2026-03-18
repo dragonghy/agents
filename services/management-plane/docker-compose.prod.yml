@@ -1,0 +1,52 @@
+# Production Docker Compose for Agent Hub Cloud Management Plane
+#
+# Usage:
+#   cp .env.example .env  # Edit with real values
+#   docker compose -f docker-compose.prod.yml up --build -d
+#
+# Services:
+#   - management: Backend API + SPA frontend (port 3000 internal)
+#   - nginx: Reverse proxy with SSL termination (ports 80/443)
+
+services:
+  management:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    volumes:
+      - mgmt-data:/data
+      - instances:/var/lib/aghub/instances
+      - /var/run/docker.sock:/var/run/docker.sock  # For Docker Compose operations
+    environment:
+      - MGMT_DB_PATH=/data/management.db
+      - MGMT_MOCK_MODE=false
+      - MGMT_INSTANCES_DIR=/var/lib/aghub/instances
+      - MGMT_ENV=production
+    restart: unless-stopped
+    networks:
+      - mgmt-net
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - instances:/var/lib/aghub/instances:ro
+    depends_on:
+      - management
+    restart: unless-stopped
+    networks:
+      - mgmt-net
+
+volumes:
+  mgmt-data:
+  instances:
+
+networks:
+  mgmt-net:
+    driver: bridge

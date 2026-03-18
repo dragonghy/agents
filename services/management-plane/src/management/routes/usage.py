@@ -54,7 +54,7 @@ async def get_usage_route(request: Request) -> JSONResponse:
     date_to = request.query_params.get("to")
 
     records = await get_usage(company["id"], date_from=date_from, date_to=date_to)
-    summary = await get_usage_summary(company["id"])
+    summary = await get_usage_summary(company["id"], date_from=date_from, date_to=date_to)
 
     return JSONResponse({
         "records": records,
