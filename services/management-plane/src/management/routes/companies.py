@@ -18,7 +18,9 @@ from ..models import (
 from ..instance_manager import (
     create_instance,
     delete_instance,
+    get_instance_logs,
     get_instance_status,
+    get_template_info,
     pause_instance,
     resume_instance,
     start_instance,
@@ -213,12 +215,13 @@ async def status_route(request: Request) -> JSONResponse:
 
 @_require_auth
 async def logs_route(request: Request) -> JSONResponse:
-    """GET /api/companies/:id/logs"""
+    """GET /api/companies/:id/logs — returns both event log and Docker logs."""
     company, err = await _get_owned_company(request)
     if err:
         return err
     events = await get_events(company["id"])
-    return JSONResponse({"events": events})
+    docker_logs = await get_instance_logs(company["id"])
+    return JSONResponse({"events": events, "docker_logs": docker_logs})
 
 
 # ── Auth config ──
@@ -267,7 +270,17 @@ async def auth_status_route(request: Request) -> JSONResponse:
     })
 
 
+async def templates_route(request: Request) -> JSONResponse:
+    """GET /api/templates — list available team templates."""
+    templates = {
+        name: get_template_info(name)
+        for name in ("solo", "standard", "full")
+    }
+    return JSONResponse({"templates": templates})
+
+
 routes = [
+    Route("/api/templates", templates_route, methods=["GET"]),
     Route("/api/companies", list_companies_route, methods=["GET"]),
     Route("/api/companies", create_company_route, methods=["POST"]),
     Route("/api/companies/{id}", get_company_route, methods=["GET"]),

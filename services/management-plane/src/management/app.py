@@ -1,5 +1,6 @@
 """Starlette application for the Management Plane."""
 
+import asyncio
 import logging
 import os
 
@@ -12,6 +13,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from .db import close_db
+from .instance_manager import MOCK_MODE, health_check_loop
 from .routes.auth import routes as auth_routes
 from .routes.companies import routes as company_routes
 
@@ -76,13 +78,22 @@ def create_app() -> Starlette:
         ),
     ]
 
+    async def on_startup():
+        """Start background tasks."""
+        if not MOCK_MODE:
+            asyncio.create_task(health_check_loop())
+            logger.info("Health check loop started (real mode)")
+        else:
+            logger.info("Health check loop skipped (mock mode)")
+
     app = Starlette(
         routes=all_routes,
         middleware=middleware,
+        on_startup=[on_startup],
         on_shutdown=[on_shutdown],
     )
 
-    logger.info("Management Plane created (static_dir=%s)", _STATIC_DIR)
+    logger.info("Management Plane created (static_dir=%s, mock=%s)", _STATIC_DIR, MOCK_MODE)
     return app
 
 

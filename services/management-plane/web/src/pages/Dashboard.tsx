@@ -121,6 +121,16 @@ export default function Dashboard({ user }: Props) {
                   <div className="flex gap-2">
                     {c.status === "running" && (
                       <>
+                        {c.port && (
+                          <a
+                            href={`http://localhost:${c.port}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
+                          >
+                            Open
+                          </a>
+                        )}
                         <button
                           onClick={() => navigate(`/companies/${c.id}/settings`)}
                           className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50"
