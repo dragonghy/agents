@@ -30,3 +30,16 @@ export async function fetchStatusLabels(): Promise<Record<string, string>> {
   if (!res.ok) throw new Error(`Failed to fetch status labels: ${res.status}`);
   return res.json();
 }
+
+export async function updateTicket(id: number, fields: Record<string, unknown>): Promise<void> {
+  const res = await fetch(`/api/v1/tickets/${id}/update`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(fields),
+  });
+  if (!res.ok) throw new Error(`Failed to update ticket ${id}: ${res.status}`);
+}
+
+export async function batchArchiveTickets(ids: number[]): Promise<void> {
+  await Promise.all(ids.map((id) => updateTicket(id, { status: -1 })));
+}

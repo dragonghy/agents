@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { fetchTicket, fetchTicketComments, fetchTicketSubtasks } from '../api/tickets';
 import { fetchAgents } from '../api/agents';
 import type { Ticket, TicketComment, Subtask } from '../types/ticket';
@@ -22,9 +23,71 @@ const STATUS_COLORS: Record<number, string> = {
   '-1': 'bg-gray-50 text-gray-400 dark:bg-gray-800 dark:text-gray-500',
 };
 
-function formatDate(dateStr: string): string {
+/* Item 4: Full timestamp (date + time) */
+function formatDateTime(dateStr: string): string {
   if (!dateStr || dateStr === '0000-00-00 00:00:00') return '-';
-  return dateStr.split(' ')[0];
+  return dateStr;
+}
+
+/* Item 9: Comment author display */
+function formatAuthor(comment: TicketComment): string {
+  if (comment.author) return comment.author;
+  if (comment.userId === 1) return 'Human';
+  return `User #${comment.userId}`;
+}
+
+/* Item 6: Copy markdown to clipboard */
+async function copyMarkdown(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    // Fallback for older browsers
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+  }
+}
+
+function CopyButton({ text, label = 'Copy Markdown' }: { text: string; label?: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      onClick={async () => {
+        await copyMarkdown(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      }}
+      className="text-xs px-2 py-1 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 border border-gray-300 dark:border-gray-600 rounded hover:bg-gray-50 dark:hover:bg-gray-800"
+    >
+      {copied ? 'Copied!' : label}
+    </button>
+  );
+}
+
+/* Item 7: Markdown with GFM tables + Item 8: image support */
+function MarkdownContent({ children }: { children: string }) {
+  return (
+    <Markdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        // Item 8: render images
+        img: ({ src, alt, ...props }) => (
+          <img
+            src={src}
+            alt={alt || ''}
+            className="max-w-full rounded border border-gray-200 dark:border-gray-700 my-2"
+            loading="lazy"
+            {...props}
+          />
+        ),
+      }}
+    >
+      {children}
+    </Markdown>
+  );
 }
 
 function Skeleton({ className = '' }: { className?: string }) {
@@ -88,7 +151,7 @@ export default function TicketDetail() {
       await fetch(`/api/v1/tickets/${ticketId}/comments`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ comment: newComment }),
+        body: JSON.stringify({ comment: newComment, author: 'Human' }),
       });
       setNewComment('');
       setActionMsg('Comment added');
@@ -145,6 +208,22 @@ export default function TicketDetail() {
     }
   }
 
+  /* Item 10: Direct assignee change */
+  async function handleAssigneeChange(newAssignee: string) {
+    try {
+      await fetch(`/api/v1/tickets/${ticketId}/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assignee: newAssignee || null }),
+      });
+      setActionMsg(`Assignee updated to ${newAssignee || 'none'}`);
+      await loadTicketData();
+      setTimeout(() => setActionMsg(null), 3000);
+    } catch (e) {
+      setActionMsg(`Error: ${e}`);
+    }
+  }
+
   if (loading) {
     return (
       <div>
@@ -180,9 +259,16 @@ export default function TicketDetail() {
             <span className="text-gray-400 dark:text-gray-500">#{ticket.id}</span> {ticket.headline}
           </h2>
 
+          {/* Item 6: Copy Markdown button for description */}
           {ticket.description && (
-            <div className="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-800 p-5 mt-4 prose prose-sm dark:prose-invert max-w-none">
-              <Markdown>{ticket.description}</Markdown>
+            <div className="mt-4">
+              <div className="flex justify-end mb-1">
+                <CopyButton text={ticket.description} />
+              </div>
+              <div className="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-800 p-5 prose prose-sm dark:prose-invert max-w-none">
+                {/* Item 7: GFM tables + Item 8: images */}
+                <MarkdownContent>{ticket.description}</MarkdownContent>
+              </div>
             </div>
           )}
 
@@ -223,31 +309,13 @@ export default function TicketDetail() {
             <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-100 mb-3">
               Comments ({comments.length})
             </h3>
-            {comments.length === 0 ? (
-              <div className="text-gray-400 dark:text-gray-500 text-sm mb-4">No comments yet</div>
-            ) : (
-              <div className="space-y-3 mb-4">
-                {comments.map((comment) => (
-                  <div key={comment.id} className="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-800 p-4">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                        User #{comment.userId}
-                      </span>
-                      <span className="text-xs text-gray-400 dark:text-gray-500">{formatDate(comment.date)}</span>
-                    </div>
-                    <div className="text-sm text-gray-800 dark:text-gray-200 prose prose-sm dark:prose-invert max-w-none">
-                      <Markdown>{comment.text}</Markdown>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
 
-            <div className="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-800 p-4">
+            {/* Item 5: Add Comment at TOP */}
+            <div className="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-800 p-4 mb-4">
               <textarea
                 value={newComment}
                 onChange={(e) => setNewComment(e.target.value)}
-                placeholder="Add a comment (Markdown supported)..."
+                placeholder="Add a comment (Markdown supported, images via ![alt](url))..."
                 rows={3}
                 className="w-full border border-gray-300 dark:border-gray-600 rounded px-3 py-2 text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y placeholder-gray-400 dark:placeholder-gray-500"
               />
@@ -261,6 +329,33 @@ export default function TicketDetail() {
                 </button>
               </div>
             </div>
+
+            {comments.length === 0 ? (
+              <div className="text-gray-400 dark:text-gray-500 text-sm">No comments yet</div>
+            ) : (
+              <div className="space-y-3">
+                {comments.map((comment) => (
+                  <div key={comment.id} className="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-800 p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      {/* Item 9: Show author name or "Human" */}
+                      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                        {formatAuthor(comment)}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        {/* Item 6: Copy button for comment */}
+                        <CopyButton text={comment.text} label="Copy" />
+                        {/* Item 4: Full timestamp */}
+                        <span className="text-xs text-gray-400 dark:text-gray-500">{formatDateTime(comment.date)}</span>
+                      </div>
+                    </div>
+                    <div className="text-sm text-gray-800 dark:text-gray-200 prose prose-sm dark:prose-invert max-w-none">
+                      {/* Item 7: GFM tables + Item 8: images */}
+                      <MarkdownContent>{comment.text}</MarkdownContent>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
@@ -282,20 +377,24 @@ export default function TicketDetail() {
                 </select>
               </div>
             </div>
+            {/* Item 10: Assignee as independent editable field */}
             <div>
               <label className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Assignee</label>
-              <p className="mt-1 text-sm text-gray-800 dark:text-gray-200">
-                {ticket.assignee ? (
-                  <Link to={`/agents/${ticket.assignee}`} className="text-blue-600 dark:text-blue-400 hover:underline">
-                    {ticket.assignee}
-                  </Link>
-                ) : '-'}
-              </p>
+              <select
+                value={ticket.assignee || ''}
+                onChange={(e) => handleAssigneeChange(e.target.value)}
+                className="mt-1 w-full border border-gray-300 dark:border-gray-600 rounded px-2 py-1 text-sm bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200"
+              >
+                <option value="">Unassigned</option>
+                {agents.map((a) => (
+                  <option key={a.id} value={a.id}>{a.id}</option>
+                ))}
+              </select>
               <button
                 onClick={() => setShowReassign(!showReassign)}
                 className="mt-1 text-xs text-blue-600 dark:text-blue-400 hover:underline"
               >
-                {showReassign ? 'Cancel' : 'Reassign'}
+                {showReassign ? 'Cancel' : 'Reassign (with note)'}
               </button>
               {showReassign && (
                 <div className="mt-2 space-y-2">
@@ -339,8 +438,9 @@ export default function TicketDetail() {
               <p className="mt-1 text-sm text-gray-800 dark:text-gray-200">{ticket.projectId}</p>
             </div>
             <div>
+              {/* Item 4: Full timestamp */}
               <label className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Created</label>
-              <p className="mt-1 text-sm text-gray-800 dark:text-gray-200">{formatDate(ticket.date)}</p>
+              <p className="mt-1 text-sm text-gray-800 dark:text-gray-200">{formatDateTime(ticket.date)}</p>
             </div>
             {ticket.tags && (
               <div>

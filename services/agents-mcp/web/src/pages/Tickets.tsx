@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { fetchTickets } from '../api/tickets';
+import { fetchTickets, batchArchiveTickets } from '../api/tickets';
 import { fetchAgents } from '../api/agents';
 import type { Ticket } from '../types/ticket';
 import type { Agent } from '../types/agent';
@@ -21,6 +21,20 @@ const STATUS_COLORS: Record<number, string> = {
   '-1': 'bg-gray-50 text-gray-400 dark:bg-gray-800 dark:text-gray-500',
 };
 
+/* ── Time filter helpers ── */
+function daysAgo(n: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+const TIME_FILTERS: { label: string; value: string }[] = [
+  { label: 'All time', value: '' },
+  { label: 'Today', value: '0' },
+  { label: 'Last 7 days', value: '7' },
+  { label: 'Last 30 days', value: '30' },
+];
+
 function Skeleton({ className = '' }: { className?: string }) {
   return <div className={`animate-pulse bg-gray-200 dark:bg-gray-700 rounded ${className}`} />;
 }
@@ -31,7 +45,13 @@ export default function Tickets() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  /* Item 2: "All Tickets" excludes archived; separate "Archived" option */
   const [statusFilter, setStatusFilter] = useState('1,3,4');
+  /* Item 1: Time filter */
+  const [timeFilter, setTimeFilter] = useState('');
+  /* Item 3: Batch selection */
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [archiving, setArchiving] = useState(false);
 
   // New ticket modal
   const [showModal, setShowModal] = useState(false);
@@ -48,10 +68,15 @@ export default function Tickets() {
   useEffect(() => {
     let active = true;
     setLoading(true);
+    setSelected(new Set());
 
     async function load() {
       try {
-        const data = await fetchTickets({ status: statusFilter });
+        const params: Record<string, string> = { status: statusFilter };
+        if (timeFilter) {
+          params.dateFrom = daysAgo(Number(timeFilter));
+        }
+        const data = await fetchTickets(params);
         if (active) {
           setTickets(data.tickets);
           setError(null);
@@ -65,13 +90,49 @@ export default function Tickets() {
 
     load();
     return () => { active = false; };
-  }, [statusFilter]);
+  }, [statusFilter, timeFilter]);
+
+  function toggleSelect(id: number) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    if (selected.size === tickets.length) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(tickets.map((t) => t.id)));
+    }
+  }
+
+  async function handleBatchArchive() {
+    if (selected.size === 0) return;
+    if (!confirm(`Archive ${selected.size} ticket(s)?`)) return;
+    setArchiving(true);
+    try {
+      await batchArchiveTickets([...selected]);
+      setSelected(new Set());
+      // Reload
+      const params: Record<string, string> = { status: statusFilter };
+      if (timeFilter) params.dateFrom = daysAgo(Number(timeFilter));
+      const data = await fetchTickets(params);
+      setTickets(data.tickets);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setArchiving(false);
+    }
+  }
 
   async function handleCreateTicket() {
     if (!newHeadline.trim()) return;
     setCreating(true);
     try {
-      const body: Record<string, any> = { headline: newHeadline };
+      const body: Record<string, unknown> = { headline: newHeadline };
       if (newDescription) body.description = newDescription;
       if (newAssignee) body.assignee = newAssignee;
       if (newPriority) body.priority = newPriority;
@@ -117,7 +178,18 @@ export default function Tickets() {
     <div>
       <div className="flex flex-wrap items-center justify-between gap-2 mb-6">
         <h2 className="text-2xl font-bold text-gray-800 dark:text-gray-100">Tickets</h2>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
+          {/* Item 1: Time filter */}
+          <select
+            value={timeFilter}
+            onChange={(e) => setTimeFilter(e.target.value)}
+            className="text-sm border border-gray-300 dark:border-gray-600 rounded px-3 py-1.5 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200"
+          >
+            {TIME_FILTERS.map((f) => (
+              <option key={f.value} value={f.value}>{f.label}</option>
+            ))}
+          </select>
+          {/* Item 2: Status filter with separated "Archived" */}
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
@@ -125,8 +197,20 @@ export default function Tickets() {
           >
             <option value="1,3,4">Active (New + In Progress + Blocked)</option>
             <option value="3,4">New + In Progress</option>
-            <option value="all">All</option>
+            <option value="0,1,3,4">All Tickets</option>
+            <option value="0">Done</option>
+            <option value="-1">Archived</option>
           </select>
+          {/* Item 3: Batch archive button */}
+          {selected.size > 0 && (
+            <button
+              onClick={handleBatchArchive}
+              disabled={archiving}
+              className="px-3 py-1.5 bg-gray-600 text-white rounded text-sm font-medium hover:bg-gray-700 disabled:opacity-50"
+            >
+              {archiving ? 'Archiving...' : `Archive (${selected.size})`}
+            </button>
+          )}
           <button
             onClick={() => setShowModal(true)}
             className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700"
@@ -213,17 +297,36 @@ export default function Tickets() {
         <table className="w-full text-sm">
           <thead className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
             <tr>
+              {/* Item 3: checkbox column */}
+              <th className="w-8 px-3 py-3">
+                <input
+                  type="checkbox"
+                  checked={tickets.length > 0 && selected.size === tickets.length}
+                  onChange={toggleSelectAll}
+                  className="rounded border-gray-300 dark:border-gray-600"
+                />
+              </th>
               <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-300">ID</th>
               <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-300">Title</th>
               <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-300">Status</th>
+              {/* Item 10: Assignee column */}
               <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-300">Assignee</th>
               <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-300 hidden sm:table-cell">Priority</th>
+              {/* Item 4: Full timestamp */}
               <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-300 hidden sm:table-cell">Date</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
             {tickets.map((ticket) => (
               <tr key={ticket.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                <td className="px-3 py-3">
+                  <input
+                    type="checkbox"
+                    checked={selected.has(ticket.id)}
+                    onChange={() => toggleSelect(ticket.id)}
+                    className="rounded border-gray-300 dark:border-gray-600"
+                  />
+                </td>
                 <td className="px-4 py-3">
                   <Link to={`/tickets/${ticket.id}`} className="text-blue-600 dark:text-blue-400 hover:underline">
                     #{ticket.id}
@@ -247,12 +350,15 @@ export default function Tickets() {
                   ) : '-'}
                 </td>
                 <td className="px-4 py-3 text-gray-600 dark:text-gray-400 hidden sm:table-cell">{ticket.priority || '-'}</td>
-                <td className="px-4 py-3 text-gray-500 dark:text-gray-400 hidden sm:table-cell">{ticket.date?.split(' ')[0]}</td>
+                {/* Item 4: Full timestamp with time */}
+                <td className="px-4 py-3 text-gray-500 dark:text-gray-400 hidden sm:table-cell whitespace-nowrap">
+                  {ticket.date || '-'}
+                </td>
               </tr>
             ))}
             {tickets.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-gray-400 dark:text-gray-500">No tickets found</td>
+                <td colSpan={7} className="px-4 py-8 text-center text-gray-400 dark:text-gray-500">No tickets found</td>
               </tr>
             )}
           </tbody>

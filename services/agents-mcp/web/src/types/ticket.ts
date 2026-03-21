@@ -21,6 +21,7 @@ export interface TicketComment {
   userId: number;
   date: string;
   moduleId: number;
+  author?: string;
 }
 
 export interface Subtask {
