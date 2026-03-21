@@ -13,10 +13,22 @@ export async function fetchTicket(id: number): Promise<Ticket> {
   return res.json();
 }
 
-export async function fetchTicketComments(id: number): Promise<TicketComment[]> {
-  const res = await fetch(`/api/v1/tickets/${id}/comments`);
+export interface CommentsResponse {
+  comments: TicketComment[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export async function fetchTicketComments(id: number, limit = 10, offset = 0): Promise<CommentsResponse> {
+  const res = await fetch(`/api/v1/tickets/${id}/comments?limit=${limit}&offset=${offset}`);
   if (!res.ok) throw new Error(`Failed to fetch comments: ${res.status}`);
-  return res.json();
+  const data = await res.json();
+  // Handle both old format (array) and new format (object with comments)
+  if (Array.isArray(data)) {
+    return { comments: data, total: data.length, limit, offset };
+  }
+  return data;
 }
 
 export async function fetchTicketSubtasks(id: number): Promise<Subtask[]> {

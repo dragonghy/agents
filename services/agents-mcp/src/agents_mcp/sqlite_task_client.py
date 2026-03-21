@@ -51,7 +51,7 @@ def inject_assignee(ticket: dict) -> dict:
     ticket = dict(ticket)
     # Prefer native assignee column if set, fall back to tags extraction
     if not ticket.get("assignee"):
-        ticket["assignee"] = extract_assignee(ticket)
+        ticket["assignee"] = extract_assignee(ticket) or ""
     return ticket
 
 

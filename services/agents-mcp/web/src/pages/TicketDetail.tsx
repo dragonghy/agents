@@ -100,6 +100,8 @@ export default function TicketDetail() {
 
   const [ticket, setTicket] = useState<Ticket | null>(null);
   const [comments, setComments] = useState<TicketComment[]>([]);
+  const [commentsTotal, setCommentsTotal] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [subtasks, setSubtasks] = useState<Subtask[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -120,17 +122,30 @@ export default function TicketDetail() {
 
   async function loadTicketData() {
     try {
-      const [t, c, s] = await Promise.all([
+      const [t, cResp, s] = await Promise.all([
         fetchTicket(ticketId),
-        fetchTicketComments(ticketId),
+        fetchTicketComments(ticketId, 10, 0),
         fetchTicketSubtasks(ticketId),
       ]);
       setTicket(t);
-      setComments(c);
+      setComments(cResp.comments);
+      setCommentsTotal(cResp.total);
       setSubtasks(s);
       setError(null);
     } catch (e) {
       setError(String(e));
+    }
+  }
+
+  async function loadMoreComments() {
+    setLoadingMore(true);
+    try {
+      const resp = await fetchTicketComments(ticketId, 10, comments.length);
+      setComments(prev => [...prev, ...resp.comments]);
+    } catch (e) {
+      setActionMsg(`Error loading more: ${e}`);
+    } finally {
+      setLoadingMore(false);
     }
   }
 
@@ -307,7 +322,7 @@ export default function TicketDetail() {
           {/* Comments */}
           <div className="mt-6">
             <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-100 mb-3">
-              Comments ({comments.length})
+              Comments ({comments.length}{commentsTotal > comments.length ? ` of ${commentsTotal}` : ''})
             </h3>
 
             {/* Item 5: Add Comment at TOP */}
@@ -354,6 +369,15 @@ export default function TicketDetail() {
                     </div>
                   </div>
                 ))}
+                {commentsTotal > comments.length && (
+                  <button
+                    onClick={loadMoreComments}
+                    disabled={loadingMore}
+                    className="w-full py-2 text-sm text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 border border-gray-200 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
+                  >
+                    {loadingMore ? 'Loading...' : `Load more (${commentsTotal - comments.length} remaining)`}
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -442,6 +466,12 @@ export default function TicketDetail() {
               <label className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Created</label>
               <p className="mt-1 text-sm text-gray-800 dark:text-gray-200">{formatDateTime(ticket.date)}</p>
             </div>
+            {ticket.start_time && ticket.start_time !== '' && ticket.start_time !== '0000-00-00 00:00:00' && (
+              <div>
+                <label className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Scheduled Start</label>
+                <p className="mt-1 text-sm text-orange-600 dark:text-orange-400">{formatDateTime(ticket.start_time)}</p>
+              </div>
+            )}
             {ticket.tags && (
               <div>
                 <label className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Tags</label>
