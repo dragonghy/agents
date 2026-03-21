@@ -3,6 +3,7 @@ import Landing from "./pages/Landing";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
 import Dashboard from "./pages/Dashboard";
+import Companies from "./pages/Companies";
 import CreateCompany from "./pages/CreateCompany";
 import CompanySettings from "./pages/CompanySettings";
 import CompanyUsage from "./pages/CompanyUsage";
@@ -18,6 +19,10 @@ export default function App() {
         <Route
           path="/dashboard"
           element={<AuthGuard>{(user) => <Dashboard user={user} />}</AuthGuard>}
+        />
+        <Route
+          path="/companies"
+          element={<AuthGuard>{(user) => <Companies user={user} />}</AuthGuard>}
         />
         <Route
           path="/companies/new"

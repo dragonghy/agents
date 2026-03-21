@@ -223,6 +223,40 @@ export async function getBilling(
   return request(`/companies/${id}/billing`);
 }
 
+// ── Dashboard ──
+
+export interface AgentDetail {
+  name: string;
+  status: string;
+  current_ticket: string | null;
+}
+
+export interface DashboardStats {
+  agents: {
+    total: number;
+    by_status: Record<string, number>;
+    details: AgentDetail[];
+  };
+  tickets: {
+    total: number;
+    by_status: Record<string, number>;
+    human_blocked: number;
+    stale_count: number;
+  };
+  tokens: {
+    today: number;
+    yesterday: number;
+    daily: Array<{ date: string; total_tokens: number }>;
+  };
+  messages: {
+    unread_total: number;
+  };
+}
+
+export async function getDashboardStats(): Promise<DashboardStats> {
+  return request("/dashboard/stats");
+}
+
 export function formatTokens(count: number): string {
   if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
   if (count >= 1_000) return `${(count / 1_000).toFixed(1)}K`;
