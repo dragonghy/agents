@@ -211,7 +211,10 @@ class TestComments:
             cid = await client.add_comment("ticket", tid, "Hello world")
             assert isinstance(cid, int)
 
-            comments = await client.get_comments("ticket", tid)
+            result = await client.get_comments("ticket", tid)
+            assert isinstance(result, dict)
+            assert result["total"] == 1
+            comments = result["comments"]
             assert len(comments) == 1
             assert comments[0]["text"] == "Hello world"
             assert comments[0]["moduleId"] == tid
@@ -226,8 +229,9 @@ class TestComments:
 
             # Add with "tickets" (legacy), get with "ticket" (normalized)
             await client.add_comment("tickets", tid, "Legacy module")
-            comments = await client.get_comments("ticket", tid)
-            assert len(comments) == 1
+            result = await client.get_comments("ticket", tid)
+            assert result["total"] == 1
+            assert len(result["comments"]) == 1
             await client.close()
 
         run(_test())
@@ -526,7 +530,8 @@ class TestCommentAuthor:
             cid = await client.add_comment("ticket", tid, "Hello", author="dev-alex")
             assert isinstance(cid, int)
 
-            comments = await client.get_comments("ticket", tid)
+            result = await client.get_comments("ticket", tid)
+            comments = result["comments"]
             assert len(comments) == 1
             assert comments[0]["author"] == "dev-alex"
             assert comments[0]["text"] == "Hello"
@@ -540,7 +545,8 @@ class TestCommentAuthor:
             tid = await client.create_ticket("Test")
             await client.add_comment("ticket", tid, "No author")
 
-            comments = await client.get_comments("ticket", tid)
+            result = await client.get_comments("ticket", tid)
+            comments = result["comments"]
             assert len(comments) == 1
             assert comments[0]["author"] == ""  # Default empty
             await client.close()
@@ -553,8 +559,8 @@ class TestCommentAuthor:
             tid = await client.create_ticket("Test")
             await client.add_comment("ticket", tid, "Test comment", author="qa-lucy")
 
-            comments = await client.get_comments("ticket", tid)
-            assert "author" in comments[0]
+            result = await client.get_comments("ticket", tid)
+            assert "author" in result["comments"][0]
             await client.close()
 
         run(_test())
@@ -884,6 +890,86 @@ class TestSearchTickets:
             # Old unique keyword should no longer match
             result = await client.search_tickets("Alpha")
             assert result["total"] == 0
+            await client.close()
+
+        run(_test())
+
+
+# ── Comment pagination tests ──
+
+
+class TestCommentPagination:
+    """Tests for comment pagination (get_comments returns dict with pagination)."""
+
+    def test_default_limit(self, db_path):
+        """Default limit=10 should paginate comments."""
+        async def _test():
+            client = SQLiteTaskClient(db_path)
+            tid = await client.create_ticket("Pagination test")
+
+            # Create 15 comments
+            for i in range(15):
+                await client.add_comment("ticket", tid, f"Comment {i}")
+
+            result = await client.get_comments("ticket", tid)
+            assert result["total"] == 15
+            assert len(result["comments"]) == 10
+            assert result["limit"] == 10
+            assert result["offset"] == 0
+            await client.close()
+
+        run(_test())
+
+    def test_custom_limit_and_offset(self, db_path):
+        """Custom limit and offset should work correctly."""
+        async def _test():
+            client = SQLiteTaskClient(db_path)
+            tid = await client.create_ticket("Pagination test")
+
+            for i in range(20):
+                await client.add_comment("ticket", tid, f"Comment {i}")
+
+            result = await client.get_comments("ticket", tid, limit=5, offset=10)
+            assert result["total"] == 20
+            assert len(result["comments"]) == 5
+            assert result["limit"] == 5
+            assert result["offset"] == 10
+            # Comments are ordered by id, so offset=10 means starting from 11th
+            assert result["comments"][0]["text"] == "Comment 10"
+            await client.close()
+
+        run(_test())
+
+    def test_limit_zero_returns_all(self, db_path):
+        """limit=0 should return all comments (backward compat)."""
+        async def _test():
+            client = SQLiteTaskClient(db_path)
+            tid = await client.create_ticket("Pagination test")
+
+            for i in range(15):
+                await client.add_comment("ticket", tid, f"Comment {i}")
+
+            result = await client.get_comments("ticket", tid, limit=0)
+            assert result["total"] == 15
+            assert len(result["comments"]) == 15
+            await client.close()
+
+        run(_test())
+
+    def test_returns_dict_format(self, db_path):
+        """get_comments should return a dict with comments, total, limit, offset."""
+        async def _test():
+            client = SQLiteTaskClient(db_path)
+            tid = await client.create_ticket("Format test")
+            await client.add_comment("ticket", tid, "One comment")
+
+            result = await client.get_comments("ticket", tid)
+            assert isinstance(result, dict)
+            assert "comments" in result
+            assert "total" in result
+            assert "limit" in result
+            assert "offset" in result
+            assert isinstance(result["comments"], list)
             await client.close()
 
         run(_test())

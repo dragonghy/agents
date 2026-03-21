@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 SUMMARY_FIELDS = {
     "id", "headline", "status", "tags", "priority",
     "date", "dateToEdit", "type", "dependingTicketId",
-    "projectId", "milestoneid", "assignee",
+    "projectId", "milestoneid", "assignee", "start_time",
 }
 
 DETAIL_FIELDS = SUMMARY_FIELDS | {
@@ -90,7 +90,8 @@ CREATE TABLE IF NOT EXISTS tickets (
     sprint              INTEGER DEFAULT 0,
     acceptanceCriteria  TEXT DEFAULT '',
     assignee            TEXT DEFAULT '',
-    depends_on          TEXT DEFAULT ''
+    depends_on          TEXT DEFAULT '',
+    start_time          TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS comments (
@@ -136,6 +137,7 @@ class SQLiteTaskClient:
             ("tickets", "assignee", "TEXT DEFAULT ''"),
             ("tickets", "depends_on", "TEXT DEFAULT ''"),
             ("comments", "author", "TEXT DEFAULT ''"),
+            ("tickets", "start_time", "TEXT DEFAULT ''"),
         ]
         changed = False
         for table, column, col_type in migrations:
@@ -237,6 +239,7 @@ class SQLiteTaskClient:
         dateFrom: Optional[str] = None,
         limit: int = 20,
         offset: int = 0,
+        include_future: bool = False,
     ) -> dict:
         """List tickets with summary fields and pagination.
 
@@ -272,6 +275,12 @@ class SQLiteTaskClient:
             conditions.append("date >= ?")
             params.append(dateFrom)
 
+        # Future ticket filter: exclude tickets with start_time in the future
+        if not include_future:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            conditions.append("(start_time IS NULL OR start_time = '' OR start_time <= ?)")
+            params.append(now)
+
         where = " AND ".join(conditions)
         query = f"SELECT * FROM tickets WHERE {where} ORDER BY id DESC"
 
@@ -281,10 +290,10 @@ class SQLiteTaskClient:
         all_tickets = [self._row_to_dict(r) for r in rows]
         total = len(all_tickets)
 
-        # Pagination (limit=0 means no limit, for backward compatibility)
-        if offset > 0:
+        # Pagination (limit=0 or None means no limit, for backward compatibility)
+        if offset and offset > 0:
             all_tickets = all_tickets[offset:]
-        if limit > 0:
+        if limit and limit > 0:
             all_tickets = all_tickets[:limit]
 
         # Field pruning + assignee injection
@@ -297,7 +306,7 @@ class SQLiteTaskClient:
             "tickets": pruned,
             "total": total,
             "offset": offset,
-            "limit": limit if limit > 0 else total,
+            "limit": limit if limit and limit > 0 else total,
         }
 
     async def search_tickets(
@@ -501,8 +510,20 @@ class SQLiteTaskClient:
         await db.commit()
         return comment_id
 
-    async def get_comments(self, module: str, module_id: int) -> list:
-        """Get comments for a module entity."""
+    async def get_comments(
+        self, module: str, module_id: int, limit: int = 10, offset: int = 0
+    ) -> dict:
+        """Get comments for a module entity with pagination.
+
+        Args:
+            module: Module type (e.g. 'ticket').
+            module_id: ID of the module entity.
+            limit: Max comments to return. Default 10. Use 0 for all (backward compat).
+            offset: Skip first N comments. Default 0.
+
+        Returns:
+            {"comments": [...], "total": N, "limit": N, "offset": N}
+        """
         module = self._normalize_module(module)
         db = await self._get_db()
         # Query both normalized and legacy module names for compatibility
@@ -510,15 +531,39 @@ class SQLiteTaskClient:
         if module == "ticket":
             modules.append("tickets")
         placeholders = ",".join("?" for _ in modules)
+
+        # Total count
         async with db.execute(
-            f"SELECT * FROM comments WHERE module IN ({placeholders}) AND moduleId = ? ORDER BY id",
+            f"SELECT COUNT(*) as cnt FROM comments WHERE module IN ({placeholders}) AND moduleId = ?",
             modules + [module_id],
         ) as cur:
-            rows = await cur.fetchall()
-        return [
+            row = await cur.fetchone()
+            total = row["cnt"] if row else 0
+
+        # Fetch with pagination (limit=0 means all, for backward compatibility)
+        if limit and limit > 0:
+            async with db.execute(
+                f"SELECT * FROM comments WHERE module IN ({placeholders}) AND moduleId = ? ORDER BY id LIMIT ? OFFSET ?",
+                modules + [module_id, limit, offset],
+            ) as cur:
+                rows = await cur.fetchall()
+        else:
+            async with db.execute(
+                f"SELECT * FROM comments WHERE module IN ({placeholders}) AND moduleId = ? ORDER BY id",
+                modules + [module_id],
+            ) as cur:
+                rows = await cur.fetchall()
+
+        comments = [
             {k: v for k, v in self._row_to_dict(r).items() if k in COMMENT_FIELDS}
             for r in rows
         ]
+        return {
+            "comments": comments,
+            "total": total,
+            "limit": limit if limit and limit > 0 else total,
+            "offset": offset,
+        }
 
     # ── Subtasks ──
 
@@ -699,26 +744,30 @@ class SQLiteTaskClient:
         return True
 
     async def has_pending_tasks(self, agent: str) -> bool:
-        """Check if an agent has pending tasks (status 3 or 4)."""
+        """Check if an agent has pending tasks (status 3 or 4, not future-scheduled)."""
         db = await self._get_db()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         async with db.execute(
-            "SELECT COUNT(*) as cnt FROM tickets WHERE assignee = ? AND status IN (3, 4) AND projectId = ?",
-            (agent, self.project_id),
+            "SELECT COUNT(*) as cnt FROM tickets WHERE assignee = ? AND status IN (3, 4) AND projectId = ? "
+            "AND (start_time IS NULL OR start_time = '' OR start_time <= ?)",
+            (agent, self.project_id, now),
         ) as cur:
             row = await cur.fetchone()
         return row["cnt"] > 0 if row else False
 
     async def get_stale_in_progress(self, agent: str, threshold_minutes: int = 30) -> list[dict]:
-        """Get in_progress (status=4) tickets for agent older than threshold."""
+        """Get in_progress (status=4) tickets for agent older than threshold (not future-scheduled)."""
         db = await self._get_db()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cutoff = (datetime.utcnow() - timedelta(minutes=threshold_minutes)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
         async with db.execute(
             "SELECT id, headline, date FROM tickets "
             "WHERE assignee = ? AND status = 4 AND projectId = ? "
-            "AND date < ? AND date > '0001-01-01'",
-            (agent, self.project_id, cutoff),
+            "AND date < ? AND date > '0001-01-01' "
+            "AND (start_time IS NULL OR start_time = '' OR start_time <= ?)",
+            (agent, self.project_id, cutoff, now),
         ) as cur:
             rows = await cur.fetchall()
         return [
@@ -730,16 +779,19 @@ class SQLiteTaskClient:
         """Get new (status=3) tickets assigned to agent that have been sitting for too long.
 
         These are tickets that were assigned but never picked up (never moved to status=4).
+        Excludes future-scheduled tickets (start_time in the future).
         """
         db = await self._get_db()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cutoff = (datetime.utcnow() - timedelta(minutes=threshold_minutes)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
         async with db.execute(
             "SELECT id, headline, date FROM tickets "
             "WHERE assignee = ? AND status = 3 AND projectId = ? "
-            "AND date < ? AND date > '0001-01-01'",
-            (agent, self.project_id, cutoff),
+            "AND date < ? AND date > '0001-01-01' "
+            "AND (start_time IS NULL OR start_time = '' OR start_time <= ?)",
+            (agent, self.project_id, cutoff, now),
         ) as cur:
             rows = await cur.fetchall()
         return [

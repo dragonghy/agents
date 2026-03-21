@@ -136,6 +136,7 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
     async def list_tickets(request: Request) -> JSONResponse:
         client = get_client()
         params = request.query_params
+        include_future = params.get("include_future", "false").lower() in ("true", "1")
         result = await client.list_tickets(
             project_id=int(params["project_id"]) if "project_id" in params else None,
             status=params.get("status"),
@@ -144,6 +145,7 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
             dateFrom=params.get("dateFrom"),
             limit=int(params["limit"]) if "limit" in params else None,
             offset=int(params.get("offset", 0)),
+            include_future=include_future,
         )
         return JSONResponse(result)
 
@@ -166,10 +168,12 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
             author = body.get("author")
             result = await client.add_comment("ticket", ticket_id, comment, author=author)
             return JSONResponse({"status": "added", "result": result})
-        # GET
-        result = await client.get_comments("ticket", ticket_id)
-        if not isinstance(result, list):
-            result = []
+        # GET — supports ?limit=N&offset=N query params
+        limit = int(request.query_params.get("limit", 10))
+        offset = int(request.query_params.get("offset", 0))
+        result = await client.get_comments("ticket", ticket_id, limit=limit, offset=offset)
+        if not isinstance(result, dict):
+            result = {"comments": [], "total": 0, "limit": limit, "offset": offset}
         return JSONResponse(result)
 
     async def get_ticket_subtasks(request: Request) -> JSONResponse:
@@ -256,7 +260,7 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
             return JSONResponse({"error": "headline required"}, status_code=400)
         client = get_client()
         kwargs = {}
-        for field in ("description", "status", "priority"):
+        for field in ("description", "status", "priority", "start_time"):
             if body.get(field) is not None:
                 kwargs[field] = body[field]
         result = await client.create_ticket(
@@ -272,7 +276,7 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
         body = await request.json()
         client = get_client()
         kwargs = {}
-        for field in ("headline", "description", "status", "priority", "tags"):
+        for field in ("headline", "description", "status", "priority", "tags", "start_time"):
             if body.get(field) is not None:
                 kwargs[field] = body[field]
         result = await client.update_ticket(

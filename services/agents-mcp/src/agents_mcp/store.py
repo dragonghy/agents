@@ -66,6 +66,13 @@ CREATE TABLE IF NOT EXISTS schedules (
 CREATE INDEX IF NOT EXISTS idx_sched_agent
     ON schedules(agent_id);
 
+CREATE TABLE IF NOT EXISTS deleted_schedules (
+    agent_id        TEXT NOT NULL,
+    prompt_hash     TEXT NOT NULL,
+    deleted_at      TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (agent_id, prompt_hash)
+);
+
 CREATE TABLE IF NOT EXISTS dispatch_events (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id        TEXT NOT NULL,
@@ -469,14 +476,30 @@ class AgentStore:
 
     async def seed_schedule(self, agent_id: str, interval_hours: float, prompt: str,
                             last_dispatched_at: float = None) -> Optional[dict]:
-        """Create a schedule only if the agent has no existing schedules.
+        """Create a schedule only if the agent has no existing schedules
+        AND the schedule was not previously deleted by a user.
 
         Used on daemon startup to seed agents.yaml schedules into DB.
-        Returns the new schedule if created, None if agent already has one.
+        Returns the new schedule if created, None if agent already has one
+        or if the schedule was previously deleted.
         """
         existing = await self.get_agent_schedules(agent_id)
         if existing:
             return None
+
+        # Check if this specific schedule was previously deleted
+        import hashlib
+        prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()[:16]
+        async with self._db.execute(
+            "SELECT 1 FROM deleted_schedules WHERE agent_id = ? AND prompt_hash = ?",
+            (agent_id, prompt_hash),
+        ) as cursor:
+            if await cursor.fetchone():
+                logger.debug(
+                    "Skipping seed for %s: schedule was previously deleted", agent_id
+                )
+                return None
+
         return await self.create_schedule(agent_id, interval_hours, prompt,
                                           last_dispatched_at=last_dispatched_at)
 
@@ -502,10 +525,20 @@ class AgentStore:
             return [dict(r) for r in rows]
 
     async def delete_schedule(self, schedule_id: int) -> bool:
+        # Fetch the schedule before deleting so we can record it
+        schedule = await self.get_schedule(schedule_id)
         async with self._db.execute(
             "DELETE FROM schedules WHERE id = ?", (schedule_id,)
         ) as cursor:
             deleted = cursor.rowcount > 0
+        if deleted and schedule:
+            # Record deletion so seed_schedule won't recreate it on restart
+            import hashlib
+            prompt_hash = hashlib.sha256(schedule["prompt"].encode()).hexdigest()[:16]
+            await self._db.execute(
+                "INSERT OR REPLACE INTO deleted_schedules (agent_id, prompt_hash) VALUES (?, ?)",
+                (schedule["agent_id"], prompt_hash),
+            )
         await self._db.commit()
         return deleted
 

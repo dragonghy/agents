@@ -253,11 +253,14 @@ async def list_tickets(
     dateFrom: str = None,
     limit: int = 20,
     offset: int = 0,
+    include_future: bool = False,
 ) -> str:
     """List tickets (summary view). Returns only active tickets by default.
 
     Paginated: returns at most `limit` tickets (default 20). Use offset to
     page through results. The response includes `total` for the full count.
+
+    By default, tickets with start_time in the future are excluded.
 
     Args:
         project_id: Filter by project ID.
@@ -268,11 +271,13 @@ async def list_tickets(
         dateFrom: Only tickets created on/after this date (YYYY-MM-DD).
         limit: Max tickets per page (default 20, 0 for unlimited).
         offset: Skip first N tickets (for pagination).
+        include_future: If True, include tickets with start_time in the future.
     """
     client = get_client()
     result = await client.list_tickets(
         project_id=project_id, status=status, assignee=assignee,
         tags=tags, dateFrom=dateFrom, limit=limit, offset=offset,
+        include_future=include_future,
     )
     return json.dumps(result, indent=2)
 
@@ -327,6 +332,7 @@ async def create_ticket(
     priority: str = None,
     tags: str = None,
     assignee: str = None,
+    start_time: str = None,
 ) -> str:
     """Create a new ticket.
 
@@ -334,6 +340,8 @@ async def create_ticket(
         headline: Ticket title.
         assignee: Agent name (e.g. 'dev'). Auto-translates to agent:dev tag.
         tags: Raw tags string. If assignee is also set, agent tag is merged in.
+        start_time: Optional future start time (YYYY-MM-DD HH:MM:SS). If set, the ticket
+                    won't be dispatched to agents until this time is reached.
     """
     client = get_client()
     kwargs = {}
@@ -343,6 +351,8 @@ async def create_ticket(
         kwargs["status"] = status
     if priority is not None:
         kwargs["priority"] = priority
+    if start_time is not None:
+        kwargs["start_time"] = start_time
     result = await client.create_ticket(
         headline=headline, project_id=project_id,
         user_id=user_id, tags=tags, assignee=assignee, **kwargs,
@@ -387,10 +397,19 @@ async def update_ticket(
 
 @app.tool()
 @_with_timeout
-async def get_comments(module: str, module_id: int) -> str:
-    """Get comments for a ticket or other module."""
+async def get_comments(
+    module: str, module_id: int, limit: int = 10, offset: int = 0
+) -> str:
+    """Get comments for a ticket or other module, with pagination.
+
+    Args:
+        module: Module type (e.g. 'ticket').
+        module_id: ID of the module entity.
+        limit: Max comments to return. Default 10. Use 0 for all.
+        offset: Skip first N comments. Default 0.
+    """
     client = get_client()
-    result = await client.get_comments(module, module_id)
+    result = await client.get_comments(module, module_id, limit=limit, offset=offset)
     return json.dumps(result, indent=2)
 
 

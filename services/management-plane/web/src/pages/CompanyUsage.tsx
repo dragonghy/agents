@@ -57,7 +57,7 @@ export default function CompanyUsage({ user }: Props) {
     if (!id) return;
     Promise.all([
       getCompany(id),
-      getUsage(id),
+      getUsage(id, undefined, new Date().toISOString().slice(0, 10)),
       getBilling(id),
     ])
       .then(([c, u, b]) => {
