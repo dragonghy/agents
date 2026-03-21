@@ -234,6 +234,17 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
                                               limit=limit, offset=offset)
         return JSONResponse(result)
 
+    async def mark_messages_read(request: Request) -> JSONResponse:
+        """POST /v1/messages/mark-read — mark messages as read."""
+        body = await request.json()
+        agent_id = body.get("agent_id", "")
+        message_ids = body.get("message_ids", [])
+        if not agent_id or not message_ids:
+            return JSONResponse({"error": "agent_id and message_ids required"}, status_code=400)
+        store = await get_store()
+        count = await store.mark_read(agent_id, message_ids)
+        return JSONResponse({"marked_read": count})
+
     # ── Write Operations ──
 
     async def send_message(request: Request) -> JSONResponse:
@@ -814,6 +825,7 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
         Route("/v1/tickets/{id}", get_ticket, methods=["GET"]),
         Route("/v1/tickets", list_tickets, methods=["GET"]),
         Route("/v1/messages", list_messages, methods=["GET"]),
+        Route("/v1/messages/mark-read", mark_messages_read, methods=["POST"]),
         Route("/v1/messages/inbox/{agent_id}", get_inbox),
         Route("/v1/messages/conversation/{a}/{b}", get_conversation),
         Route("/v1/status-labels", get_status_labels),
