@@ -29,7 +29,7 @@ class EventBus:
         """Broadcast an event to all connected clients."""
         if not self._clients:
             return
-        message = json.dumps({"type": event_type, "data": data})
+        message = json.dumps({"type": event_type, "data": data}, ensure_ascii=False)
         disconnected = set()
         for ws in self._clients:
             try:

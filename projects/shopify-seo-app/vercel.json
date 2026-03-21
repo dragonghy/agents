@@ -1,6 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "npm run setup && npm run build",
+  "buildCommand": "npx prisma generate && npm run build",
   "installCommand": "npm install",
   "framework": "remix",
   "env": {

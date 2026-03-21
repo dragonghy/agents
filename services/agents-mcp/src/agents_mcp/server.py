@@ -17,6 +17,10 @@ import sys
 import yaml
 from fastmcp import FastMCP
 
+# Ensure all JSON responses contain readable Unicode (中文 etc.)
+# instead of \uXXXX escape sequences.
+_json_dumps = functools.partial(json.dumps, ensure_ascii=False)
+
 from agents_mcp.sqlite_task_client import SQLiteTaskClient
 from agents_mcp.dispatcher import dispatch_loop
 from agents_mcp.store import AgentStore
@@ -233,7 +237,7 @@ def _with_timeout(fn):
                 f"The daemon may be overloaded. Please retry."
             )
             logger.warning(msg)
-            return json.dumps({"error": msg})
+            return _json_dumps({"error": msg})
 
     return wrapper
 
@@ -279,7 +283,7 @@ async def list_tickets(
         tags=tags, dateFrom=dateFrom, limit=limit, offset=offset,
         include_future=include_future,
     )
-    return json.dumps(result, indent=2)
+    return _json_dumps(result, indent=2)
 
 
 @app.tool()
@@ -309,7 +313,7 @@ async def search_tickets(
         query=query, limit=limit, time_range=time_range,
         status=status, assignee=assignee,
     )
-    return json.dumps(result, indent=2)
+    return _json_dumps(result, indent=2)
 
 
 @app.tool()
@@ -318,7 +322,7 @@ async def get_ticket(ticket_id: int) -> str:
     """Get ticket details by ID. Returns detail fields + assignee (pruned from raw API)."""
     client = get_client()
     result = await client.get_ticket(ticket_id)
-    return json.dumps(result, indent=2)
+    return _json_dumps(result, indent=2)
 
 
 @app.tool()
@@ -357,7 +361,7 @@ async def create_ticket(
         headline=headline, project_id=project_id,
         user_id=user_id, tags=tags, assignee=assignee, **kwargs,
     )
-    return json.dumps(result, indent=2)
+    return _json_dumps(result, indent=2)
 
 
 @app.tool()
@@ -392,7 +396,7 @@ async def update_ticket(
     if tags is not None:
         kwargs["tags"] = tags
     result = await client.update_ticket(ticket_id, project_id, assignee=assignee, **kwargs)
-    return json.dumps(result, indent=2)
+    return _json_dumps(result, indent=2)
 
 
 @app.tool()
@@ -410,7 +414,7 @@ async def get_comments(
     """
     client = get_client()
     result = await client.get_comments(module, module_id, limit=limit, offset=offset)
-    return json.dumps(result, indent=2)
+    return _json_dumps(result, indent=2)
 
 
 @app.tool()
@@ -426,7 +430,7 @@ async def add_comment(module: str, module_id: int, comment: str, author: str = N
     """
     client = get_client()
     result = await client.add_comment(module, module_id, comment, author=author)
-    return json.dumps(result, indent=2)
+    return _json_dumps(result, indent=2)
 
 
 @app.tool()
@@ -435,7 +439,7 @@ async def get_status_labels() -> str:
     """Get available ticket status labels."""
     client = get_client()
     result = await client.get_status_labels()
-    return json.dumps(result, indent=2)
+    return _json_dumps(result, indent=2)
 
 
 @app.tool()
@@ -444,7 +448,7 @@ async def get_all_subtasks(ticket_id: int) -> str:
     """Get all subtasks for a ticket."""
     client = get_client()
     result = await client.get_all_subtasks(ticket_id)
-    return json.dumps(result, indent=2)
+    return _json_dumps(result, indent=2)
 
 
 @app.tool()
@@ -481,7 +485,7 @@ async def upsert_subtask(
         parent_ticket_id=parent_ticket, headline=headline,
         tags=tags, assignee=assignedTo, **kwargs,
     )
-    return json.dumps(result, indent=2)
+    return _json_dumps(result, indent=2)
 
 
 @app.tool()
@@ -500,7 +504,7 @@ async def update_depends_on(ticket_id: int, depends_on: str) -> str:
     """
     client = get_client()
     result = await client.update_depends_on(ticket_id, depends_on)
-    return json.dumps(result, indent=2)
+    return _json_dumps(result, indent=2)
 
 
 # ════════════════════════════════════════
@@ -539,7 +543,7 @@ async def list_agents() -> str:
                 "updated_at": profile.get("updated_at"),
             }
         agents.append(entry)
-    return json.dumps(agents, indent=2)
+    return _json_dumps(agents, indent=2)
 
 
 @app.tool()
@@ -578,7 +582,7 @@ async def get_agent_status(agent: str = "all") -> str:
             "dispatchable": info.get("dispatchable", False),
         })
 
-    return json.dumps(results, indent=2)
+    return _json_dumps(results, indent=2)
 
 
 @app.tool()
@@ -610,7 +614,7 @@ async def suggest_assignee(role: str = None, task_context: str = None) -> str:
         candidates.append(name)
 
     if not candidates:
-        return json.dumps({"error": f"No dispatchable agents found for role: {role}"})
+        return _json_dumps({"error": f"No dispatchable agents found for role: {role}"})
 
     client = get_client()
     workloads = await client.get_agent_workload(candidates)
@@ -680,7 +684,7 @@ async def suggest_assignee(role: str = None, task_context: str = None) -> str:
         "recommended": scored[0]["agent"],
         "candidates": scored,
     }
-    return json.dumps(result, indent=2)
+    return _json_dumps(result, indent=2)
 
 
 @app.tool()
@@ -708,7 +712,7 @@ async def dispatch_agents(agent: str = "all") -> str:
     client = get_client()
     store = await get_store()
     results = await dispatch_cycle(client, targets, tmux_session, store=store)
-    return json.dumps(results, indent=2)
+    return _json_dumps(results, indent=2)
 
 
 # ════════════════════════════════════════
@@ -746,7 +750,7 @@ async def update_profile(
         active_skills=active_skills,
         expertise=expertise,
     )
-    return json.dumps(result, indent=2)
+    return _json_dumps(result, indent=2)
 
 
 @app.tool()
@@ -760,11 +764,11 @@ async def get_profile(agent_id: str) -> str:
     store = await get_store()
     if agent_id == "all":
         profiles = await store.get_all_profiles()
-        return json.dumps(profiles, indent=2)
+        return _json_dumps(profiles, indent=2)
     profile = await store.get_profile(agent_id)
     if not profile:
-        return json.dumps({"error": f"No profile found for {agent_id}"})
-    return json.dumps(profile, indent=2)
+        return _json_dumps({"error": f"No profile found for {agent_id}"})
+    return _json_dumps(profile, indent=2)
 
 
 @app.tool()
@@ -783,7 +787,7 @@ async def send_message(from_agent: str, to_agent: str, message: str) -> str:
     """
     store = await get_store()
     msg_id = await store.insert_message(from_agent, to_agent, message)
-    return json.dumps({"id": msg_id, "status": "sent"})
+    return _json_dumps({"id": msg_id, "status": "sent"})
 
 
 @app.tool()
@@ -804,7 +808,7 @@ async def get_inbox(
     """
     store = await get_store()
     result = await store.get_inbox(agent_id, unread_only=unread_only, limit=limit, offset=offset)
-    return json.dumps(result, indent=2)
+    return _json_dumps(result, indent=2)
 
 
 @app.tool()
@@ -825,7 +829,7 @@ async def get_conversation(
     """
     store = await get_store()
     result = await store.get_conversation(agent_id, with_agent, limit=limit, offset=offset)
-    return json.dumps(result, indent=2)
+    return _json_dumps(result, indent=2)
 
 
 @app.tool()
@@ -840,7 +844,7 @@ async def mark_messages_read(agent_id: str, message_ids: str) -> str:
     store = await get_store()
     ids = [int(x.strip()) for x in message_ids.split(",") if x.strip()]
     count = await store.mark_read(agent_id, ids)
-    return json.dumps({"marked_read": count})
+    return _json_dumps({"marked_read": count})
 
 
 @app.tool()
@@ -936,7 +940,7 @@ async def reassign_ticket(
         response["deferred_dispatch"] = deferred_result
     if comment_error:
         response["comment_error"] = comment_error
-    return json.dumps(response)
+    return _json_dumps(response)
 
 
 # ════════════════════════════════════════
@@ -966,16 +970,16 @@ async def request_restart(agent_id: str, target_agent_id: str = "", reason: str 
     agents_expanded = resolve_agents(cfg)
 
     if agent_id not in agents_expanded:
-        return json.dumps({"error": f"Unknown caller agent: {agent_id}"})
+        return _json_dumps({"error": f"Unknown caller agent: {agent_id}"})
 
     # Determine target
     target = target_agent_id.strip() if target_agent_id else agent_id
     if target not in agents_expanded:
-        return json.dumps({"error": f"Unknown target agent: {target}"})
+        return _json_dumps({"error": f"Unknown target agent: {target}"})
 
     # Permission check: non-admin agents can only restart themselves
     if agent_id != "admin" and target != agent_id:
-        return json.dumps({
+        return _json_dumps({
             "error": f"Permission denied: {agent_id} can only restart itself, not {target}. "
                      f"Only admin can restart other agents."
         })
@@ -1024,7 +1028,7 @@ async def request_restart(agent_id: str, target_agent_id: str = "", reason: str 
 
     asyncio.create_task(_do_restart())
 
-    return json.dumps({
+    return _json_dumps({
         "status": "restart_scheduled",
         "target_agent_id": target,
         "requested_by": agent_id,
@@ -1060,7 +1064,7 @@ async def schedule_task(
     store = await get_store()
     result = await store.create_schedule(agent_id, interval_hours, prompt)
     logger.info(f"Schedule created: #{result['id']} for {agent_id} every {interval_hours}h")
-    return json.dumps(result, indent=2)
+    return _json_dumps(result, indent=2)
 
 
 @app.tool()
@@ -1077,7 +1081,7 @@ async def get_schedules(agent_id: str = None) -> str:
         result = await store.get_agent_schedules(agent_id)
     else:
         result = await store.get_all_schedules()
-    return json.dumps(result, indent=2)
+    return _json_dumps(result, indent=2)
 
 
 @app.tool()
@@ -1095,11 +1099,11 @@ async def remove_schedule(schedule_id: int, agent_id: str) -> str:
     store = await get_store()
     schedule = await store.get_schedule(schedule_id)
     if not schedule:
-        return json.dumps({"error": f"Schedule #{schedule_id} not found"})
+        return _json_dumps({"error": f"Schedule #{schedule_id} not found"})
 
     # Permission check: non-admin agents can only remove their own schedules
     if agent_id != "admin" and schedule["agent_id"] != agent_id:
-        return json.dumps({
+        return _json_dumps({
             "error": f"Permission denied: {agent_id} cannot remove schedule "
                      f"belonging to {schedule['agent_id']}. Only admin or the "
                      f"schedule owner can remove it."
@@ -1107,7 +1111,7 @@ async def remove_schedule(schedule_id: int, agent_id: str) -> str:
 
     deleted = await store.delete_schedule(schedule_id)
     logger.info(f"Schedule #{schedule_id} removed by {agent_id}")
-    return json.dumps({"status": "deleted", "schedule_id": schedule_id})
+    return _json_dumps({"status": "deleted", "schedule_id": schedule_id})
 
 
 # ════════════════════════════════════════
