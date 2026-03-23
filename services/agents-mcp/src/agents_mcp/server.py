@@ -1037,6 +1037,80 @@ async def request_restart(agent_id: str, target_agent_id: str = "", reason: str 
 
 
 # ════════════════════════════════════════
+# Agent Lifecycle Tools
+# ════════════════════════════════════════
+
+
+@app.tool()
+@_with_timeout
+async def get_agent_session(agent_id: str) -> str:
+    """Get the stored session ID for an agent.
+
+    Returns the session ID used for --resume on restart.
+    """
+    config_path = os.environ.get("AGENTS_CONFIG_PATH", ".")
+    root_dir = os.path.dirname(os.path.abspath(config_path))
+    config_script = os.path.join(root_dir, "agent-config.py")
+
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, config_script, "get-session", agent_id,
+        cwd=root_dir,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+    sid = stdout.decode().strip()
+    return _json_dumps({"agent_id": agent_id, "session_id": sid or None})
+
+
+@app.tool()
+@_with_timeout
+async def capture_agent_session(agent_id: str) -> str:
+    """Detect and save the latest session ID for an agent.
+
+    Scans ~/.claude/projects/ for the most recent JSONL file matching
+    the agent's workspace, then saves it to .agent-sessions.
+
+    Use after starting or restarting an agent to ensure --resume works.
+    """
+    config_path = os.environ.get("AGENTS_CONFIG_PATH", ".")
+    root_dir = os.path.dirname(os.path.abspath(config_path))
+    config_script = os.path.join(root_dir, "agent-config.py")
+
+    # Detect session
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, config_script, "detect-session", agent_id,
+        cwd=root_dir,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+    sid = stdout.decode().strip()
+
+    if not sid:
+        return _json_dumps({
+            "agent_id": agent_id,
+            "status": "not_found",
+            "message": "No session JSONL found. The agent may not have started yet.",
+        })
+
+    # Save session
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, config_script, "set-session", agent_id, sid,
+        cwd=root_dir,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    await asyncio.wait_for(proc.communicate(), timeout=10)
+
+    return _json_dumps({
+        "agent_id": agent_id,
+        "status": "captured",
+        "session_id": sid,
+    })
+
+
+# ════════════════════════════════════════
 # Schedule Management Tools
 # ════════════════════════════════════════
 

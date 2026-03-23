@@ -299,18 +299,36 @@ capture_new_sessions() {
     return
   fi
 
-  echo "=== Capturing session IDs (waiting 15s for Claude Code startup) ==="
-  sleep 15
+  echo "=== Capturing session IDs (polling up to 60s) ==="
+  local remaining=("${AGENTS_NEEDING_SESSION[@]}")
+  local max_attempts=12  # 12 × 5s = 60s
+  local attempt=0
 
-  for agent in "${AGENTS_NEEDING_SESSION[@]}"; do
-    local new_sid
-    new_sid="$(python3 "$CONFIG" detect-session "$agent")"
-    if [[ -n "$new_sid" ]]; then
-      python3 "$CONFIG" set-session "$agent" "$new_sid"
-      echo "  ${agent}: ${new_sid}"
-    else
-      echo "  ${agent}: (no session found yet)"
+  while [[ ${#remaining[@]} -gt 0 && $attempt -lt $max_attempts ]]; do
+    attempt=$((attempt + 1))
+    sleep 5
+
+    local still_missing=()
+    for agent in "${remaining[@]}"; do
+      local new_sid
+      new_sid="$(python3 "$CONFIG" detect-session "$agent")"
+      if [[ -n "$new_sid" ]]; then
+        python3 "$CONFIG" set-session "$agent" "$new_sid"
+        echo "  ${agent}: ${new_sid} (after ${attempt}×5s)"
+      else
+        still_missing+=("$agent")
+      fi
+    done
+    remaining=("${still_missing[@]}")
+
+    if [[ ${#remaining[@]} -gt 0 ]]; then
+      echo "  ... waiting (${#remaining[@]} agents remaining, attempt ${attempt}/${max_attempts})"
     fi
+  done
+
+  # Report any agents that still couldn't be captured
+  for agent in "${remaining[@]}"; do
+    echo "  ${agent}: (no session found after 60s — will capture on next restart)"
   done
 }
 
