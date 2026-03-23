@@ -22,22 +22,18 @@ def _get_fernet():
     if not _ENCRYPT_KEY:
         logger.warning("MGMT_ENCRYPT_KEY not set — auth tokens stored in plaintext")
         return None
-    try:
-        from cryptography.fernet import Fernet
-        # Accept either a raw Fernet key or derive one from a passphrase
-        if len(_ENCRYPT_KEY) == 44 and _ENCRYPT_KEY.endswith("="):
-            key = _ENCRYPT_KEY.encode()
-        else:
-            # Derive a Fernet-compatible key from an arbitrary passphrase
-            import base64
-            dk = hashlib.pbkdf2_hmac("sha256", _ENCRYPT_KEY.encode(), b"aghub-salt", 100_000)
-            key = base64.urlsafe_b64encode(dk)
-        _fernet = Fernet(key)
-        logger.info("Token encryption enabled")
-        return _fernet
-    except ImportError:
-        logger.warning("cryptography package not installed — tokens stored in plaintext")
-        return None
+    from cryptography.fernet import Fernet
+    # Accept either a raw Fernet key or derive one from a passphrase
+    if len(_ENCRYPT_KEY) == 44 and _ENCRYPT_KEY.endswith("="):
+        key = _ENCRYPT_KEY.encode()
+    else:
+        # Derive a Fernet-compatible key from an arbitrary passphrase
+        import base64
+        dk = hashlib.pbkdf2_hmac("sha256", _ENCRYPT_KEY.encode(), b"aghub-salt", 100_000)
+        key = base64.urlsafe_b64encode(dk)
+    _fernet = Fernet(key)
+    logger.info("Token encryption enabled")
+    return _fernet
 
 
 def encrypt_token(plaintext: str) -> str:

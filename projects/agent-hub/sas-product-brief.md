@@ -183,6 +183,15 @@ Claude Code 支持以下容器内认证方式：
 | **M6** | 计费集成 — Stripe + 使用量追踪 | M3 | 1-2 周 |
 | **M7** | 上线 — Beta 测试 + 公开发布 | All | 2 周 |
 
-**当前焦点**：M3 管理面设计（详见 `management-plane-prd.md`）
+**当前焦点**：所有里程碑已完成，等待 #362 基础设施就绪后部署上线
 
-**已完成**：M1 Docker Agent v2 ✅（ticket #318，dev-alex 实现，单容器 tmux 方案）
+**已完成**：
+- M1 Docker Agent v2 ✅（ticket #318，dev-alex 实现，单容器 tmux 方案）
+- M3 管理面 ✅（ticket #354，dev-emma 实现，全栈 Web 应用）
+- M4 自动部署 ✅（ticket #358，dev-emma 实现，Docker Compose 集成 + 模板系统）
+- M5 域名路由 ✅（ticket #359，dev-alex 实现，Nginx 反向代理 + SSL）
+- M6 计费集成 ✅（ticket #361，dev-emma 实现，Token 使用量追踪 + Stripe 框架）
+- M7 上线准备 ✅（ticket #363，dev-emma 实现，部署脚本 + 安全加固 + 文档）
+- M3 管理面 ✅（ticket #354，dev-emma 实现，全栈 Web 应用）
+- M4 自动部署 ✅（ticket #358，真实 Docker Compose 实例管理）
+- M5 域名路由 ✅（ticket #359，Nginx 反向代理 + 二级域名 + SSL）

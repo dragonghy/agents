@@ -126,7 +126,7 @@ export default function CompanySettings({ user }: Props) {
         </div>
 
         {/* General */}
-        <section className="bg-white p-6 rounded-xl border border-gray-200 mb-6">
+        <section className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 mb-6">
           <h2 className="font-semibold text-lg mb-4">General</h2>
           <div className="mb-4">
             <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
@@ -156,12 +156,27 @@ export default function CompanySettings({ user }: Props) {
           </div>
           <div className="mt-3">
             <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
-            <p className="text-gray-600 capitalize">{company.status}</p>
+            <p className={`capitalize ${company.status === 'error' ? 'text-red-600 font-medium' : 'text-gray-600'}`}>
+              {company.status}
+            </p>
           </div>
+          {(company.url || company.port) && company.status === 'running' && (
+            <div className="mt-3">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Instance URL</label>
+              <a
+                href={company.url || `http://localhost:${company.port}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-indigo-600 hover:text-indigo-700 underline text-sm font-mono"
+              >
+                {company.url || `http://localhost:${company.port}`}
+              </a>
+            </div>
+          )}
         </section>
 
         {/* Authentication */}
-        <section className="bg-white p-6 rounded-xl border border-gray-200 mb-6">
+        <section className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 mb-6">
           <h2 className="font-semibold text-lg mb-4">Authentication</h2>
           <div className="mb-4">
             <label className="block text-sm font-medium text-gray-700 mb-1">Type</label>

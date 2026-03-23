@@ -52,21 +52,21 @@ export default function Landing() {
 
         <div className="mt-20 grid grid-cols-1 md:grid-cols-3 gap-8 text-left">
           <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-            <div className="text-2xl mb-3">&#9889;</div>
+            <div className="text-4xl mb-3">&#9889;</div>
             <h3 className="font-semibold text-lg mb-2">Instant Setup</h3>
             <p className="text-gray-600 text-sm">
               Register, choose a team template, and your AI agents start working in under 5 minutes.
             </p>
           </div>
           <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-            <div className="text-2xl mb-3">&#128736;</div>
+            <div className="text-4xl mb-3">&#128736;</div>
             <h3 className="font-semibold text-lg mb-2">Zero Ops</h3>
             <p className="text-gray-600 text-sm">
               No tmux, no Docker, no daemon management. Everything is handled by the platform.
             </p>
           </div>
           <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-            <div className="text-2xl mb-3">&#128065;</div>
+            <div className="text-4xl mb-3">&#128065;</div>
             <h3 className="font-semibold text-lg mb-2">Full Visibility</h3>
             <p className="text-gray-600 text-sm">
               Monitor agent activity, review code, manage tasks - all through a web dashboard.
@@ -108,7 +108,7 @@ export default function Landing() {
               </ul>
               <button
                 disabled
-                className="mt-6 w-full py-2.5 border border-gray-300 rounded-lg text-gray-400 cursor-not-allowed"
+                className="mt-6 w-full py-2.5 border border-gray-200 rounded-lg text-gray-300 cursor-not-allowed text-sm"
               >
                 Coming soon
               </button>
@@ -124,7 +124,7 @@ export default function Landing() {
               </ul>
               <button
                 disabled
-                className="mt-6 w-full py-2.5 border border-gray-300 rounded-lg text-gray-400 cursor-not-allowed"
+                className="mt-6 w-full py-2.5 border border-gray-200 rounded-lg text-gray-300 cursor-not-allowed text-sm"
               >
                 Coming soon
               </button>

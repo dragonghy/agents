@@ -1,16 +1,16 @@
 ---
-name: leantime
-description: Leantime 项目管理使用手册。查看任务管理、Agent 间任务分发、评论沟通的规范。
+name: tasks
+description: 任务管理使用手册。查看任务管理、Agent 间任务分发、评论沟通的规范。
 allowed-tools: mcp__agents__list_tickets, mcp__agents__get_ticket, mcp__agents__create_ticket, mcp__agents__update_ticket, mcp__agents__add_comment, mcp__agents__get_comments, mcp__agents__get_status_labels, mcp__agents__upsert_subtask, mcp__agents__get_all_subtasks, mcp__agents__list_agents, mcp__agents__dispatch_agents, mcp__agents__get_agent_status, mcp__agents__suggest_assignee, mcp__agents__send_message, mcp__agents__get_inbox, mcp__agents__get_conversation, mcp__agents__mark_messages_read, mcp__agents__update_profile, mcp__agents__get_profile, mcp__agents__reassign_ticket
 ---
 
-# Leantime 使用手册
+# 任务管理使用手册
 
 ## 项目信息
 
 - **项目名称**: agents
 - **project_id**: 3
-- **user_id**: 1（所有 Agent 共用同一个 Leantime 账号）
+- **user_id**: 1（所有 Agent 共用同一个账号）
 
 ## 状态定义
 
@@ -261,7 +261,7 @@ get_conversation(agent_id="<你的ID>", with_agent="<对方ID>", limit=20, offse
 mark_messages_read(agent_id="<你的ID>", message_ids="1,2,3")
 ```
 
-**消息 vs Ticket**：消息适合快速沟通（确认需求、问问题、通知状态）。正式工作交付和跟踪仍通过 Leantime ticket。
+**消息 vs Ticket**：消息适合快速沟通（确认需求、问问题、通知状态）。正式工作交付和跟踪仍通过 ticket。
 
 ## Agent Profile
 
@@ -274,7 +274,7 @@ update_profile(
   agent_id="<你的ID>",
   identity="我是 QA 工程师，负责 E2E 测试",
   current_context="正在测试 Browser M7 功能",
-  active_skills='["leantime", "vmware-setup"]',
+  active_skills='["tasks", "vmware-setup"]',
   expertise='["E2E testing", "VMware", "Browser automation"]'
 )
 ```
@@ -327,5 +327,5 @@ suggest_assignee(role="qa", task_context="Browser automation testing")
 3. 创建 ticket 时必须设置 `assignee`（或 `tags`）以标识目标 Agent，否则其他 Agent 无法识别任务归属。推荐使用 `assignee` 参数。
 4. 修改 ticket 状态时，`status` 参数是 **整数类型**。
 5. **禁止使用 status=2**。所有等待场景（Human 审阅、外部依赖）统一用 DEPENDS_ON 模式（见第 5 节）。
-6. **完成当前任务后，必须再次查询 Leantime 是否有新的待办任务**，有则继续执行。
+6. **完成当前任务后，必须再次查询是否有新的待办任务**，有则继续执行。
 7. **不要手动将 status=1 的 ticket 改回 status=4**，让 auto_dispatch 根据依赖关系自动解锁。

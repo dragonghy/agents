@@ -62,7 +62,7 @@ VM MCP 提供以下类别的工具（通过你的 MCP 连接直接可用）：
 
 ## 反馈提交
 
-发现问题后，创建 Leantime ticket 给 product-lisa：
+发现问题后，创建 ticket 给 product-lisa：
 
 ```
 create_ticket(

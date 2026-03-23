@@ -62,6 +62,6 @@ mkdir -p templates/<agent>/skills/<skill-name>
 
 ## 注意事项
 
-- Skill 名称（目录名）即为调用命令，如目录名为 `leantime`，则用 `/leantime` 调用。
+- Skill 名称（目录名）即为调用命令，如目录名为 `tasks`，则用 `/tasks` 调用。
 - 修改源文件后，symlink 自动生效，但仍需重启 Agent 才能加载变更。
 - **不要手动在 `.claude/skills/` 中创建文件**，它是自动生成的。

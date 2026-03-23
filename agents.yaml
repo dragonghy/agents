@@ -36,6 +36,22 @@ mcp_servers:
       VMWARE_PASSWORD: ${VMWARE_PASSWORD}
       SSH_KEY_PATH: ${SSH_KEY_PATH:-~/.ssh/id_ed25519}
       SSH_USERNAME: ${SSH_USERNAME:-root}
+  1password:
+    command: npx
+    args:
+      - "-y"
+      - "@takescake/1password-mcp"
+    env:
+      OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN}
+  microsoft:
+    command: uv
+    args:
+      - "--directory"
+      - "${WORKSPACE_DIR}/microsoft-mcp"
+      - run
+      - microsoft-mcp
+    env:
+      MICROSOFT_MCP_CLIENT_ID: ${MICROSOFT_MCP_CLIENT_ID:-441b3624-2687-4a47-adfc-608e94d17f41}
 
 # Daily journal: all agents write a work summary at the configured time.
 # Stagger avoids dispatching all agents simultaneously.
@@ -65,6 +81,29 @@ agents:
     dispatchable: true
     add_dirs:
       - .
+  ops:
+    project: agents
+    work_stream: ops
+    role: 运维工程师
+    description: 负责域名、服务器、云资源和基础设施操作
+    dispatchable: true
+    add_dirs:
+      - .
+    extra_mcp_servers:
+      1password:
+        command: npx
+        args:
+          - "-y"
+          - "@takescake/1password-mcp"
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${OPS_1PASSWORD_TOKEN}
+      aws:
+        command: node
+        args:
+          - /Users/huayang/.nvm/versions/node/v22.15.0/lib/node_modules/aws-mcp/dist/index.js
+        env:
+          AWS_PROFILE: ${AWS_PROFILE:-default}
+          AWS_REGION: ${AWS_REGION:-us-west-2}
   inspector:
     project: agents
     work_stream: admin
@@ -85,6 +124,7 @@ agents:
     description: 负责需求分析、任务分发和最终验收
     dispatchable: true
     add_dirs:
+      - .
       - ${WORKSPACE_DIR}/vm-mcp
       - ${WORKSPACE_DIR}/test-projects
   dev-alex:
@@ -95,6 +135,7 @@ agents:
     description: 负责技术方案设计、代码实现和开发测试
     dispatchable: true
     add_dirs:
+      - .
       - ${WORKSPACE_DIR}/vm-mcp
       - ${WORKSPACE_DIR}/test-projects
   dev-emma:
@@ -105,6 +146,7 @@ agents:
     description: 负责技术方案设计、代码实现和开发测试
     dispatchable: true
     add_dirs:
+      - .
       - ${WORKSPACE_DIR}/vm-mcp
       - ${WORKSPACE_DIR}/test-projects
   qa-lucy:
@@ -115,6 +157,7 @@ agents:
     description: 负责 E2E 测试和需求一致性验证
     dispatchable: true
     add_dirs:
+      - .
       - ${WORKSPACE_DIR}/vm-mcp
       - ${WORKSPACE_DIR}/test-projects
   qa-oliver:
@@ -125,6 +168,7 @@ agents:
     description: 负责 E2E 测试和需求一致性验证
     dispatchable: true
     add_dirs:
+      - .
       - ${WORKSPACE_DIR}/vm-mcp
       - ${WORKSPACE_DIR}/test-projects
   user-sophia:
@@ -149,6 +193,7 @@ agents:
     description: 负责 Trading 项目的策略评估、回测分析和股票池管理
     dispatchable: true
     add_dirs:
+      - .
       - ${WORKSPACE_DIR}/trading
     schedule:
       interval_hours: 24
@@ -162,6 +207,7 @@ agents:
     description: 负责 VM MCP 项目的产品规划和功能改进
     dispatchable: true
     add_dirs:
+      - .
       - ${WORKSPACE_DIR}/vm-mcp
     schedule:
       interval_hours: 24
@@ -175,6 +221,7 @@ agents:
     description: 以用户视角测试 VM MCP 工具的各种使用场景
     dispatchable: true
     add_dirs:
+      - .
       - ${WORKSPACE_DIR}/vm-mcp
     schedule:
       interval_hours: 12
@@ -224,6 +271,14 @@ agents:
     add_dirs:
       - .
       - ${WORKSPACE_DIR}/test-projects
+  assistant:
+    project: personal
+    work_stream: assistant
+    role: 生活助理
+    description: 帮助 Human 处理日常事务、调研、邮件和日程管理
+    dispatchable: true
+    add_dirs:
+      - .
   user-james:
     project: founder
     work_stream: user

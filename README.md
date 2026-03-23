@@ -77,11 +77,11 @@ graph TB
         admin["admin<br/>Admin"]
     end
 
-    leantime["Leantime<br/>Project Management"]
+    taskdb["SQLite<br/>Task Database"]
     browser["Browser<br/>Web Dashboard"]
 
     agents -- "MCP (SSE)" --> daemon
-    daemon -- "REST API" --> leantime
+    daemon -- "SQLite" --> taskdb
     daemon -- "HTTP + WebSocket" --> browser
 
     product -- "reassign_ticket" --> dev
@@ -89,11 +89,11 @@ graph TB
     qa -- "reassign_ticket" --> product
 ```
 
-Each agent runs as an independent Claude Code instance inside a **tmux** window, connected to the central daemon via MCP proxy. The daemon bridges agents to Leantime for project management and serves the Web UI for monitoring.
+Each agent runs as an independent Claude Code instance inside a **tmux** window, connected to the central daemon via MCP proxy. The daemon provides task management (SQLite-backed) and serves the Web UI for monitoring.
 
 ## How It Works
 
-1. **Product** receives a feature request, breaks it into milestones and tickets in Leantime
+1. **Product** receives a feature request, breaks it into milestones and tickets
 2. The **daemon** dispatches tickets to idle Dev agents based on workload and expertise
 3. **Dev** implements the feature, writes tests, and reassigns the ticket to QA
 4. **QA** runs verification tests — approves or sends back with a bug report
@@ -166,7 +166,7 @@ agent-hub/
 │   ├── dev/                 #   Developer (CLAUDE.md + skills/)
 │   ├── qa/                  #   QA Engineer (CLAUDE.md + skills/)
 │   ├── admin/               #   Admin (CLAUDE.md + skills/)
-│   └── shared/              #   Shared skills (leantime, daily-journal, etc.)
+│   └── shared/              #   Shared skills (tasks, daily-journal, etc.)
 ├── agents/                  # Generated workspaces (gitignored)
 ├── services/
 │   └── agents-mcp/          # Central MCP daemon (Python/FastMCP)
@@ -187,5 +187,3 @@ agent-hub/
 ## License
 
 This project is licensed under the [Apache License 2.0](LICENSE).
-
-**Exception:** Leantime plugins in `services/leantime/plugins/` are subject to [AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.html) as they run within the Leantime application. See [services/leantime/plugins/LICENSE-NOTE.md](services/leantime/plugins/LICENSE-NOTE.md).

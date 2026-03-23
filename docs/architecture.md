@@ -5,23 +5,15 @@
 Agent-Hub is a multi-agent development framework where autonomous AI agents collaborate on software projects. The system follows a hub-and-spoke architecture with a central daemon coordinating agent activities.
 
 ```
-                          ┌──────────────┐
-                          │   Leantime   │
-                          │  (Tickets,   │
-                          │  Comments,   │
-                          │  Projects)   │
-                          └──────┬───────┘
-                                 │ JSON-RPC
-                                 │
-┌────────────────────────────────┼────────────────────────────────┐
+┌────────────────────────────────────────────────────────────────┐
 │                         agents-mcp daemon                       │
-│                                │                                │
-│  ┌─────────────┐  ┌───────────┴──────────┐  ┌───────────────┐ │
-│  │  Dispatcher  │  │   LeantimeClient     │  │  AgentStore   │ │
+│                                                                │
+│  ┌─────────────┐  ┌──────────────────────┐  ┌───────────────┐ │
+│  │  Dispatcher  │  │  SQLiteTaskClient    │  │  AgentStore   │ │
 │  │  - dispatch  │  │   - ticket CRUD      │  │  - profiles   │ │
 │  │    loop      │  │   - comments         │  │  - messages   │ │
 │  │  - staleness │  │   - staleness check  │  │  - SQLite     │ │
-│  │  - journals  │  │                      │  │               │ │
+│  │  - journals  │  │   - SQLite storage   │  │               │ │
 │  └──────┬──────┘  └──────────────────────┘  └───────────────┘ │
 │         │                                                      │
 │  ┌──────┴───────────────────────────────────────────────────┐  │
@@ -60,7 +52,7 @@ The central process that coordinates everything. Built with [FastMCP](https://gi
 **Key modules:**
 - `server.py` — FastMCP tool definitions, config loading
 - `dispatcher.py` — Dispatch loop, staleness detection, journal scheduling
-- `leantime_client.py` — Leantime JSON-RPC API wrapper
+- `sqlite_task_client.py` — SQLite-backed task management client
 - `store.py` — SQLite-backed agent profiles and P2P messages
 - `web/api.py` — Starlette REST API router
 
@@ -72,16 +64,14 @@ Each agent runs `agents-mcp-proxy`, a lightweight process that connects to the d
 Agent (Claude Code) → agents-mcp-proxy → daemon SSE endpoint → FastMCP tools
 ```
 
-### Leantime Integration
+### Task Management
 
-[Leantime](https://leantime.io) serves as the project management database. Agent-Hub interacts with it via JSON-RPC API.
-
-**Data stored in Leantime:**
+All task data is stored locally in SQLite (`.agents-tasks.db`):
 - Tickets (tasks assigned to agents)
 - Comments (handoff notes, QA reports, reviews)
 - Projects (logical grouping of work)
 
-**Data stored locally (SQLite):**
+**Additional data in SQLite (`.agents-mcp.db`):**
 - Agent profiles (identity, current context, expertise)
 - P2P messages between agents
 - Session metadata
@@ -113,7 +103,7 @@ templates/
 │   ├── CLAUDE.md
 │   └── skills/
 └── shared/           # Resources shared by all agents
-    └── skills/       # Cross-role skills (leantime, daily-journal, etc.)
+    └── skills/       # Cross-role skills (tasks, daily-journal, etc.)
 ```
 
 Each agent definition file uses YAML frontmatter for configuration (name, description, model) and Markdown body for the system prompt. When agents share a template (e.g., `dev-alex` and `dev-emma` both use `dev/`), `setup-agents.py` generates instance-specific agent definitions at `.claude/agents/<instance>.md` with the agent's unique ID substituted into the prompt.
@@ -172,7 +162,7 @@ Messages are stored in SQLite and delivered on the next dispatch cycle.
 The central configuration file. Supports `${ENV_VAR}` and `${ENV_VAR:-default}` syntax for credential externalization.
 
 Key sections:
-- `leantime` — Connection details for the Leantime backend
+- `project_id` — Default project ID for task management
 - `daemon` — Host and port for the MCP daemon
 - `mcp_servers` — MCP server definitions for agent proxy connections
 - `agents` — Agent definitions with roles, templates, and dispatch settings
@@ -209,7 +199,7 @@ agent-hub/
 │   ├── qa/                      #   QA Engineer (CLAUDE.md)
 │   ├── user/                    #   User Experience Tester (CLAUDE.md, skills)
 │   ├── admin/                   #   Admin (CLAUDE.md, skills)
-│   └── shared/skills/           #   Shared skills (leantime, daily-journal, etc.)
+│   └── shared/skills/           #   Shared skills (tasks, daily-journal, etc.)
 │
 ├── agents/                      # (generated, gitignored) Runtime agent workspaces
 │   ├── product-kevin/           #   Instance workspace
@@ -221,13 +211,11 @@ agent-hub/
 │   │   ├── src/agents_mcp/      #   Python source
 │   │   │   ├── server.py        #     MCP tools + config
 │   │   │   ├── dispatcher.py    #     Auto-dispatch loop
-│   │   │   ├── leantime_client.py #   Leantime API wrapper
+│   │   │   ├── sqlite_task_client.py #   SQLite task management
 │   │   │   ├── store.py         #     SQLite profiles/messages
 │   │   │   └── web/             #     REST API + static files
 │   │   └── web/                 #   React dashboard source
-│   └── leantime/                # Leantime Docker setup
-│       ├── docker-compose.yml
-│       └── plugins/             #   Custom Leantime plugins (AGPL-3.0)
+│   └── (legacy leantime/ removed — task management now uses built-in SQLite)
 │
 ├── projects/                    # Per-project docs and skills
 │   └── agent-hub/               #   This project's docs

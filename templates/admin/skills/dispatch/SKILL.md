@@ -1,13 +1,13 @@
 ---
 name: dispatch
-description: 唤醒空闲的 worker agent，让它去 Leantime 检查并执行新任务。用法：/dispatch <agent> 或 /dispatch all
+description: 唤醒空闲的 worker agent，让它检查并执行新任务。用法：/dispatch <agent> 或 /dispatch all
 argument-hint: "[<agent>|all]"
 allowed-tools: Bash, mcp__agents__list_tickets, mcp__agents__dispatch_agents
 ---
 
 # Dispatch Agent
 
-唤醒指定的 worker agent，让它去 Leantime 检查新任务。
+唤醒指定的 worker agent，让它检查新任务。
 
 ## 参数
 
@@ -71,7 +71,7 @@ output=$(tmux capture-pane -t agents:<agent> -p | grep -v '^[[:space:]]*$' | tai
 
 ```bash
 # 第 1 步：用 -l（literal）发送文本，不发 Enter
-tmux send-keys -l -t agents:<agent> "你有新的 Leantime 任务。请使用 /leantime 查看使用手册，然后查询分配给你的待办任务（tags 包含 agent:<agent>，status=3,4）并执行。"
+tmux send-keys -l -t agents:<agent> "你有新任务。请使用 /tasks 查看使用手册，然后查询分配给你的待办任务（status=3,4）并执行。"
 # 第 2 步：等待 2 秒，让 TUI 完全接收并渲染文本
 sleep 2
 # 第 3 步：单独发送 Enter 键提交

@@ -1,0 +1,83 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: agent-pvc-customer-a
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-instance-customer-a
+  namespace: default
+  labels:
+    app: agent-instance
+    customer: customer-a
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-instance
+      customer: customer-a
+  template:
+    metadata:
+      labels:
+        app: agent-instance
+        customer: customer-a
+    spec:
+      containers:
+      - name: agent-container
+        image: your-registry/agent-image:latest
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "2Gi" # Resource Overcommit configuration
+            cpu: "1"
+        volumeMounts:
+        - name: agent-data
+          mountPath: /app/data # Abstracted path based on TDD
+      volumes:
+      - name: agent-data
+        persistentVolumeClaim:
+          claimName: agent-pvc-customer-a
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-service-customer-a
+  namespace: default
+spec:
+  selector:
+    app: agent-instance
+    customer: customer-a
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080 # Update this based on your container's port
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: agent-ingress-customer-a
+  namespace: default
+  annotations:
+    kubernetes.io/ingress.class: traefik
+spec:
+  rules:
+  - host: customer-a.agent.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: agent-service-customer-a
+            port:
+              number: 80

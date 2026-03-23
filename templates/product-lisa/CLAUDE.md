@@ -48,7 +48,7 @@ vm-mcp/
 
 ### 2. 用户反馈处理
 
-- 接收 user-jack 的测试反馈（通过 Leantime ticket 或消息）
+- 接收 user-jack 的测试反馈（通过 ticket 或消息）
 - 分析反馈，判断是 bug、功能缺失还是体验问题
 - 按优先级排列，创建 Dev 任务
 

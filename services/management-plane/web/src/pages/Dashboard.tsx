@@ -109,9 +109,11 @@ function AgentStatusList({ agents }: { agents: AgentDetail[] }) {
         Agent Status
       </h3>
       {agents.length === 0 ? (
-        <p className="text-gray-400 text-sm py-4 text-center">
-          No agent data available. Daemon may be offline.
-        </p>
+        <div className="flex flex-col items-center py-6 text-gray-400">
+          <svg className="w-10 h-10 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M18.364 5.636a9 9 0 11-12.728 0M12 9v4m0 4h.01" /></svg>
+          <p className="text-sm">No agent data available</p>
+          <p className="text-xs mt-1">Connect your daemon to see agent status</p>
+        </div>
       ) : (
         <div className="space-y-2">
           {nonIdle.map((agent) => {

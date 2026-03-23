@@ -9,7 +9,7 @@ description: Agent-Hub 系统测试与安全更新流程。包含隔离环境测
 
 在独立环境中测试系统变更，不影响生产 agent。每个测试环境拥有：
 - 独立的 daemon（不同端口）
-- 独立的 Leantime project（自动创建/销毁）
+- 独立的任务数据库（自动创建/销毁）
 - 独立的工作目录（`/tmp/agents-e2e-<name>/`）
 
 ### 工具
@@ -44,7 +44,7 @@ python3 tests/e2e_env.py up --name mytest --port 8775
 输出包含：
 - `Environment`: 环境名称
 - `Daemon URL`: SSE 端点（如 `http://127.0.0.1:8775/sse`）
-- `Project ID`: Leantime 项目 ID
+- `Project ID`: 项目 ID
 - `Work dir`: 工作目录路径
 - `Config`: 生成的 agents.yaml 路径
 
@@ -72,7 +72,7 @@ curl -s -X POST http://127.0.0.1:<port>/api/v1/tickets/create \
   -d '{"headline": "Test ticket", "project_id": <test_project_id>}'
 ```
 
-**注意**：测试环境的 Leantime project 是独立的，不会污染生产数据。
+**注意**：测试环境的数据是独立的，不会污染生产数据。
 
 #### 4. 在测试环境中启动 Agent
 
@@ -92,7 +92,7 @@ claude --dangerously-skip-permissions --append-system-prompt-file system_prompt.
 python3 tests/e2e_env.py down --name mytest
 ```
 
-自动执行：停止 daemon 进程 → 删除 Leantime 项目 → 清理工作目录。
+自动执行：停止 daemon 进程 → 清理工作目录。
 
 ### 元数据
 
@@ -100,7 +100,7 @@ python3 tests/e2e_env.py down --name mytest
 - `name`, `preset`, `port`, `daemon_pid`
 - `project_id`, `project_name`
 - `daemon_url`, `work_dir`, `config_path`
-- `leantime_url`, `leantime_api_key`
+- `task_db_path`
 
 ---
 
@@ -168,7 +168,7 @@ dispatch_agents(agent="dev-alex")
 dispatch_agents(agent="qa-lucy")
 ```
 
-Dispatch 会向 agent 发送提示，让它检查 Leantime 中的 in-progress ticket 并继续执行。
+Dispatch 会向 agent 发送提示，让它检查 in-progress ticket 并继续执行。
 
 #### Step 5: Post-restart — 验证恢复
 

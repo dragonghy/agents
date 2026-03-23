@@ -51,6 +51,15 @@ def _tmux_window_exists(tmux_session: str, agent: str) -> bool:
 
 
 def _is_idle(tmux_session: str, agent: str) -> bool:
+    """Check if an agent is idle (waiting for input at the ❯ prompt).
+
+    Claude Code v2.1+ shows the ❯ prompt at the bottom even while working
+    (users can type ahead). The reliable busy/idle signal is the status bar:
+      - "esc to interrupt" appears ONLY when Claude is actively processing.
+      - When idle, the status bar shows other info but NOT "esc to interrupt".
+
+    Idle = ❯ prompt present AND "esc to interrupt" NOT in status bar.
+    """
     try:
         out = subprocess.check_output(
             ["tmux", "capture-pane", "-t", f"{tmux_session}:{agent}", "-p"],
@@ -61,27 +70,16 @@ def _is_idle(tmux_session: str, agent: str) -> bool:
         lines = [l for l in out.split("\n") if l.strip()]
         tail_lines = lines[-10:]
 
-        # The ❯ prompt is the definitive idle indicator.
-        # Check if it appears in the last few lines (before the status bar).
+        # The ❯ prompt must be present (Claude Code is running).
         has_prompt = any(l.startswith("❯") for l in tail_lines)
         if not has_prompt:
             return False
 
-        # Agent has ❯ prompt. Check for active work indicators above it.
-        # "esc to interrupt" in the status bar is ALWAYS present in Claude Code
-        # v2.1+, so we must NOT use it as a busy indicator.
-        # Instead, check for active spinner/thinking indicators (lines above ❯).
-        above_prompt = []
-        for l in reversed(tail_lines):
-            if l.startswith("❯"):
-                break
-            above_prompt.append(l)
-        above_prompt.reverse()
-        above_text = "\n".join(above_prompt)
-
-        # Active work markers that appear ABOVE the prompt (not in status bar)
-        active_markers = ["Running…", "Wandering…", "thinking"]
-        if any(marker in above_text for marker in active_markers):
+        # "esc to interrupt" in the status bar = Claude is actively working.
+        # Old spinners (✶ Crunched, etc.) may linger on screen after completion,
+        # so we ONLY use the status bar as the busy signal.
+        tail_text = "\n".join(tail_lines)
+        if "esc to interrupt" in tail_text:
             return False
 
         return True
@@ -463,22 +461,11 @@ def get_agent_tmux_status(tmux_session: str, agent: str) -> str:
         if reset_ts is not None:
             return "rate_limited"
         return "idle"
-    try:
-        out = subprocess.check_output(
-            ["tmux", "capture-pane", "-t", f"{tmux_session}:{agent}", "-p"],
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=_SUBPROCESS_TIMEOUT,
-        )
-        lines = [l for l in out.split("\n") if l.strip()]
-        tail = "\n".join(lines[-10:])
-        # Note: "esc to interrupt" is always present in Claude Code v2.1+ status bar,
-        # even when idle. Only use content-area markers for busy detection.
-        if any(marker in tail for marker in ["Running…", "Wandering…"]):
-            return "busy"
-        return "unknown"
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        return "unknown"
+
+    # _is_idle returned False → "esc to interrupt" is present → agent is busy.
+    # No need to check for specific spinner text; the status bar signal is
+    # the single source of truth for busy/idle.
+    return "busy"
 
 
 async def dispatch_cycle(client: SQLiteTaskClient, agents: list[str],

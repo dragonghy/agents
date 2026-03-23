@@ -8,6 +8,7 @@ export interface Ticket {
   type: string;
   projectId: number;
   assignee: string | null;
+  start_time?: string;
   description?: string;
   userId?: number;
   storypoints?: number;

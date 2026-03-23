@@ -46,12 +46,14 @@ export default function Tickets() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   /* Item 2: "All Tickets" excludes archived; separate "Archived" option */
-  const [statusFilter, setStatusFilter] = useState('1,3,4');
+  const [statusFilter, setStatusFilter] = useState('0,1,3,4');
   /* Item 1: Time filter */
   const [timeFilter, setTimeFilter] = useState('');
   /* Item 3: Batch selection */
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [archiving, setArchiving] = useState(false);
+  /* Shift-click range selection */
+  const [lastClickedIdx, setLastClickedIdx] = useState<number | null>(null);
 
   // New ticket modal
   const [showModal, setShowModal] = useState(false);
@@ -59,6 +61,7 @@ export default function Tickets() {
   const [newDescription, setNewDescription] = useState('');
   const [newAssignee, setNewAssignee] = useState('');
   const [newPriority, setNewPriority] = useState('');
+  const [newStartTime, setNewStartTime] = useState('');
   const [creating, setCreating] = useState(false);
 
   useEffect(() => {
@@ -92,13 +95,25 @@ export default function Tickets() {
     return () => { active = false; };
   }, [statusFilter, timeFilter]);
 
-  function toggleSelect(id: number) {
+  function toggleSelect(id: number, index: number, shiftKey: boolean) {
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+
+      if (shiftKey && lastClickedIdx !== null) {
+        // Shift-click: select range between lastClickedIdx and current index
+        const start = Math.min(lastClickedIdx, index);
+        const end = Math.max(lastClickedIdx, index);
+        for (let i = start; i <= end; i++) {
+          next.add(tickets[i].id);
+        }
+      } else {
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+      }
+
       return next;
     });
+    setLastClickedIdx(index);
   }
 
   function toggleSelectAll() {
@@ -136,6 +151,7 @@ export default function Tickets() {
       if (newDescription) body.description = newDescription;
       if (newAssignee) body.assignee = newAssignee;
       if (newPriority) body.priority = newPriority;
+      if (newStartTime) body.start_time = newStartTime.replace('T', ' ') + ':00';
 
       const res = await fetch('/api/v1/tickets/create', {
         method: 'POST',
@@ -273,6 +289,15 @@ export default function Tickets() {
                   </select>
                 </div>
               </div>
+              <div>
+                <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Start Time (optional, for scheduled tasks)</label>
+                <input
+                  type="datetime-local"
+                  value={newStartTime}
+                  onChange={(e) => setNewStartTime(e.target.value)}
+                  className="mt-1 w-full border border-gray-300 dark:border-gray-600 rounded px-3 py-2 text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
             </div>
             <div className="flex justify-end gap-2 mt-5">
               <button
@@ -297,14 +322,16 @@ export default function Tickets() {
         <table className="w-full text-sm">
           <thead className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
             <tr>
-              {/* Item 3: checkbox column */}
-              <th className="w-8 px-3 py-3">
-                <input
-                  type="checkbox"
-                  checked={tickets.length > 0 && selected.size === tickets.length}
-                  onChange={toggleSelectAll}
-                  className="rounded border-gray-300 dark:border-gray-600"
-                />
+              {/* Checkbox column — larger click target */}
+              <th className="w-12 px-2 py-3">
+                <label className="flex items-center justify-center w-8 h-8 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={tickets.length > 0 && selected.size === tickets.length}
+                    onChange={toggleSelectAll}
+                    className="w-4 h-4 rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-blue-500"
+                  />
+                </label>
               </th>
               <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-300">ID</th>
               <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-300">Title</th>
@@ -317,15 +344,18 @@ export default function Tickets() {
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-            {tickets.map((ticket) => (
+            {tickets.map((ticket, idx) => (
               <tr key={ticket.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
-                <td className="px-3 py-3">
-                  <input
-                    type="checkbox"
-                    checked={selected.has(ticket.id)}
-                    onChange={() => toggleSelect(ticket.id)}
-                    className="rounded border-gray-300 dark:border-gray-600"
-                  />
+                <td className="px-2 py-3">
+                  <label className="flex items-center justify-center w-8 h-8 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={selected.has(ticket.id)}
+                      onClick={(e) => toggleSelect(ticket.id, idx, e.shiftKey)}
+                      onChange={() => {}}
+                      className="w-4 h-4 rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-blue-500"
+                    />
+                  </label>
                 </td>
                 <td className="px-4 py-3">
                   <Link to={`/tickets/${ticket.id}`} className="text-blue-600 dark:text-blue-400 hover:underline">

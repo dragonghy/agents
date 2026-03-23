@@ -59,23 +59,31 @@ python3 tests/e2e_env.py down --name test-<feature>
 
 详细测试流程参考 `/system-testing` skill。
 
-### Step 4: 提交并合并
+### Step 4: 立即提交并合并（强制规范）
+
+**验收通过后必须立即 commit/merge，不允许改完代码不 commit 就结束任务。**
 
 ```bash
 cd $AGENTS_ROOT-dev-<feature>
 
-# 提交变更
+# 提交变更（必须在交付给 QA 之前完成）
 git add <files>
 git commit -m "feat: <description>"
 
-# 合并回 main
-git checkout main
+# 立即合并回 main（不要拖延）
+cd $AGENTS_ROOT
 git merge feature/<feature-name>
 
-# 或通过 PR
+# 或通过 PR（适合需要 review 的大型变更）
 git push origin feature/<feature-name>
-# 然后在 GitHub 创建 PR
+# 然后在 GitHub 创建 PR 并尽快合并
 ```
+
+**关键规则**：
+- 主分支开发：验收后立即 `git commit`
+- Worktree 开发：验收后立即 `commit` + `merge` 回 main
+- ticket 备注中必须包含 commit hash
+- 未 commit 的代码 = 未交付，QA 不应接受没有 commit hash 的交付
 
 ### Step 5: 更新生产环境
 

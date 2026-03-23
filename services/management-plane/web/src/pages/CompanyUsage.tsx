@@ -18,7 +18,13 @@ interface Props {
 /** Simple SVG bar chart (no external library needed). */
 function BarChart({ data }: { data: Array<{ date: string; total_tokens: number }> }) {
   if (!data.length) {
-    return <p className="text-gray-400 text-sm">No usage data yet.</p>;
+    return (
+      <div className="flex flex-col items-center justify-center py-8 text-gray-400">
+        <svg className="w-12 h-12 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
+        <p className="text-sm">No usage data yet</p>
+        <p className="text-xs mt-1">Usage will appear once agents start working</p>
+      </div>
+    );
   }
 
   const sorted = [...data].sort((a, b) => a.date.localeCompare(b.date));
@@ -97,7 +103,7 @@ export default function CompanyUsage({ user }: Props) {
 
         {/* Plan info */}
         {plan && (
-          <section className="bg-white p-6 rounded-xl border border-gray-200 mb-6">
+          <section className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 mb-6">
             <h2 className="font-semibold text-lg mb-3">Current Plan</h2>
             <div className="flex items-center justify-between">
               <div>
@@ -122,7 +128,7 @@ export default function CompanyUsage({ user }: Props) {
         )}
 
         {/* Usage summary */}
-        <section className="bg-white p-6 rounded-xl border border-gray-200 mb-6">
+        <section className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 mb-6">
           <h2 className="font-semibold text-lg mb-4">Token Usage</h2>
           {summary ? (
             <>

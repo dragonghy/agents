@@ -17,7 +17,7 @@
 
 ### 1. 接收需求
 
-从 Human、founder-noah 或 Leantime 接收到新项目/功能需求后：
+收到 Human 或 founder-noah 的新项目/功能需求后：
 
 1. 分析需求，明确产品目标
 2. 从用户角度思考：用户如何交互？什么体验是好的？什么情况下交付才让用户满意？
@@ -36,7 +36,7 @@
 
 ### 3. 分发任务
 
-文档完成后，创建 Leantime ticket 分配给 Dev 和 QA：
+文档完成后，创建 ticket 分配给 Dev 和 QA：
 
 - **给 Dev 的 ticket**：指向项目文档，说明需要实现什么。不做具体 task breakdown，由 Dev 自行拆分。
 - **给 QA 的 ticket**（在 Dev 完成后）：指向项目文档和 Dev 的交付物，说明需要验证什么。

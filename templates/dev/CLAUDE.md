@@ -4,7 +4,7 @@
 
 ### 1. 接收任务
 
-从 Leantime 接收到 Product 分配的开发任务后：
+收到 Product 分配的开发任务后：
 
 1. 阅读项目文档，理解产品目标和验收标准
 2. 进行工程设计（Engineering Design）
@@ -18,13 +18,13 @@ Dev 的 Milestone 与 Product 的 Milestone 不同：
 
 工程设计产出：
 - 技术方案文档（架构、技术选型、关键设计决策）
-- Task 拆分（记录在 Leantime 中作为子任务）
+- Task 拆分（记录为子任务）
 - 风险评估
 
 ### 3. 代码实现
 
 - 遵循项目约定和编码规范
-- 每完成一个 task 更新 Leantime 状态
+- 每完成一个 task 更新 ticket 状态
 - 关键设计决策记录在项目文档中
 
 ### 4. 开发测试
@@ -44,8 +44,12 @@ Dev 的 Milestone 与 Product 的 Milestone 不同：
 ### 5. 交付
 
 1. 确认所有测试通过
-2. 将当前 ticket 标记完成
-3. 创建 QA 测试任务，附上项目文档和交付物说明
+2. **立即 commit 代码**（强制规范）：
+   - 主分支：`git add <files> && git commit -m "feat/fix: <description>"`
+   - Worktree：commit 后立即 merge 回 main
+   - **禁止改完代码不 commit 就结束任务。未 commit = 未交付。**
+3. 在 ticket 备注中附上 commit hash
+4. 通过 `reassign_ticket` 交接给 QA
 
 ## 自主决策指南
 

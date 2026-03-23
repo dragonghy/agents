@@ -19,7 +19,7 @@ ROOT_DIR/
 │   ├── product/
 │   │   ├── system_prompt.md
 │   │   ├── CLAUDE.md
-│   │   └── .claude/skills/     # 含 leantime skill（symlink）
+│   │   └── .claude/skills/     # 含 tasks skill（symlink）
 │   ├── dev/
 │   │   ├── system_prompt.md
 │   │   ├── CLAUDE.md
@@ -29,15 +29,14 @@ ROOT_DIR/
 │   │   ├── CLAUDE.md
 │   │   └── .claude/skills/
 │   └── shared/skills/          # 共享 skill 源文件
-│       └── leantime/SKILL.md
+│       └── tasks/SKILL.md
 ├── projects/                   # Worker agent 的工作目录
 │   └── <project-name>/         # 各项目目录
 │       ├── README.md
 │       └── skills/             # 项目级 skill
 └── services/
     ├── agents-mcp/             # Agents Essentials MCP Server（任务管理 + 调度）
-    ├── leantime/               # Leantime Docker 部署
-    └── leantime-mcp/           # Leantime MCP Server（旧版，已被 agents-mcp 取代）
+    └── (legacy services removed)
 ```
 
 ## Agent 管理
@@ -53,7 +52,7 @@ agents-mcp 使用中心 daemon + proxy 模式：
 - **Auto-dispatch**: 内置于 daemon，每 30 秒自动检查空闲 agent 并分配任务
 
 ```
-Claude Code → stdio proxy → SSE → daemon → Leantime API
+Claude Code → stdio proxy → SSE → daemon → SQLite task DB
 ```
 
 ### restart_all_agents.sh 使用方式
@@ -70,14 +69,23 @@ Claude Code → stdio proxy → SSE → daemon → Leantime API
 
 1. 用 `tmux capture-pane -t agents:<agent> -p | tail -10` 检查目标 agent 状态
 2. 确认 agent 处于 idle（`❯` 提示符，无 `Running…`/`Wandering…`/`esc to interrupt`）
-3. 如果 agent 正在工作中，等待其完成或确认重启后能通过 Leantime 恢复工作
+3. 如果 agent 正在工作中，等待其完成或确认重启后能通过任务系统恢复工作
 4. 执行重启
 
 ### Daemon 排障
 
 - 日志: `.daemon.log`
-- 检查状态: `lsof -i :8765 -sTCP:LISTEN`
+- 检查状态: `lsof -nP -iTCP:<agents.yaml 里 daemon.port> -sTCP:LISTEN`（默认常为 8765）
 - 手动启动: `AGENTS_CONFIG_PATH=agents.yaml uv run --directory services/agents-mcp agents-mcp --daemon`
+- **`restart_all_agents.sh` 里 daemon 的 host/port** 与 `setup-agents.py` 一致：均通过 `agent-config.py` + `resolve_env_vars` 解析，勿在 shell 里裸读 `agents.yaml`。
+
+### Claude Code：`API Error: 400 … tool use concurrency`
+
+多为**会话里 tool 调用状态损坏**（与 MCP/daemon 瞬断、强退等有关），不是业务代码语法错误。
+
+1. 在本窗口执行 **`/rewind`** 回到正常轮次。  
+2. 仍不行：**新开会话**（或不用 `--resume` 起一条干净 session）。  
+3. 若刚出现过 daemon 未启动：先 `./restart_all_agents.sh --daemon`，再开 admin，减少 MCP 报错导致的异常 tool 流。
 
 ## 技能管理
 
@@ -85,7 +93,7 @@ Claude Code → stdio proxy → SSE → daemon → Leantime API
 
 | 层级 | 位置 | 适用场景 |
 |------|------|---------|
-| 共享 skill | `templates/shared/skills/` + symlink 到各 agent | 所有 agent 都需要的（如 leantime） |
+| 共享 skill | `templates/shared/skills/` + symlink 到各 agent | 所有 agent 都需要的（如 tasks） |
 | Agent 级 skill | `agents/<agent>/.claude/skills/` | 某个 agent 专属（如 admin 的 dispatch） |
 | 项目级 skill | `projects/<project>/skills/` | 特定项目的经验和方法论 |
 
@@ -115,7 +123,7 @@ agents:
 
 然后执行 `./restart_all_agents.sh --workers` 即可自动：
 1. `setup-agents.py` 为 dev1、dev2 生成独立工作目录和 system_prompt.md
-2. 每个实例拥有独立的 tmux window、Leantime tag（agent:dev1、agent:dev2）
+2. 每个实例拥有独立的 tmux window 和 assignee 身份
 3. auto-dispatch 会分别检查每个实例的任务和状态
 
 ### 智能任务分配

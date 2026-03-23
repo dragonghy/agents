@@ -75,8 +75,33 @@ async def remove_nginx_config(slug: str) -> None:
     await _reload_nginx()
 
 
+NGINX_CONTAINER = os.environ.get("MGMT_NGINX_CONTAINER", "agents-nginx-proxy-1")
+
+
 async def _reload_nginx() -> None:
-    """Send a reload signal to the Nginx process."""
+    """Send a reload signal to the Nginx process.
+
+    Tries multiple methods:
+    1. docker exec (when running alongside nginx in Docker)
+    2. direct nginx -s reload (when nginx is local)
+    """
+    # Method 1: docker exec into nginx container
+    try:
+        proc = await asyncio.to_thread(
+            subprocess.run,
+            ["docker", "exec", NGINX_CONTAINER, "nginx", "-s", "reload"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if proc.returncode == 0:
+            logger.info("Nginx reloaded via docker exec")
+            return
+        logger.warning("docker exec reload failed: %s", proc.stderr)
+    except Exception as e:
+        logger.warning("docker exec reload error: %s", e)
+
+    # Method 2: direct nginx reload (fallback for non-Docker setups)
     try:
         proc = await asyncio.to_thread(
             subprocess.run,
@@ -85,10 +110,10 @@ async def _reload_nginx() -> None:
             text=True,
             timeout=5,
         )
-        if proc.returncode != 0:
-            logger.warning("Nginx reload failed: %s", proc.stderr)
-        else:
-            logger.info("Nginx reloaded successfully")
+        if proc.returncode == 0:
+            logger.info("Nginx reloaded directly")
+            return
+        logger.warning("Direct nginx reload failed: %s", proc.stderr)
     except FileNotFoundError:
         logger.warning("nginx binary not found — skipping reload")
     except Exception as e:

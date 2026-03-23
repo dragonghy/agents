@@ -31,7 +31,7 @@ export default function Login() {
         </h1>
         <h2 className="text-lg text-gray-600 text-center mb-8">Log in to your account</h2>
 
-        <form onSubmit={handleSubmit} className="bg-white p-8 rounded-xl shadow-sm border border-gray-200">
+        <form onSubmit={handleSubmit} className="bg-white p-8 rounded-xl shadow-md border border-gray-200">
           {error && (
             <div className="mb-4 p-3 bg-red-50 text-red-700 rounded-lg text-sm">{error}</div>
           )}

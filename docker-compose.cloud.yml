@@ -4,8 +4,11 @@
 #   1. Generate self-signed certs:  bash services/nginx-proxy/generate-certs.sh
 #   2. Build the web frontend:     cd services/management-plane/web && npm run build
 #
-# Start:
+# Start (mock mode — UI testing only):
 #   docker compose -f docker-compose.cloud.yml up --build
+#
+# Start (real mode — creates real Docker instances):
+#   MGMT_MOCK_MODE=false docker compose -f docker-compose.cloud.yml up --build
 #
 # Access:
 #   https://agenthub.local       — Management dashboard
@@ -37,11 +40,25 @@ services:
     environment:
       - MGMT_DOMAIN=${MGMT_DOMAIN:-agenthub.local}
       - MGMT_NGINX_CONF_DIR=/nginx-conf
-      - MGMT_MOCK_MODE=${MGMT_MOCK_MODE:-false}
+      - MGMT_MOCK_MODE=${MGMT_MOCK_MODE:-true}
       - MGMT_PORT=3000
+      - MGMT_REPO_ROOT=/repo
+      # HOST paths — used in generated docker-compose.yml (Docker daemon runs on host)
+      - MGMT_HOST_REPO_ROOT=${MGMT_HOST_REPO_ROOT:-.}
+      - MGMT_INSTANCES_DIR=/var/lib/aghub/instances
+      - MGMT_HOST_INSTANCES_DIR=${MGMT_HOST_INSTANCES_DIR:-/tmp/aghub-instances}
     volumes:
       - nginx-conf:/nginx-conf
       - mgmt-data:/app/data
+      # Host Docker socket — lets management create instance containers
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Mount the agents repo at BOTH /repo AND the host path
+      # /repo is for management plane code to read
+      # Host path mount is needed because docker compose CLI validates build context locally
+      - .:/repo:ro
+      - .:${MGMT_HOST_REPO_ROOT:-.}:ro
+      # Instance directories — bind mount so host Docker can access them too
+      - ${MGMT_HOST_INSTANCES_DIR:-/tmp/aghub-instances}:/var/lib/aghub/instances
     networks:
       - agenthub
     restart: unless-stopped
@@ -53,3 +70,4 @@ networks:
 volumes:
   nginx-conf:
   mgmt-data:
+  instances-data:

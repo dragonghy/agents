@@ -167,7 +167,7 @@ def cmd_generate_roster(cfg, _args):
         "",
         "> 此文件由 `agent-config.py generate-roster` 从 `agents.yaml` 自动生成，请勿手动编辑。",
         "",
-        "| Agent ID | 角色 | 职责 | Leantime Tag | tmux window |",
+        "| Agent ID | 角色 | 职责 | Agent Tag | tmux window |",
         "|----------|------|------|-------------|-------------|",
     ]
     tmux_session = cfg.get("tmux_session", "agents")
@@ -189,6 +189,22 @@ def cmd_leantime(cfg, args):
 
 def cmd_tmux_session(cfg, _args):
     print(cfg.get("tmux_session", "agents"))
+
+
+def cmd_daemon_host(cfg, _args):
+    """Resolved daemon bind host (same rules as setup-agents.py / .mcp.json)."""
+    d = cfg.get("daemon") or {}
+    print(d.get("host", "127.0.0.1"))
+
+
+def cmd_daemon_port(cfg, _args):
+    """Daemon port, or empty line if no daemon block / no port."""
+    d = cfg.get("daemon")
+    if not d:
+        print("")
+        return
+    p = d.get("port", "")
+    print(p if p is not None else "")
 
 
 def main():
@@ -222,6 +238,9 @@ def main():
 
     sub.add_parser("tmux-session", help="Get tmux session name")
 
+    sub.add_parser("daemon-host", help="Get resolved daemon host (for restart_all_agents.sh)")
+    sub.add_parser("daemon-port", help="Get resolved daemon port (empty if none)")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -241,6 +260,8 @@ def main():
         "generate-roster": cmd_generate_roster,
         "leantime": cmd_leantime,
         "tmux-session": cmd_tmux_session,
+        "daemon-host": cmd_daemon_host,
+        "daemon-port": cmd_daemon_port,
     }
 
     commands[args.command](cfg, args)

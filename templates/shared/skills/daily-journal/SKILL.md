@@ -10,7 +10,7 @@ allowed-tools: mcp__agents__list_tickets, mcp__agents__get_ticket, mcp__agents__
 
 ## 步骤
 
-### 1. 查询 Leantime 活动
+### 1. 查询任务活动
 
 ```
 list_tickets(assignee="<你的ID>", status="all", dateFrom="<昨天日期 YYYY-MM-DD>")
@@ -42,7 +42,7 @@ agents/<你的ID>/journal/<今天日期 YYYY-MM-DD>.md
 
 ### 4. 完成
 
-日志写完后，检查是否有待处理的 Leantime 任务（status=3,4），有则继续执行。
+日志写完后，检查是否有待处理的任务（status=3,4），有则继续执行。
 
 ## 日志格式
 
@@ -74,7 +74,7 @@ agents/<你的ID>/journal/<今天日期 YYYY-MM-DD>.md
 
 | 节 | 重要性 | 说明 |
 |----|--------|------|
-| 处理的 Ticket | 必填 | 从 Leantime 查询结果中提取，不要凭记忆 |
+| 处理的 Ticket | 必填 | 从任务查询结果中提取，不要凭记忆 |
 | 收发的消息 | 有则写 | 从 inbox 中提取关键消息 |
 | 关键决策 | 有则写 | 记录为什么这么做，帮助未来回溯 |
 | 遇到的问题 | 有则写 | 记录问题和解决/绕过方式 |

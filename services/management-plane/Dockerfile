@@ -2,6 +2,12 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# Install Docker CLI (for managing instances via host Docker socket)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl && \
+    curl -fsSL https://get.docker.com | sh && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # Install uv for fast dependency management
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 

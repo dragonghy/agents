@@ -13,7 +13,7 @@ allowed-tools: Bash, Read, Glob, Grep
 | | 主系统 | 隔离测试系统 |
 |--|--------|------------|
 | **用途** | 与团队沟通、提交反馈 | 实际测试 Agent-Hub |
-| **交互方式** | Leantime MCP tools（`list_tickets`、`send_message` 等） | Bash + curl 命令 |
+| **交互方式** | MCP tools（`list_tickets`、`send_message` 等） | Bash + curl 命令 |
 | **你的角色** | 普通 agent | **"human"**（指挥 agent 团队） |
 | **数据** | 生产数据 | 独立数据（互不影响） |
 
@@ -33,7 +33,7 @@ python3 tests/e2e_env.py up --name game-2048 --preset full
 输出会显示：
 - **Environment**: 环境名称
 - **Daemon URL**: 隔离 daemon 地址（如 `http://127.0.0.1:8775/sse`）
-- **Project ID**: 隔离 Leantime 项目 ID
+- **Project ID**: 隔离项目 ID
 - **Work dir**: 工作目录（如 `/tmp/agents-e2e-game-2048/`）
 
 ### Step 2: 读取环境信息
@@ -44,7 +44,7 @@ cat /tmp/agents-e2e-<name>/env.json
 
 记住两个关键值：
 - `port`：隔离 daemon 端口
-- `project_id`：隔离 Leantime 项目 ID
+- `project_id`：隔离项目 ID
 
 后续命令中用变量简化：
 ```bash
@@ -100,7 +100,7 @@ curl -s -X POST http://127.0.0.1:${PORT}/api/v1/tickets/create \
 ```bash
 # 唤醒 product-kevin
 tmux send-keys -l -t "e2e-${ENV_NAME}:product-kevin" \
-  "你有新的 Leantime 任务。请查询分配给你的任务（status=3,4）并执行。"
+  "你有新任务。请查询分配给你的任务（status=3,4）并执行。"
 sleep 2
 tmux send-keys -t "e2e-${ENV_NAME}:product-kevin" Enter
 ```
@@ -189,7 +189,7 @@ git push origin main
 # 停止隔离 tmux session
 tmux kill-session -t "e2e-${ENV_NAME}" 2>/dev/null || true
 
-# 销毁隔离环境（停 daemon、删 Leantime 项目、清理目录）
+# 销毁隔离环境（停 daemon、清理目录）
 python3 tests/e2e_env.py down --name <name>
 ```
 

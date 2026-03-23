@@ -54,10 +54,22 @@ def force_symlink(src, dst):
     os.symlink(src, dst)
 
 
-def generate_mcp_json(cfg, config_path, agent_dir, source_dir):
-    """Generate .mcp.json from agents.yaml mcp_servers config."""
-    mcp_servers = cfg.get("mcp_servers", {})
+def generate_mcp_json(cfg, config_path, agent_dir, source_dir, agent_name=None):
+    """Generate .mcp.json from agents.yaml mcp_servers config.
+
+    If agent_name is provided, also include any per-agent MCP servers
+    defined in agents.<name>.extra_mcp_servers.
+    """
+    mcp_servers = dict(cfg.get("mcp_servers", {}))
     daemon = cfg.get("daemon", {})
+
+    # Merge per-agent extra MCP servers if defined
+    if agent_name:
+        agents_cfg = cfg.get("agents", {})
+        agent_cfg = agents_cfg.get(agent_name, {})
+        extra = agent_cfg.get("extra_mcp_servers", {})
+        for name, server_cfg in extra.items():
+            mcp_servers[name] = server_cfg
 
     result = {"mcpServers": {}}
 
@@ -151,11 +163,11 @@ def setup_skills(agent_name, agent_dir, source_templates_dir, base_name=None):
 def generate_instance_agent(agent_name, base_name, source_dir, output_dir):
     """Generate .claude/agents/<agent_name>.md from the template agent definition.
 
-    Reads the template from <source_dir>/.claude/agents/<base_name>.md,
+    Reads the template from <source_dir>/templates/<base_name>/agent.md,
     replaces agent IDs and the YAML frontmatter name field, then writes
     to <output_dir>/.claude/agents/<agent_name>.md.
     """
-    template_path = os.path.join(source_dir, ".claude", "agents", f"{base_name}.md")
+    template_path = os.path.join(source_dir, "templates", base_name, "agent.md")
     if not os.path.isfile(template_path):
         return
 
@@ -177,6 +189,12 @@ def generate_instance_agent(agent_name, base_name, source_dir, output_dir):
         f"**你的 Agent tag**: `agent:{base_name}`",
         f"**你的 Agent tag**: `agent:{agent_name}`",
     )
+
+    # Append shared context if it exists
+    shared_context_path = os.path.join(source_dir, "templates", "shared", "context.md")
+    if os.path.isfile(shared_context_path):
+        with open(shared_context_path) as ctx:
+            content += "\n<!-- SHARED_CONTEXT_START -->\n" + ctx.read()
 
     agents_defs_dir = os.path.join(output_dir, ".claude", "agents")
     ensure_dir(agents_defs_dir)
@@ -242,7 +260,7 @@ def generate_agent_marker(agent_dir):
 def validate_agent(agent_name, source_dir):
     """Check that agent definition file exists for a template agent."""
     issues = []
-    agent_def = os.path.join(source_dir, ".claude", "agents", f"{agent_name}.md")
+    agent_def = os.path.join(source_dir, "templates", agent_name, "agent.md")
     if not os.path.isfile(agent_def):
         issues.append(f"  Missing: .claude/agents/{agent_name}.md")
     return issues
@@ -287,8 +305,12 @@ def setup_all(cfg, config_path, source_dir, output_dir):
         agent_dir = os.path.join(output_agents_dir, name)
         ensure_dir(agent_dir)
 
+        # All agents are generated from templates/<base_name>/agent.md.
+        # Instance agents (dev-alex from dev) get ID replacement.
+        # Non-instance agents (admin from admin) are copied as-is + context.
+        generate_instance_agent(name, base_name, source_dir, output_dir)
+
         if is_instance:
-            generate_instance_agent(name, base_name, source_dir, output_dir)
             # Agent-specific CLAUDE.md takes priority over template CLAUDE.md
             agent_specific_claude = os.path.join(source_templates_dir, name, "CLAUDE.md")
             template_claude = os.path.join(source_templates_dir, base_name, "CLAUDE.md")
@@ -297,18 +319,19 @@ def setup_all(cfg, config_path, source_dir, output_dir):
                 shutil.copy2(agent_specific_claude, instance_claude)
             elif os.path.isfile(template_claude):
                 shutil.copy2(template_claude, instance_claude)
-        elif output_dir != source_dir:
+
+        if output_dir != source_dir and not is_instance:
             # When scaffolding to a different dir, copy CLAUDE.md
             src = os.path.join(source_templates_dir, name, "CLAUDE.md")
             dst = os.path.join(agent_dir, "CLAUDE.md")
             if os.path.isfile(src):
                 shutil.copy2(src, dst)
-        else:
+        elif not is_instance:
             issues = validate_agent(name, source_dir)
             if issues:
                 all_issues[name] = issues
 
-        generate_mcp_json(cfg, config_path, agent_dir, source_dir)
+        generate_mcp_json(cfg, config_path, agent_dir, source_dir, agent_name=name)
         setup_skills(name, agent_dir, source_templates_dir, base_name=base_name if is_instance else None)
         generate_agent_marker(agent_dir)
 

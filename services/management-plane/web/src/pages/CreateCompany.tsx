@@ -7,20 +7,23 @@ const TEMPLATES = [
   {
     id: "solo",
     name: "Solo",
-    desc: "3 agents: 1 Product + 1 Dev + 1 QA",
+    desc: "Lean team for small projects",
     agents: 3,
+    details: "Product Manager, Developer, QA Engineer",
   },
   {
     id: "standard",
     name: "Standard",
-    desc: "5 agents: 1 Product + 2 Dev + 1 QA + 1 User Tester",
+    desc: "Balanced team for most projects",
     agents: 5,
+    details: "Product Manager, 2 Developers, QA Engineer, User Tester",
   },
   {
     id: "full",
     name: "Full",
-    desc: "8+ agents: Product, Dev, QA, Admin, Inspector, User",
+    desc: "Complete team for complex projects",
     agents: 8,
+    details: "Admin, Product Manager, 3 Developers, 2 QA Engineers, User Tester",
   },
 ];
 
@@ -28,13 +31,13 @@ const AUTH_TYPES = [
   {
     id: "oauth_token",
     name: "OAuth Token",
-    desc: "For Claude Pro/Max subscribers. Run 'claude setup-token' to get your token.",
+    desc: "For Claude Pro/Max subscribers. Paste your OAuth token (found in ~/.claude/ after logging in).",
     placeholder: "sk-ant-oat-...",
   },
   {
     id: "api_key",
     name: "API Key",
-    desc: "For Anthropic API users (pay-per-use).",
+    desc: "For Anthropic API users (pay-per-use). Get your key at console.anthropic.com.",
     placeholder: "sk-ant-api03-...",
   },
 ];
@@ -74,20 +77,26 @@ export default function CreateCompany({ user }: Props) {
     }
   };
 
+  const [progressMsg, setProgressMsg] = useState("");
+
   const handleSubmit = async () => {
     setError("");
     setLoading(true);
+    setProgressMsg("Preparing configuration...");
     try {
-      await createCompany({
+      setProgressMsg("Creating instance and building images...");
+      const company = await createCompany({
         name,
         slug: slug || undefined,
         template,
         auth_type: authType,
         auth_token: authToken || undefined,
       });
-      navigate("/dashboard");
+      setProgressMsg("Instance started! Redirecting...");
+      setTimeout(() => navigate(`/companies/${company.id}/settings`), 800);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Creation failed");
+      setProgressMsg("");
       setLoading(false);
     }
   };
@@ -121,7 +130,7 @@ export default function CreateCompany({ user }: Props) {
           <div className="mb-4 p-3 bg-red-50 text-red-700 rounded-lg text-sm">{error}</div>
         )}
 
-        <div className="bg-white p-8 rounded-xl shadow-sm border border-gray-200">
+        <div className="bg-white p-8 rounded-xl shadow-md border border-gray-200">
           {/* Step 1: Company Info */}
           {step === 1 && (
             <>
@@ -183,6 +192,7 @@ export default function CreateCompany({ user }: Props) {
                       <span className="text-sm text-gray-500">{t.agents} agents</span>
                     </div>
                     <p className="text-sm text-gray-500 mt-1">{t.desc}</p>
+                    <p className="text-xs text-gray-400 mt-1">{t.details}</p>
                   </button>
                 ))}
               </div>
@@ -285,10 +295,17 @@ export default function CreateCompany({ user }: Props) {
                   </span>
                 </div>
               </div>
+              {progressMsg && (
+                <div className="mb-3 p-3 bg-indigo-50 text-indigo-700 rounded-lg text-sm flex items-center gap-2">
+                  <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                  {progressMsg}
+                </div>
+              )}
               <div className="flex gap-3">
                 <button
                   onClick={() => setStep(3)}
-                  className="px-6 py-2.5 border border-gray-300 rounded-lg hover:bg-gray-50 font-medium"
+                  disabled={loading}
+                  className="px-6 py-2.5 border border-gray-300 rounded-lg hover:bg-gray-50 font-medium disabled:opacity-50"
                 >
                   Back
                 </button>

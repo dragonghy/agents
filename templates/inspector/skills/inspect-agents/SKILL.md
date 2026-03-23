@@ -68,15 +68,24 @@ for w in $(tmux list-windows -t agents -F "#{window_name}"); do
   echo ""
 done
 
-# 3. 对发现异常的 agent 再抓取更多行（200 行）深入分析
+# 3. ⚠️ 终端 stuck 时长扫描（JSONL 盲区补救）
+# read_agent_log.py 只读最近 200 条 JSONL 消息，活跃 agent 的近期 stuck 调用
+# 可能不在这 200 条之内！必须用终端扫描来补救。
+# 教训来源：user-jack browser_deploy 卡 11h+，JSONL 24h 扫描报告 0 stuck (#383)
+for w in $(tmux list-windows -t agents -F "#{window_name}"); do
+  stuck=$(tmux capture-pane -t "agents:$w" -p -S -10 2>/dev/null | grep -oE '(Running|Beboppin|Moseying|Sautéed|Baked|Brewed|Churned|Cogitated).*\([0-9]+h' | head -1)
+  [ -n "$stuck" ] && echo "🔴 $w: $stuck"
+done
+
+# 4. 对发现异常的 agent 再抓取更多行（200 行）深入分析
 # tmux capture-pane -t agents:<agent> -p -S -200
 
-# 4. 检查 agent status via API
+# 5. 检查 agent status via API
 # get_agent_status(agent="all")
 ```
 
 **必须检查的终端特征**：
-- `· Running… (Xh Ym)` 或 `· Moseying… (Xh Ym)` 且时间 > 5 分钟 → **MCP 调用卡住，需要重启**
+- `✳ Beboppin'…/Running…/Moseying…` 后跟 `(Xh Ym)` 且时间 > 30 分钟 → **MCP 调用卡住，需要重启**
 - `MCP proxy: Still disconnected` → agent 无法通过 MCP 通信
 - 后台进程指示器（如 "2 bashes · ↓ to view"）→ 残留进程
 
@@ -248,7 +257,41 @@ pgrep -f "python.*agent_hub" | wc -l
 - **必须重启**该 agent 以清除残留 task 状态
 - 重启后确认 tmux_status 恢复为 idle
 
-### 问题类别 8: Context 相关（仅记录，通常不需要处理）
+### 问题类别 8: Broken Session (tool use concurrency 错误)
+
+**症状**：
+- 终端反复显示 `API Error: 400 due to tool use concurrency issues. Run /rewind to recover the conversation.`
+- Dispatcher 每次唤醒 agent 都触发同样的错误，形成死循环
+- Agent 的 `❯` prompt 存在但无法正常响应任何指令
+
+**检查方法**：
+```bash
+# 在 Step 1b 终端检查中，查找 concurrency 错误
+for w in $(tmux list-windows -t agents -F "#{window_name}"); do
+  broken=$(tmux capture-pane -t "agents:$w" -p -S -15 2>/dev/null | grep -c "tool use concurrency" || true)
+  [ "$broken" -gt 0 ] && echo "🔴 $w: BROKEN SESSION (concurrency error x${broken})"
+done
+```
+
+**历史案例**：
+- 2026-03-20: product-lisa 和 product-mia 同时陷入 concurrency 错误死循环，dispatcher 反复唤醒但每次都失败
+
+**处理**：
+- 使用项目根目录的 `repair-agent.sh` 脚本自动修复：
+  ```bash
+  ./repair-agent.sh <agent-name>
+  ```
+- 脚本流程：
+  1. 从旧 session 的 JSONL 日志提取最后 15 条有意义的消息
+  2. 读取最近的 journal 日志
+  3. Graceful 退出旧 session（/exit → 等待 → force kill）
+  4. 启动新 session（不使用 --resume，避免继承损坏的 context）
+  5. 发送 restoration prompt，要求 agent 先读旧 JSONL + journal 恢复上下文
+  6. 自动更新 `.agent-sessions` 中的 session ID
+- **注意**：Inspector 自己没有权限执行 repair-agent.sh（只读操作原则）。发现 broken session 后，**通知 admin 执行修复**，并在报告中标注。
+- 如果有多个 agent 同时出现，说明可能是 daemon/MCP proxy 的系统性问题，需要额外创建 ticket 调查根因。
+
+### 问题类别 9: Context 相关（仅记录，通常不需要处理）
 
 **重要认知**：
 - Claude Code 有 **auto-compact** 机制，context 满了会自动压缩，这是正常行为，不是问题。

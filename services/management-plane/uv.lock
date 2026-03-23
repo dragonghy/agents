@@ -404,6 +404,7 @@ source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
     { name = "bcrypt" },
+    { name = "cryptography" },
     { name = "httpx" },
     { name = "pyjwt" },
     { name = "python-multipart" },
@@ -418,18 +419,21 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
 ]
-production = [
-    { name = "cryptography" },
-]
 stripe = [
     { name = "stripe" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "httpx" },
+    { name = "pytest" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20" },
     { name = "bcrypt", specifier = ">=4.0" },
-    { name = "cryptography", marker = "extra == 'production'", specifier = ">=42.0" },
+    { name = "cryptography", specifier = ">=42.0" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
     { name = "pyjwt", specifier = ">=2.8" },
@@ -441,7 +445,13 @@ requires-dist = [
     { name = "stripe", marker = "extra == 'stripe'", specifier = ">=8.0" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
-provides-extras = ["production", "stripe", "dev"]
+provides-extras = ["stripe", "dev"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "pytest", specifier = ">=9.0.2" },
+]
 
 [[package]]
 name = "packaging"

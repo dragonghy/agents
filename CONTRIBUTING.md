@@ -16,9 +16,8 @@ Thank you for your interest in contributing to Agent-Hub! This guide will help y
 
 1. Fork and clone the repository
 2. Copy `.env.example` to `.env` and fill in your credentials
-3. Start Leantime: `source .env && docker compose -f services/leantime/docker-compose.yml up -d`
-4. Generate agent workspaces: `python3 setup-agents.py`
-5. Start the system: `./restart_all_agents.sh`
+3. Generate agent workspaces: `python3 setup-agents.py`
+4. Start the system: `./restart_all_agents.sh`
 
 ### Running Tests
 
@@ -72,7 +71,7 @@ docs: add getting-started guide for new users
 - `services/agents-mcp/` — The core MCP daemon (Python). Start here for backend changes.
 - `services/agents-mcp/web/` — The Web UI (React + Vite + Tailwind).
 - `templates/` — Agent template resources (CLAUDE.md, skills). Each subdirectory is a role template.
-- `templates/shared/` — Skills shared across all agents (leantime, daily-journal, etc.).
+- `templates/shared/` — Skills shared across all agents (tasks, daily-journal, etc.).
 - `.claude/agents/` — Native agent definitions (YAML frontmatter + system prompt).
 - `agents/` — (generated, gitignored) Runtime agent workspaces created by `setup-agents.py`.
 - `tests/` — E2E test environment tooling.
@@ -85,4 +84,4 @@ docs: add getting-started guide for new users
 
 ## License
 
-By contributing to Agent-Hub, you agree that your contributions will be licensed under the [Apache License 2.0](LICENSE). Contributions to Leantime plugins (`services/leantime/plugins/`) are subject to AGPL-3.0.
+By contributing to Agent-Hub, you agree that your contributions will be licensed under the [Apache License 2.0](LICENSE).
