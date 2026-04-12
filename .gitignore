@@ -52,3 +52,4 @@ projects/pomodoro-timer/
 .DS_Store
 Thumbs.db
 briefs/
+tmp/
