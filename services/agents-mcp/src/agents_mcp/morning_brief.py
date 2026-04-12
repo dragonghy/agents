@@ -142,11 +142,33 @@ async def generate_brief(
             for t in human_list:
                 age_days = _ticket_age_days(t)
                 priority = t.get("priority", "medium")
-                decision_lines.append(
-                    f"### #{t['id']}: {t['headline']}\n"
-                    f"- **Priority**: {priority} | **Age**: {age_days} days\n"
-                    f"- **Action needed**: Review and decide\n"
+                tid = t["id"]
+                headline = t["headline"]
+
+                # Try to extract context from latest comment
+                context_hint = ""
+                try:
+                    comments = await client.get_comments("ticket", tid, limit=1)
+                    comment_list = comments.get("comments", [])
+                    if comment_list:
+                        latest = comment_list[0].get("text", "")
+                        # Take first 150 chars as context
+                        context_hint = latest[:150].replace("\n", " ").strip()
+                        if len(latest) > 150:
+                            context_hint += "..."
+                except Exception:
+                    pass
+
+                decision_block = (
+                    f"### #{tid}: {headline}\n"
+                    f"- **Priority**: {priority} | **Waiting**: {age_days} days\n"
                 )
+                if context_hint:
+                    decision_block += f"- **Context**: {context_hint}\n"
+                decision_block += (
+                    f"- → Choose: **[Approve]** **[Defer]** **[Cancel]** or reply with instructions\n"
+                )
+                decision_lines.append(decision_block)
         else:
             decision_lines.append("No decisions pending. 🎉")
     except Exception as e:
@@ -154,7 +176,27 @@ async def generate_brief(
 
     sections.append("## Decisions Needed\n" + "\n".join(decision_lines))
 
-    # ── Section 4: Cost Report ──
+    # ── Section 4: Resources Needed ──
+    resource_lines = []
+    try:
+        # Blocked tickets represent resource needs
+        blocked_tickets = await client.list_tickets(status="1", limit=20)
+        blocked_list = blocked_tickets.get("tickets", [])
+        if blocked_list:
+            for t in blocked_list:
+                age_days = _ticket_age_days(t)
+                depends = t.get("depends_on", "")
+                blocker_info = f" (blocked by #{depends})" if depends else ""
+                resource_lines.append(
+                    f"- **#{t['id']}**: {t['headline']}{blocker_info} — waiting {age_days} days"
+                )
+        else:
+            resource_lines.append("No resources blocked.")
+    except Exception:
+        pass
+    sections.append("## Resources Needed\n" + "\n".join(resource_lines))
+
+    # ── Section 5: Cost Report ──
     cost_lines = []
     try:
         usage_summary = await store.get_all_agents_usage_summary()

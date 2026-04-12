@@ -67,8 +67,8 @@ Week 4: Cutover — switch from v1 dispatcher to v2, decommission old agents
 ### Tasks
 - [x] Freeze non-harness projects in agents.yaml (set dispatchable: false)
 - [x] Close stale tickets for frozen projects (archived 9 tickets: #425,420,410,409,371,364,423,430,407,336,335)
-- [ ] Commit all pending changes
-- [ ] Document v1 baseline state
+- [x] Commit all pending changes → `62b1179` + `91edf5a`, pushed to main
+- [x] Restart daemon with all changes → confirmed healthy, brief endpoint working
 
 ### Progress Log
 - **2026-04-12 14:00**: Added v2 config section to agents.yaml (v2.enabled, agent_types, projects)
@@ -131,5 +131,26 @@ Week 4: Cutover — switch from v1 dispatcher to v2, decommission old agents
 - **2026-04-12 14:15**: Created `morning_brief.py` — generate_brief(), save_brief(), brief_loop()
 - **2026-04-12 14:17**: Added `generate_morning_brief` MCP tool + `GET /v1/brief` REST endpoint
 - **2026-04-12 14:20**: Tested: brief generates correctly with health, work summary, decisions, cost sections
+- **2026-04-12 14:23**: Fixed PlainTextResponse import in api.py, daemon restarted successfully
+- **2026-04-12 14:25**: `GET /v1/brief` live and returning full digest (health, 3 human tickets, $0.63 today cost)
+- **2026-04-12 14:25**: All changes committed (`62b1179`, `91edf5a`) and pushed to main
 
 ---
+
+## Summary: What's Done vs What's Left
+
+### Done (deployed, running in production)
+- Pub/Sub system (subscribers, notifications, service locks) — ✅ live
+- 3 v2 agent type prompts (development, operations, assistant) — ✅ created
+- Session manager & v2 dispatcher — ✅ built, behind feature flag
+- Memory system (claude.md, skills, ticket protocol) — ✅ created
+- Morning Brief (generation, REST API, daily loop) — ✅ live
+- Agent roster frozen (4 active, 14 frozen) — ✅ live
+- Ticket cleanup (9 archived) — ✅ done
+
+### Remaining (non-blocking, can be done incrementally)
+- [ ] Flip `v2.enabled: true` and test ephemeral session spawning end-to-end
+- [ ] Email delivery for Morning Brief (Outlook MCP integration)
+- [ ] Natural language response parsing (Human reply → directives)
+- [ ] Concurrency/slot manager refinement
+- [ ] Re-enable frozen projects one at a time as autonomous tests
