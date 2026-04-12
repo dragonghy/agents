@@ -276,6 +276,44 @@ async def save_brief(
     return filepath
 
 
+async def _send_brief_email(filepath: str, date_str: str):
+    """Notify that the Morning Brief is ready for email delivery.
+
+    The daemon generates the brief, but email delivery requires Microsoft MCP
+    which is only available to agent sessions (not the daemon process).
+
+    Strategy: Create a send_message to ops agent, who has Microsoft MCP access
+    and can send the email on next dispatch cycle.
+    """
+    try:
+        from agents_mcp.store import AgentStore
+        # Get the store from the global state in server.py
+        # We import lazily to avoid circular imports
+        import agents_mcp.server as srv
+        store = await srv.get_store()
+
+        with open(filepath) as f:
+            content = f.read()
+
+        # Send message to ops agent to deliver the email
+        await store.insert_message(
+            from_agent="system",
+            to_agent="ops",
+            body=(
+                f"Morning Brief for {date_str} is ready.\n\n"
+                f"Please send it via email to huayang.guo@gmail.com using Microsoft MCP.\n"
+                f"Subject: 🤖 Morning Brief — {date_str}\n"
+                f"The brief content is saved at: {filepath}\n\n"
+                f"Use: mcp__microsoft__send_email(account_id=..., to='huayang.guo@gmail.com', "
+                f"subject='🤖 Morning Brief — {date_str}', body=<content of {filepath}>)"
+            ),
+        )
+        logger.info(f"Morning Brief email delivery requested via ops agent")
+
+    except Exception as e:
+        logger.warning(f"Morning Brief email notification failed: {e}")
+
+
 async def brief_loop(
     client: SQLiteTaskClient,
     store: AgentStore,
@@ -308,8 +346,8 @@ async def brief_loop(
                 last_generated_date = today
                 logger.info(f"Morning Brief generated: {filepath}")
 
-                # TODO: Send via email using Outlook MCP
-                # For now, just save to file
+                # Send via email
+                await _send_brief_email(filepath, today)
 
         except Exception as e:
             logger.error(f"Morning Brief generation failed: {e}")

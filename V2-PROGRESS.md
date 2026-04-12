@@ -124,7 +124,7 @@ Week 4: Cutover — switch from v1 dispatcher to v2, decommission old agents
 - [x] Set up daily scheduled delivery (7:00 AM) → wired into daemon startup via `brief_loop`
 - [x] Add MCP tool `generate_morning_brief` for on-demand trigger
 - [x] Add REST endpoint `GET /api/v1/brief` for web access
-- [ ] Implement email delivery via Outlook MCP (currently saves to `briefs/` dir)
+- [x] Email delivery via Outlook MCP — manual test sent successfully; auto-delivery routes through ops agent message
 - [ ] Build response parsing (natural language → directives)
 
 ### Progress Log
@@ -142,15 +142,16 @@ Week 4: Cutover — switch from v1 dispatcher to v2, decommission old agents
 ### Done (deployed, running in production)
 - Pub/Sub system (subscribers, notifications, service locks) — ✅ live
 - 3 v2 agent type prompts (development, operations, assistant) — ✅ created
-- Session manager & v2 dispatcher — ✅ built, behind feature flag
+- Session manager & v2 dispatcher — ✅ live (`v2.enabled: true`)
+- Ephemeral session E2E test — ✅ passed (ticket #443, 26 seconds, dev-001 session)
 - Memory system (claude.md, skills, ticket protocol) — ✅ created
-- Morning Brief (generation, REST API, daily loop) — ✅ live
+- Morning Brief (generation, REST API, daily loop, structured decisions) — ✅ live
+- Morning Brief email delivery — ✅ manual test sent, auto-delivery via ops agent
 - Agent roster frozen (4 active, 14 frozen) — ✅ live
 - Ticket cleanup (9 archived) — ✅ done
 
 ### Remaining (non-blocking, can be done incrementally)
-- [ ] Flip `v2.enabled: true` and test ephemeral session spawning end-to-end
-- [ ] Email delivery for Morning Brief (Outlook MCP integration)
 - [ ] Natural language response parsing (Human reply → directives)
 - [ ] Concurrency/slot manager refinement
 - [ ] Re-enable frozen projects one at a time as autonomous tests
+- [ ] Agent Identity (email addresses, virtual cards) — Phase 4
