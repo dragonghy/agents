@@ -1592,12 +1592,13 @@ async def _start_auto_dispatch_async():
         from agents_mcp.dispatcher_v2 import dispatch_loop_v2
 
         max_sessions = v2_config.get("max_concurrent_sessions", 4)
+        project_config = cfg.get("projects", {})
         session_mgr = SessionManager(
             tmux_session=tmux_session,
             root_dir=root_dir,
             max_sessions=max_sessions,
+            project_config=project_config,
         )
-        project_config = cfg.get("projects", {})
 
         global _v2_dispatch_task
         _v2_dispatch_task = asyncio.create_task(

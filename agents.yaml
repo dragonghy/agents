@@ -75,7 +75,7 @@ name_pool: [lily, ethan, grace, ryan, zoe, max, aria, sam, leo, ruby, finn, ivy]
 # V2 dispatcher: set enabled=true to use task-driven dispatch instead of agent-polling.
 # During migration, v1 and v2 can coexist (v1 handles dispatchable agents, v2 handles tasks).
 v2:
-  enabled: false  # flip to true when ready to activate v2 dispatch
+  enabled: true  # activated 2026-04-12 for end-to-end testing
   max_concurrent_sessions: 4
   session_idle_timeout: 300  # seconds before idle session is released
 

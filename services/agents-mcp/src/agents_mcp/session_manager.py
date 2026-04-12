@@ -49,10 +49,12 @@ class SessionManager:
         tmux_session: str = "agents",
         root_dir: str = ".",
         max_sessions: int = MAX_CONCURRENT_SESSIONS,
+        project_config: dict = None,
     ):
         self.tmux_session = tmux_session
         self.root_dir = root_dir
         self.max_sessions = max_sessions
+        self._project_config = project_config or {}
         self._sessions: dict[str, SessionInfo] = {}  # session_id → SessionInfo
         self._next_id = 1
         self._lock = asyncio.Lock()
@@ -161,24 +163,50 @@ class SessionManager:
 
         return None
 
+    def _resolve_project_dir(self, project: Optional[str]) -> str:
+        """Determine the working directory for a session.
+
+        Claude Code automatically loads claude.md from the working directory,
+        so cd-ing into the right project dir is how we inject project context.
+        """
+        if project and self._project_config:
+            proj_cfg = self._project_config.get(project, {})
+            path = proj_cfg.get("path", "")
+            if path:
+                # Resolve relative paths against root_dir
+                if not os.path.isabs(path):
+                    path = os.path.join(self.root_dir, path)
+                if os.path.isdir(path):
+                    return path
+        return self.root_dir
+
     def _create_tmux_window(
         self,
         info: SessionInfo,
         agent_def: str,
         project_dirs: Optional[list[str]] = None,
     ):
-        """Create a tmux window and start Claude Code."""
-        # Build the claude command
-        work_dir = os.path.join(self.root_dir, "agents", "workspace")
-        os.makedirs(work_dir, exist_ok=True)
+        """Create a tmux window and start Claude Code.
 
+        Context assembly (per RETROSPECTIVE §4.3):
+        1. Agent type's system prompt → --agent flag loads from .claude/agents/<type>.md
+        2. Global skills → accessible via --add-dir to repo root (templates/shared/skills/)
+        3. Project claude.md → loaded automatically by Claude Code from working directory
+        4. Project skills → accessible via --add-dir to project path
+        5. Task context → sent as first message after startup (in _send_task)
+        """
+        # Working directory = project dir (so Claude Code loads project's claude.md)
+        work_dir = self._resolve_project_dir(info.project)
+
+        # Always add the agent repo root for access to global skills and daemon config
         add_dir_flags = f" --add-dir {self.root_dir}"
         if project_dirs:
             for d in project_dirs:
-                add_dir_flags += f" --add-dir {d}"
+                if os.path.isdir(d) and d != self.root_dir:
+                    add_dir_flags += f" --add-dir {d}"
 
         cmd = (
-            f"cd {self.root_dir} && "
+            f"cd {work_dir} && "
             f"claude --dangerously-skip-permissions "
             f"--agent {agent_def}"
             f"{add_dir_flags}"
@@ -194,11 +222,21 @@ class SessionManager:
         )
 
     def _send_task(self, info: SessionInfo, description: str, task_id: int):
-        """Send the task description to the agent session."""
-        # Wait for the prompt, then send the task
+        """Send the task to the agent session.
+
+        The message instructs the agent to:
+        1. Read the full ticket (description + all comments) for context recovery
+        2. Read the project's claude.md for project conventions
+        3. Start working according to the ticket's phase
+        """
         msg = (
-            f"你的任务是 ticket #{task_id}。请先用 get_ticket(ticket_id={task_id}) "
-            f"读取完整的 ticket 信息（包括所有 comments），然后开始工作。\n\n"
+            f"你的任务是 ticket #{task_id}。\n\n"
+            f"**第一步**：调用 get_ticket(ticket_id={task_id}) 读取完整 ticket 信息，"
+            f"然后调用 get_comments(module=\"ticket\", module_id={task_id}, limit=0) 读取所有历史评论。"
+            f"评论中包含之前的工作记录、Human 反馈和决策——你必须全部阅读后再开始工作。\n\n"
+            f"**第二步**：阅读当前目录下的 claude.md 了解项目背景和约定。\n\n"
+            f"**第三步**：根据 ticket 的 phase（plan/implement/test/deliver）进入对应的思考模式开始工作。"
+            f"如果 ticket 没有 phase 字段，从 ticket 描述推断应该进入哪个阶段。\n\n"
             f"任务概要: {description}"
         )
         try:

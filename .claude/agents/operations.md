@@ -1,0 +1,1 @@
+/Users/huayang/code/agents/templates/v2/operations.md
