@@ -597,6 +597,19 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
         brief = await generate_brief(client, store, config=cfg)
         return PlainTextResponse(brief, media_type="text/markdown")
 
+    async def respond_to_brief(request: Request) -> JSONResponse:
+        """Process Human's response to Morning Brief."""
+        from agents_mcp.brief_responder import parse_brief_response, execute_actions
+        body = await request.json()
+        response_text = body.get("response", "")
+        if not response_text:
+            return JSONResponse({"error": "Missing 'response' field"}, status_code=400)
+        client = get_client()
+        store = await get_store()
+        actions = parse_brief_response(response_text)
+        results = await execute_actions(actions, client, store)
+        return JSONResponse({"actions": results, "parsed_count": len(actions)})
+
     # ── Health ──
 
     async def health(request: Request) -> JSONResponse:
@@ -876,6 +889,7 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
         Route("/v1/dispatch-events", list_dispatch_events),
         Route("/v1/service-locks", list_service_locks),
         Route("/v1/brief", get_morning_brief),
+        Route("/v1/brief/respond", respond_to_brief, methods=["POST"]),
         # Schedule management
         Route("/v1/schedules", schedules_endpoint, methods=["GET", "POST"]),
         Route("/v1/schedules/{id}", delete_schedule, methods=["DELETE"]),

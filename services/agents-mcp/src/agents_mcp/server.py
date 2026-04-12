@@ -226,6 +226,7 @@ _TOOL_TIMEOUTS = {
     "release_service_lock": 30,
     "list_service_locks": 30,
     "generate_morning_brief": 120,
+    "respond_to_brief": 120,
 }
 _DEFAULT_TOOL_TIMEOUT = 120
 
@@ -1480,6 +1481,36 @@ async def generate_morning_brief() -> str:
     with open(filepath) as f:
         content = f.read()
     return content
+
+
+@app.tool()
+@_with_timeout
+async def respond_to_brief(response: str) -> str:
+    """Process Human's natural language response to the Morning Brief.
+
+    Parses the response and executes actions:
+    - "approve #442" → makes ticket actionable
+    - "defer #429" → adds defer comment
+    - "cancel #362" → archives ticket
+    - "#442 先做不需要支付的部分" → adds instruction as comment
+    - General text → creates instruction ticket for ops
+
+    Supports both English and Chinese. Multiple actions can be separated by
+    newlines or periods.
+
+    Args:
+        response: Human's free-form reply text.
+    """
+    from agents_mcp.brief_responder import parse_brief_response, execute_actions
+    client = get_client()
+    store = await get_store()
+
+    actions = parse_brief_response(response)
+    if not actions:
+        return _json_dumps({"status": "no_actions", "message": "Could not parse any actions from response"})
+
+    results = await execute_actions(actions, client, store)
+    return _json_dumps({"actions": results, "parsed_count": len(actions)}, indent=2)
 
 
 # ════════════════════════════════════════

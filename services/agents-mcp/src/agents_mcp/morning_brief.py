@@ -251,6 +251,39 @@ async def generate_brief(
 
     sections.append("## Cost Report\n" + "\n".join(cost_lines))
 
+    # ── Section 6: Velocity (7-day trend) ──
+    velocity_lines = []
+    try:
+        all_done = await client.list_tickets(status="0", limit=100)
+        done_list = all_done.get("tickets", [])
+
+        # Count completions by day (last 7 days)
+        from collections import Counter
+        daily_counts = Counter()
+        for t in done_list:
+            date_str = t.get("dateToEdit") or t.get("date", "")
+            if date_str:
+                day = date_str[:10]
+                daily_counts[day] += 1
+
+        # Last 7 days
+        recent_days = []
+        for i in range(7):
+            d = (now - timedelta(days=i)).strftime("%Y-%m-%d")
+            count = daily_counts.get(d, 0)
+            recent_days.append((d, count))
+
+        total_7d = sum(c for _, c in recent_days)
+        avg_per_day = total_7d / 7 if total_7d else 0
+
+        spark = " ".join(f"{c}" for _, c in reversed(recent_days))
+        velocity_lines.append(f"- **7-day total**: {total_7d} tickets completed (avg {avg_per_day:.1f}/day)")
+        velocity_lines.append(f"- **Daily**: {spark} (oldest → newest)")
+    except Exception as e:
+        velocity_lines.append(f"Velocity data unavailable: {e}")
+
+    sections.append("## Velocity\n" + "\n".join(velocity_lines))
+
     # ── Footer ──
     sections.append(
         "\n---\n"
