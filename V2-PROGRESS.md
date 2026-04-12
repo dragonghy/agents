@@ -125,7 +125,9 @@ Week 4: Cutover — switch from v1 dispatcher to v2, decommission old agents
 - [x] Add MCP tool `generate_morning_brief` for on-demand trigger
 - [x] Add REST endpoint `GET /api/v1/brief` for web access
 - [x] Email delivery via Outlook MCP — manual test sent successfully; auto-delivery routes through ops agent message
-- [ ] Build response parsing (natural language → directives)
+- [x] NL response parsing → `brief_responder.py` + MCP tool `respond_to_brief` + REST `POST /v1/brief/respond`
+- [x] Velocity metrics (7-day trend with daily breakdown)
+- [x] Deep Dive Mode skill → `templates/shared/skills/deep-dive/SKILL.md`
 
 ### Progress Log
 - **2026-04-12 14:15**: Created `morning_brief.py` — generate_brief(), save_brief(), brief_loop()
@@ -155,8 +157,8 @@ Week 4: Cutover — switch from v1 dispatcher to v2, decommission old agents
 - Morning Brief delivery skill for ops agent — ✅ created
 
 ### Remaining (non-blocking, can be done incrementally)
-- [ ] Natural language response parsing (Human reply → directives)
-- [ ] Concurrency/slot manager refinement
+- [ ] Per-project cost breakdown in Morning Brief (needs ticket-level cost attribution)
+- [ ] Concurrency/slot manager refinement (priority-based slot allocation)
 - [ ] Re-enable frozen projects one at a time as autonomous tests
-- [ ] Agent Identity (email addresses, virtual cards) — Phase 4
+- [ ] Agent Identity — email addresses, virtual cards (Phase 4, needs real-world setup)
 - [ ] Clean up v1 tmux windows for frozen agents (optional, they're idle)
