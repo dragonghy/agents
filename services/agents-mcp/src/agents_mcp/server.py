@@ -227,6 +227,9 @@ _TOOL_TIMEOUTS = {
     "list_service_locks": 30,
     "generate_morning_brief": 120,
     "respond_to_brief": 120,
+    "get_human_conversation": 30,
+    "send_human_message": 30,
+    "get_pending_human_decisions": 30,
 }
 _DEFAULT_TOOL_TIMEOUT = 120
 
@@ -1511,6 +1514,78 @@ async def respond_to_brief(response: str) -> str:
 
     results = await execute_actions(actions, client, store)
     return _json_dumps({"actions": results, "parsed_count": len(actions)}, indent=2)
+
+
+# ════════════════════════════════════════
+# Human Communication Tools
+# ════════════════════════════════════════
+
+
+@app.tool()
+@_with_timeout
+async def get_human_conversation(limit: int = 20, before_timestamp: str = None) -> str:
+    """Get recent conversation history with Human, sorted newest first.
+
+    Returns messages from all channels (Telegram, email, system) in unified
+    chronological order. Each message has direction (inbound/outbound),
+    channel, and context_type.
+
+    Args:
+        limit: Max messages to return. Default 20.
+        before_timestamp: Only return messages before this timestamp (for pagination).
+    """
+    store = await get_store()
+    result = await store.get_human_conversation(limit=limit, before_timestamp=before_timestamp)
+    return _json_dumps(result, indent=2)
+
+
+@app.tool()
+@_with_timeout
+async def send_human_message(
+    body: str,
+    context_type: str = "",
+    source_agent_type: str = "",
+    source_task_id: int = None,
+) -> str:
+    """Send a message to Human.
+
+    The message is stored in the human conversation history and delivered
+    via the active channel (Telegram or email). Use this for:
+    - Sending Morning Briefs
+    - Asking Human for decisions
+    - Reporting task completion or issues
+    - Escalating problems that need Human attention
+
+    Args:
+        body: Message content (markdown supported).
+        context_type: Type of message: "morning_brief", "decision_request",
+                     "escalation", "status_update", "question", or "".
+        source_agent_type: Your agent type (e.g. "development", "operations").
+        source_task_id: Related ticket ID, if applicable.
+    """
+    store = await get_store()
+    msg_id = await store.insert_human_message(
+        direction="outbound",
+        body=body,
+        channel="system",
+        source_agent_type=source_agent_type,
+        source_task_id=source_task_id,
+        context_type=context_type,
+    )
+    return _json_dumps({"sent": True, "message_id": msg_id})
+
+
+@app.tool()
+@_with_timeout
+async def get_pending_human_decisions() -> str:
+    """Get decisions and questions sent to Human that haven't been answered yet.
+
+    Returns outbound messages of type morning_brief, decision_request, or
+    escalation that are still pending Human response.
+    """
+    store = await get_store()
+    decisions = await store.get_pending_human_decisions()
+    return _json_dumps({"pending": decisions, "count": len(decisions)}, indent=2)
 
 
 # ════════════════════════════════════════

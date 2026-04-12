@@ -597,6 +597,46 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
         brief = await generate_brief(client, store, config=cfg)
         return PlainTextResponse(brief, media_type="text/markdown")
 
+    async def post_human_message(request: Request) -> JSONResponse:
+        """Receive a message from Human (via Telegram Bot or other channel)."""
+        body = await request.json()
+        text = body.get("body", "")
+        channel = body.get("channel", "telegram")
+        if not text:
+            return JSONResponse({"error": "Missing 'body' field"}, status_code=400)
+        store = await get_store()
+        msg_id = await store.insert_human_message(
+            direction="inbound",
+            body=text,
+            channel=channel,
+            context_type=body.get("context_type", ""),
+        )
+        return JSONResponse({"received": True, "message_id": msg_id})
+
+    async def get_human_outbox(request: Request) -> JSONResponse:
+        """Get outbound messages pending delivery to Human (for Telegram Bot polling)."""
+        store = await get_store()
+        # Get undelivered outbound messages
+        async with store._db.execute(
+            """SELECT * FROM human_messages
+               WHERE direction = 'outbound' AND read_by_agent = 0
+               ORDER BY created_at ASC LIMIT 10"""
+        ) as cursor:
+            rows = await cursor.fetchall()
+        messages = [dict(r) for r in rows]
+        # Mark as delivered
+        for m in messages:
+            await store.mark_human_message_processed(m["id"])
+        return JSONResponse({"messages": messages, "count": len(messages)})
+
+    async def get_human_history(request: Request) -> JSONResponse:
+        """Get Human conversation history."""
+        params = request.query_params
+        limit = int(params.get("limit", "20"))
+        store = await get_store()
+        result = await store.get_human_conversation(limit=limit)
+        return JSONResponse(result)
+
     async def respond_to_brief(request: Request) -> JSONResponse:
         """Process Human's response to Morning Brief."""
         from agents_mcp.brief_responder import parse_brief_response, execute_actions
@@ -890,6 +930,9 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
         Route("/v1/service-locks", list_service_locks),
         Route("/v1/brief", get_morning_brief),
         Route("/v1/brief/respond", respond_to_brief, methods=["POST"]),
+        Route("/v1/human/messages", post_human_message, methods=["POST"]),
+        Route("/v1/human/outbox", get_human_outbox),
+        Route("/v1/human/history", get_human_history),
         # Schedule management
         Route("/v1/schedules", schedules_endpoint, methods=["GET", "POST"]),
         Route("/v1/schedules/{id}", delete_schedule, methods=["DELETE"]),

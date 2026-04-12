@@ -112,6 +112,22 @@ CREATE TABLE IF NOT EXISTS notifications (
 CREATE INDEX IF NOT EXISTS idx_notif_agent
     ON notifications(agent_id, state, created_at DESC);
 
+-- Human communication: unified conversation store
+CREATE TABLE IF NOT EXISTS human_messages (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    direction       TEXT NOT NULL,
+    channel         TEXT DEFAULT 'system',
+    body            TEXT NOT NULL,
+    source_agent_type TEXT,
+    source_task_id  INTEGER,
+    context_type    TEXT DEFAULT '',
+    created_at      TEXT DEFAULT (datetime('now')),
+    read_by_agent   INTEGER DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_human_msg_time
+    ON human_messages(created_at DESC);
+
 -- Singleton service advisory locks
 CREATE TABLE IF NOT EXISTS service_locks (
     service_id  TEXT PRIMARY KEY,
@@ -945,3 +961,97 @@ class AgentStore:
         if count:
             await self._db.commit()
         return count
+
+    # ── Human communication methods ──
+
+    async def insert_human_message(
+        self,
+        direction: str,
+        body: str,
+        channel: str = "system",
+        source_agent_type: str = None,
+        source_task_id: int = None,
+        context_type: str = "",
+    ) -> int:
+        """Store a message in the Human conversation history.
+
+        Args:
+            direction: "inbound" (Human → System) or "outbound" (System → Human)
+            body: Message content
+            channel: "telegram", "email", or "system"
+            source_agent_type: Agent type that sent this (for outbound)
+            source_task_id: Related task ID (if applicable)
+            context_type: "morning_brief", "decision_reply", "question", "escalation", etc.
+
+        Returns:
+            Message ID
+        """
+        async with self._db.execute(
+            """INSERT INTO human_messages
+               (direction, channel, body, source_agent_type, source_task_id, context_type)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (direction, channel, body, source_agent_type, source_task_id, context_type),
+        ) as cursor:
+            msg_id = cursor.lastrowid
+        await self._db.commit()
+        return msg_id
+
+    async def get_human_conversation(
+        self,
+        limit: int = 20,
+        before_timestamp: str = None,
+    ) -> dict:
+        """Get recent Human conversation history.
+
+        Returns:
+            {"messages": [...], "total": N}
+        """
+        where = "1=1"
+        params: list = []
+        if before_timestamp:
+            where += " AND created_at < ?"
+            params.append(before_timestamp)
+
+        async with self._db.execute(
+            f"SELECT COUNT(*) FROM human_messages WHERE {where}", params
+        ) as cursor:
+            total = (await cursor.fetchone())[0]
+
+        async with self._db.execute(
+            f"""SELECT * FROM human_messages WHERE {where}
+                ORDER BY created_at DESC LIMIT ?""",
+            params + [limit],
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        return {
+            "messages": [dict(r) for r in rows],
+            "total": total,
+        }
+
+    async def get_pending_human_decisions(self) -> list[dict]:
+        """Get outbound messages awaiting Human response.
+
+        Returns decisions/questions sent to Human that haven't been answered yet
+        (no inbound message after them).
+        """
+        async with self._db.execute(
+            """SELECT * FROM human_messages
+               WHERE direction = 'outbound'
+                 AND context_type IN ('morning_brief', 'decision_request', 'escalation')
+                 AND read_by_agent = 0
+               ORDER BY created_at DESC
+               LIMIT 10"""
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    async def mark_human_message_processed(self, message_id: int) -> bool:
+        """Mark a Human inbound message as processed by an agent."""
+        async with self._db.execute(
+            "UPDATE human_messages SET read_by_agent = 1 WHERE id = ?",
+            (message_id,),
+        ) as cursor:
+            updated = cursor.rowcount > 0
+        await self._db.commit()
+        return updated

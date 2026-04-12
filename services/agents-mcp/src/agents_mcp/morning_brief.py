@@ -370,41 +370,43 @@ async def save_brief(
 
 
 async def _send_brief_email(filepath: str, date_str: str):
-    """Notify that the Morning Brief is ready for email delivery.
+    """Deliver the Morning Brief via the Human communication channel.
 
-    The daemon generates the brief, but email delivery requires Microsoft MCP
-    which is only available to agent sessions (not the daemon process).
-
-    Strategy: Create a send_message to ops agent, who has Microsoft MCP access
-    and can send the email on next dispatch cycle.
+    Stores the brief in the human_messages table as an outbound message.
+    The Telegram Bot Service (if running) will pick it up and deliver to Human.
+    Also notifies ops agent to send via email as backup.
     """
     try:
-        from agents_mcp.store import AgentStore
-        # Get the store from the global state in server.py
-        # We import lazily to avoid circular imports
         import agents_mcp.server as srv
         store = await srv.get_store()
 
         with open(filepath) as f:
             content = f.read()
 
-        # Send message to ops agent to deliver the email
+        # Store in human conversation history (picked up by Telegram Bot)
+        await store.insert_human_message(
+            direction="outbound",
+            body=content,
+            channel="system",
+            source_agent_type="operations",
+            context_type="morning_brief",
+        )
+        logger.info(f"Morning Brief stored in human conversation (for Telegram delivery)")
+
+        # Also notify ops agent to send via email as backup
         await store.insert_message(
             from_agent="system",
             to_agent="ops",
             body=(
-                f"Morning Brief for {date_str} is ready.\n\n"
-                f"Please send it via email to huayang.guo@gmail.com using Microsoft MCP.\n"
-                f"Subject: 🤖 Morning Brief — {date_str}\n"
-                f"The brief content is saved at: {filepath}\n\n"
-                f"Use: mcp__microsoft__send_email(account_id=..., to='huayang.guo@gmail.com', "
-                f"subject='🤖 Morning Brief — {date_str}', body=<content of {filepath}>)"
+                f"Morning Brief for {date_str} is ready.\n"
+                f"Please send it via email. File: {filepath}\n"
+                f"Use: mcp__microsoft__send_email(to='huayang.guo@gmail.com', "
+                f"subject='🤖 Morning Brief — {date_str}', body=<file contents>)"
             ),
         )
-        logger.info(f"Morning Brief email delivery requested via ops agent")
 
     except Exception as e:
-        logger.warning(f"Morning Brief email notification failed: {e}")
+        logger.warning(f"Morning Brief delivery failed: {e}")
 
 
 async def brief_loop(
