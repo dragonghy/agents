@@ -42,6 +42,7 @@ async def generate_brief(
 
     # Agent session status (check tmux)
     try:
+        import re
         import subprocess
         tmux_session = (config or {}).get("tmux_session", "agents")
         out = subprocess.check_output(
@@ -50,6 +51,28 @@ async def generate_brief(
         )
         windows = [w.strip() for w in out.strip().split("\n") if w.strip()]
         health_lines.append(f"- **Agent windows**: {len(windows)} active in tmux")
+
+        # Split v1 permanent windows from v2 ephemeral sessions.
+        # v2 pattern: <role>-<digits> (e.g. dev-001, qa-042).
+        v2_pattern = re.compile(r"^[a-z]+-\d+$")
+        v1_windows = sorted(w for w in windows if not v2_pattern.match(w))
+        v2_windows = sorted(w for w in windows if v2_pattern.match(w))
+
+        health_lines.append("- **Active Sessions**:")
+        if v1_windows:
+            health_lines.append(
+                f"  - v1 permanent ({len(v1_windows)}): "
+                + ", ".join(f"`{w}`" for w in v1_windows)
+            )
+        else:
+            health_lines.append("  - v1 permanent (0): none")
+        if v2_windows:
+            health_lines.append(
+                f"  - v2 ephemeral ({len(v2_windows)}): "
+                + ", ".join(f"`{w}`" for w in v2_windows)
+            )
+        else:
+            health_lines.append("  - v2 ephemeral (0): none")
     except Exception:
         health_lines.append("- **Agent windows**: Unable to check tmux status")
 
