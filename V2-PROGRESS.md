@@ -150,8 +150,13 @@ Week 4: Cutover — switch from v1 dispatcher to v2, decommission old agents
 - Agent roster frozen (4 active, 14 frozen) — ✅ live
 - Ticket cleanup (9 archived) — ✅ done
 
+### Also Done (by ephemeral agents, autonomously)
+- Morning Brief session listing (v1 vs v2 split) — ✅ done by dev-002 session (ticket #444, commit 671cbe2)
+- Morning Brief delivery skill for ops agent — ✅ created
+
 ### Remaining (non-blocking, can be done incrementally)
 - [ ] Natural language response parsing (Human reply → directives)
 - [ ] Concurrency/slot manager refinement
 - [ ] Re-enable frozen projects one at a time as autonomous tests
 - [ ] Agent Identity (email addresses, virtual cards) — Phase 4
+- [ ] Clean up v1 tmux windows for frozen agents (optional, they're idle)
