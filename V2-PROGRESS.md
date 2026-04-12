@@ -156,9 +156,19 @@ Week 4: Cutover — switch from v1 dispatcher to v2, decommission old agents
 - Morning Brief session listing (v1 vs v2 split) — ✅ done by dev-002 session (ticket #444, commit 671cbe2)
 - Morning Brief delivery skill for ops agent — ✅ created
 
-### Remaining (non-blocking, can be done incrementally)
-- [ ] Per-project cost breakdown in Morning Brief (needs ticket-level cost attribution)
+### Also Done (continued)
+- Human communication hub — human_messages table, 3 MCP tools, 3 REST endpoints
+- Telegram Bot Service — `services/telegram-bot/bot.py` (transport bridge, no AI)
+- Morning Brief auto-delivers to human_messages (picked up by Telegram bot)
+- NL response parsing fully working (CN+EN, multi-action, approve/defer/cancel)
+- Per-project ticket breakdown in Morning Brief
+- 7-day velocity trend in Morning Brief
+
+### Remaining (needs Human action or real-world setup)
+- [ ] Set up Telegram bot: @BotFather → token → .env TELEGRAM_BOT_TOKEN + TELEGRAM_HUMAN_CHAT_ID
+- [ ] Set up Twilio number for SMS verification (~$1-2/mo)
+- [ ] Set up Privacy.com virtual card for agent spending
+- [ ] Store agent identity info in 1Password (address, phone, card)
 - [ ] Concurrency/slot manager refinement (priority-based slot allocation)
 - [ ] Re-enable frozen projects one at a time as autonomous tests
-- [ ] Agent Identity — email addresses, virtual cards (Phase 4, needs real-world setup)
 - [ ] Clean up v1 tmux windows for frozen agents (optional, they're idle)
