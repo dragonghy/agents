@@ -123,7 +123,54 @@ async def handle_updates(session: aiohttp.ClientSession):
                         continue
 
                     logger.info(f"Received from Human: {text[:50]}...")
+
+                    # Handle /start command
+                    if text.strip() == "/start":
+                        await send_telegram(
+                            chat_id,
+                            "🤖 Agent Harness connected.\n\n"
+                            "I'm your agent system's communication bridge. "
+                            "You'll receive Morning Briefs, status updates, and decision requests here.\n\n"
+                            "Reply with natural language — I'll forward to the right agent.\n\n"
+                            "Commands:\n"
+                            "/brief — Get today's Morning Brief\n"
+                            "/status — System health check",
+                            session,
+                        )
+                        continue
+
+                    # Handle /brief command
+                    if text.strip() == "/brief":
+                        try:
+                            async with session.get(f"{DAEMON_URL}/api/v1/brief") as resp:
+                                if resp.status == 200:
+                                    brief = await resp.text()
+                                    await send_telegram(chat_id, brief, session)
+                                else:
+                                    await send_telegram(chat_id, "Failed to generate brief.", session)
+                        except Exception as e:
+                            await send_telegram(chat_id, f"Error: {e}", session)
+                        continue
+
+                    # Handle /status command
+                    if text.strip() == "/status":
+                        try:
+                            async with session.get(f"{DAEMON_URL}/api/v1/health") as resp:
+                                if resp.status == 200:
+                                    data = await resp.json()
+                                    status_msg = (
+                                        f"System: {'✅ OK' if data.get('status') == 'ok' else '❌ Error'}\n"
+                                        f"Task DB: {'✅' if data.get('task_db') else '❌'}\n"
+                                        f"TMux: {'✅' if data.get('tmux_active') else '❌'}"
+                                    )
+                                    await send_telegram(chat_id, status_msg, session)
+                        except Exception as e:
+                            await send_telegram(chat_id, f"Error: {e}", session)
+                        continue
+
+                    # Regular message → forward to daemon
                     await forward_to_daemon(text, session)
+                    await send_telegram(chat_id, "✅ Received. Forwarded to agent system.", session)
 
         except asyncio.TimeoutError:
             continue
