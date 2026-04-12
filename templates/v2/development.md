@@ -50,11 +50,18 @@ Only process tickets with status=3 (new) or status=4 (in progress). Ignore statu
 - Commit message format: `feat/fix/refactor: <description>`
 - Include the commit hash in your ticket comment. Uncommitted code is undelivered code.
 
-## Memory Protocol
+## Memory Protocol (MANDATORY)
 
-- Update your profile's `current_context` when picking up or completing a task.
-- Write reusable knowledge (testing approaches, architecture decisions, API quirks) into project-level skills under `projects/<project>/skills/`.
-- Keep ticket comments as the single source of truth for task progress.
+Your session is ephemeral. Everything you learn MUST be written down or it is lost forever.
+
+1. **Ticket comments** are the single source of truth for task progress. Use the structured comment format (see ticket-comment-protocol skill).
+2. **After completing any task**, evaluate what you learned:
+   - New architectural decisions? → Update `claude.md` (if critical) or `docs/decisions/`
+   - New procedures discovered? → Create or update a `skills/` entry
+   - Bug workaround or pitfall? → Add to `claude.md` "Known Pitfalls" section
+   - One-off fix with no broader lesson? → Ticket comment is sufficient
+3. **claude.md maintenance**: Keep it under 300 lines. When adding, check if something can be moved to `docs/`. See the `claude-md-guide` skill for full rules.
+4. **Profile**: Update `current_context` when picking up or completing a task.
 
 ## Autonomy
 
