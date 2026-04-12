@@ -284,6 +284,34 @@ async def generate_brief(
 
     sections.append("## Velocity\n" + "\n".join(velocity_lines))
 
+    # ── Section 7: Project Breakdown ──
+    project_lines = []
+    try:
+        # Gather all active tickets and group by project tag
+        from collections import defaultdict
+        project_stats = defaultdict(lambda: {"done": 0, "in_progress": 0, "new": 0, "blocked": 0})
+
+        for status_code, status_name in [("0", "done"), ("4", "in_progress"), ("3", "new"), ("1", "blocked")]:
+            tickets_resp = await client.list_tickets(status=status_code, limit=100)
+            for t in tickets_resp.get("tickets", []):
+                proj = _extract_project_tag(t.get("tags", ""))
+                project_stats[proj][status_name] += 1
+
+        if project_stats:
+            for proj in sorted(project_stats.keys()):
+                s = project_stats[proj]
+                total = s["done"] + s["in_progress"] + s["new"] + s["blocked"]
+                project_lines.append(
+                    f"- **{proj}**: {total} tickets "
+                    f"(✅{s['done']} 🔄{s['in_progress']} 📋{s['new']} 🚫{s['blocked']})"
+                )
+        else:
+            project_lines.append("No project data available.")
+    except Exception as e:
+        project_lines.append(f"Project data unavailable: {e}")
+
+    sections.append("## Projects\n" + "\n".join(project_lines))
+
     # ── Footer ──
     sections.append(
         "\n---\n"
@@ -292,6 +320,15 @@ async def generate_brief(
     )
 
     return "\n\n".join(sections)
+
+
+def _extract_project_tag(tags: str) -> str:
+    """Extract project name from tags like 'project:agent-hub,phase:implement'."""
+    for tag in tags.split(","):
+        tag = tag.strip()
+        if tag.startswith("project:"):
+            return tag.split(":", 1)[1]
+    return "(untagged)"
 
 
 def _ticket_age_days(ticket: dict) -> int:
