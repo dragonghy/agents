@@ -9,7 +9,7 @@ Agents have real-world identity to register for services, receive verification c
 
 ## 1. Email
 
-**Address**: huayang.guo@gmail.com
+**Address**: huayang.guo@outlook.com
 **Access**: Microsoft Outlook MCP (`mcp__microsoft__*` tools)
 **Account ID**: Use `mcp__microsoft__list_accounts` to get the current account ID
 
@@ -56,7 +56,7 @@ Rules:
 Use when registering for services that require personal details (name, address, etc.).
 
 - **Full Name**: Huayang Guo
-- **Email**: huayang.guo@gmail.com
+- **Email**: huayang.guo@outlook.com
 - **Phone**: +19176574918 (Human's personal number, use only when Twilio number is rejected)
 - **Mailing Address**: 970 Corte Madera Ave APT 302, Sunnyvale, CA 94085
 - **Date of Birth**: 09/03/1989
@@ -67,7 +67,7 @@ Also stored in 1Password under "Human Identity - Personal Info".
 
 When you need to sign up for a new service:
 
-1. **Register** with email (huayang.guo@gmail.com)
+1. **Register** with email (huayang.guo@outlook.com)
 2. **Email verification**: Check inbox via `mcp__microsoft__search_emails` for the verification code/link
 3. **Phone verification**: If SMS code required, poll Twilio API for incoming messages to +16502853480
 4. **Payment**: If payment needed and within $20/mo, use the Privacy.com card from 1Password
