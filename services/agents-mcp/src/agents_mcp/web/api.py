@@ -8,7 +8,7 @@ import subprocess
 
 import yaml
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Route, Router
 
 logger = logging.getLogger(__name__)
@@ -588,13 +588,12 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
         locks = await store.list_locks()
         return JSONResponse({"locks": locks, "count": len(locks)})
 
-    async def get_morning_brief(request: Request) -> Response:
+    async def get_morning_brief(request: Request) -> PlainTextResponse:
         """Generate and return today's Morning Brief."""
-        from starlette.responses import PlainTextResponse
         from agents_mcp.morning_brief import generate_brief
         client = get_client()
         store = await get_store()
-        cfg = resolve_agents()  # get config
+        cfg = get_config()
         brief = await generate_brief(client, store, config=cfg)
         return PlainTextResponse(brief, media_type="text/markdown")
 
