@@ -1683,17 +1683,18 @@ async def _start_auto_dispatch_async():
     except Exception as e:
         logger.warning(f"Pub/Sub subscription backfill failed: {e}")
 
-    _dispatch_task = asyncio.create_task(
-        dispatch_loop(client, agents_list, tmux_session, store=store,
-                      interval=30,
-                      staleness_threshold=staleness_threshold,
-                      root_dir=root_dir)
-    )
-    logger.info(f"Auto-dispatch background task started for {agents_list}")
+    # V1 dispatcher: disabled — replaced by v2 task-driven dispatch
+    # _dispatch_task = asyncio.create_task(
+    #     dispatch_loop(client, agents_list, tmux_session, store=store,
+    #                   interval=30,
+    #                   staleness_threshold=staleness_threshold,
+    #                   root_dir=root_dir)
+    # )
+    logger.info("V1 dispatcher disabled (v2 is active)")
 
-    # V2 dispatcher: task-driven, ephemeral sessions (behind feature flag)
+    # V2 dispatcher: task-driven, ephemeral sessions
     v2_config = cfg.get("v2", {})
-    if v2_config.get("enabled", False):
+    if v2_config.get("enabled", True):  # default to enabled now
         from agents_mcp.session_manager import SessionManager
         from agents_mcp.dispatcher_v2 import dispatch_loop_v2
 
