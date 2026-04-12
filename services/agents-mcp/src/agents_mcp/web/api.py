@@ -563,6 +563,41 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
         )
         return JSONResponse(result)
 
+    # ── Pub/Sub: Notifications & Subscribers ──
+
+    async def get_agent_notifications(request: Request) -> JSONResponse:
+        agent_id = request.path_params["id"]
+        store = await get_store()
+        params = request.query_params
+        state = params.get("state", "unread")
+        limit = int(params.get("limit", "20"))
+        offset = int(params.get("offset", "0"))
+        result = await store.get_notifications(
+            agent_id=agent_id, state=state, limit=limit, offset=offset,
+        )
+        return JSONResponse(result)
+
+    async def get_ticket_subscribers(request: Request) -> JSONResponse:
+        ticket_id = int(request.path_params["id"])
+        store = await get_store()
+        subscribers = await store.get_subscribers(ticket_id)
+        return JSONResponse({"ticket_id": ticket_id, "subscribers": subscribers, "count": len(subscribers)})
+
+    async def list_service_locks(request: Request) -> JSONResponse:
+        store = await get_store()
+        locks = await store.list_locks()
+        return JSONResponse({"locks": locks, "count": len(locks)})
+
+    async def get_morning_brief(request: Request) -> Response:
+        """Generate and return today's Morning Brief."""
+        from starlette.responses import PlainTextResponse
+        from agents_mcp.morning_brief import generate_brief
+        client = get_client()
+        store = await get_store()
+        cfg = resolve_agents()  # get config
+        brief = await generate_brief(client, store, config=cfg)
+        return PlainTextResponse(brief, media_type="text/markdown")
+
     # ── Health ──
 
     async def health(request: Request) -> JSONResponse:
@@ -815,12 +850,14 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
         Route("/v1/agents/{id}/usage", get_agent_usage),
         Route("/v1/agents/{id}/usage/refresh", refresh_agent_usage, methods=["POST"]),
         Route("/v1/agents/{id}/dispatch-events", get_agent_dispatch_events),
+        Route("/v1/agents/{id}/notifications", get_agent_notifications),
         Route("/v1/agents/{id}/journals/{date}", get_agent_journal),
         Route("/v1/agents/{id}/journals", list_agent_journals),
         Route("/v1/agents/{id}", get_agent),
         Route("/v1/usage", get_all_usage),
         Route("/v1/tickets/{id}/comments", ticket_comments, methods=["GET", "POST"]),
         Route("/v1/tickets/{id}/subtasks", get_ticket_subtasks),
+        Route("/v1/tickets/{id}/subscribers", get_ticket_subscribers),
         Route("/v1/tickets/{id}/reassign", reassign_ticket, methods=["POST"]),
         Route("/v1/tickets/{id}", get_ticket, methods=["GET"]),
         Route("/v1/tickets", list_tickets, methods=["GET"]),
@@ -838,6 +875,8 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
         Route("/v1/agents/dispatch-all", dispatch_all_agents, methods=["POST"]),
         Route("/v1/feedback", submit_feedback, methods=["POST"]),
         Route("/v1/dispatch-events", list_dispatch_events),
+        Route("/v1/service-locks", list_service_locks),
+        Route("/v1/brief", get_morning_brief),
         # Schedule management
         Route("/v1/schedules", schedules_endpoint, methods=["GET", "POST"]),
         Route("/v1/schedules/{id}", delete_schedule, methods=["DELETE"]),

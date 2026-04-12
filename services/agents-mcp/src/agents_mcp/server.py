@@ -216,6 +216,16 @@ _TOOL_TIMEOUTS = {
     # Slow tools: involve subprocess, tmux, or heavy operations (300s)
     "dispatch_agents": 300,
     "request_restart": 300,
+    # Pub/Sub tools: fast DB operations (30s)
+    "subscribe_to_ticket": 30,
+    "unsubscribe_from_ticket": 30,
+    "get_subscribers": 30,
+    "get_notifications": 30,
+    "mark_notifications_read": 30,
+    "acquire_service_lock": 30,
+    "release_service_lock": 30,
+    "list_service_locks": 30,
+    "generate_morning_brief": 120,
 }
 _DEFAULT_TOOL_TIMEOUT = 120
 
@@ -240,6 +250,51 @@ def _with_timeout(fn):
             return _json_dumps({"error": msg})
 
     return wrapper
+
+
+# ════════════════════════════════════════
+# Pub/Sub notification helper
+# ════════════════════════════════════════
+
+async def _notify_subscribers(
+    ticket_id: int,
+    type: str,
+    title: str,
+    body: str = "",
+    source_agent_id: str = None,
+    exclude_agents: list = None,
+):
+    """Fan-out a notification to all subscribers of a ticket.
+
+    Admin is always included as an implicit subscriber.
+    Agents in exclude_agents (typically the actor) are skipped.
+    """
+    store = await get_store()
+    subscribers = set(await store.get_subscribers(ticket_id))
+    subscribers.add("admin")  # admin implicitly subscribed to all tickets
+    if exclude_agents:
+        subscribers -= set(exclude_agents)
+    for agent_id in subscribers:
+        await store.create_notification(
+            agent_id=agent_id,
+            type=type,
+            title=title,
+            ticket_id=ticket_id,
+            source_agent_id=source_agent_id,
+            body=body,
+        )
+    # Broadcast to WebSocket clients (best-effort)
+    try:
+        from agents_mcp.web.events import event_bus
+        if event_bus.client_count > 0:
+            await event_bus.broadcast("notification_created", {
+                "ticket_id": ticket_id,
+                "type": type,
+                "title": title,
+                "recipients": list(subscribers),
+            })
+    except Exception:
+        pass
 
 
 # ════════════════════════════════════════
@@ -361,6 +416,22 @@ async def create_ticket(
         headline=headline, project_id=project_id,
         user_id=user_id, tags=tags, assignee=assignee, **kwargs,
     )
+    # Pub/Sub: auto-subscribe assignee + admin, notify subscribers
+    try:
+        ticket_id = result  # create_ticket returns ticket_id
+        store = await get_store()
+        if assignee:
+            await store.subscribe(ticket_id, assignee)
+        await store.subscribe(ticket_id, "admin")
+        if assignee:
+            await _notify_subscribers(
+                ticket_id=ticket_id,
+                type="ticket_assigned",
+                title=f"New ticket #{ticket_id}: {headline}",
+                source_agent_id=assignee,
+            )
+    except Exception as e:
+        logger.debug(f"Notification on create_ticket #{result} failed: {e}")
     return _json_dumps(result, indent=2)
 
 
@@ -396,6 +467,23 @@ async def update_ticket(
     if tags is not None:
         kwargs["tags"] = tags
     result = await client.update_ticket(ticket_id, project_id, assignee=assignee, **kwargs)
+    # Pub/Sub: notify on status change or assignee change
+    try:
+        changes = []
+        if status is not None:
+            changes.append(f"status→{status}")
+        if assignee is not None:
+            store = await get_store()
+            await store.subscribe(ticket_id, assignee)
+            changes.append(f"assigned→{assignee}")
+        if changes:
+            await _notify_subscribers(
+                ticket_id=ticket_id,
+                type="ticket_updated",
+                title=f"Ticket #{ticket_id} updated: {', '.join(changes)}",
+            )
+    except Exception as e:
+        logger.debug(f"Notification on update_ticket #{ticket_id} failed: {e}")
     return _json_dumps(result, indent=2)
 
 
@@ -430,6 +518,19 @@ async def add_comment(module: str, module_id: int, comment: str, author: str = N
     """
     client = get_client()
     result = await client.add_comment(module, module_id, comment, author=author)
+    # Pub/Sub: notify subscribers on ticket comment
+    try:
+        if module in ("ticket", "tickets"):
+            await _notify_subscribers(
+                ticket_id=module_id,
+                type="ticket_comment",
+                title=f"New comment on #{module_id}",
+                body=comment[:200] if comment else "",
+                source_agent_id=author,
+                exclude_agents=[author] if author else [],
+            )
+    except Exception as e:
+        logger.debug(f"Notification on add_comment #{module_id} failed: {e}")
     return _json_dumps(result, indent=2)
 
 
@@ -889,6 +990,20 @@ async def reassign_ticket(
 
     result = await client.update_ticket(ticket_id, assignee=to_agent, status=3)
 
+    # Pub/Sub: auto-subscribe new assignee and notify
+    try:
+        store_pubsub = await get_store()
+        await store_pubsub.subscribe(ticket_id, to_agent)
+        await _notify_subscribers(
+            ticket_id=ticket_id,
+            type="ticket_assigned",
+            title=f"Ticket #{ticket_id} reassigned: {from_agent} → {to_agent}",
+            source_agent_id=from_agent,
+            exclude_agents=[from_agent],
+        )
+    except Exception as e:
+        logger.debug(f"Notification on reassign #{ticket_id} failed: {e}")
+
     # Auto-dispatch target agent (best-effort)
     # If agent is idle → dispatch immediately
     # If agent is busy → schedule deferred dispatch (retry until idle or timeout)
@@ -1189,12 +1304,193 @@ async def remove_schedule(schedule_id: int, agent_id: str) -> str:
 
 
 # ════════════════════════════════════════
+# Pub/Sub: Subscription & Notification Tools
+# ════════════════════════════════════════
+
+
+@app.tool()
+@_with_timeout
+async def subscribe_to_ticket(ticket_id: int, agent_id: str) -> str:
+    """Subscribe an agent to receive notifications for a ticket.
+
+    Subscribed agents are notified when the ticket is updated, commented on,
+    or reassigned. Subscriptions are idempotent (safe to call multiple times).
+
+    Args:
+        ticket_id: The ticket to subscribe to.
+        agent_id: Agent to subscribe.
+    """
+    store = await get_store()
+    created = await store.subscribe(ticket_id, agent_id)
+    if created:
+        # Notify the newly subscribed agent
+        try:
+            await store.create_notification(
+                agent_id=agent_id,
+                type="ticket_subscribed",
+                title=f"You were subscribed to ticket #{ticket_id}",
+                ticket_id=ticket_id,
+            )
+        except Exception:
+            pass
+    return _json_dumps({"subscribed": True, "new": created, "ticket_id": ticket_id, "agent_id": agent_id})
+
+
+@app.tool()
+@_with_timeout
+async def unsubscribe_from_ticket(ticket_id: int, agent_id: str) -> str:
+    """Unsubscribe an agent from a ticket's notifications.
+
+    Args:
+        ticket_id: The ticket to unsubscribe from.
+        agent_id: Agent to unsubscribe.
+    """
+    store = await get_store()
+    removed = await store.unsubscribe(ticket_id, agent_id)
+    return _json_dumps({"unsubscribed": removed, "ticket_id": ticket_id, "agent_id": agent_id})
+
+
+@app.tool()
+@_with_timeout
+async def get_subscribers(ticket_id: int) -> str:
+    """Get all agents subscribed to a ticket.
+
+    Args:
+        ticket_id: The ticket to check.
+    """
+    store = await get_store()
+    subscribers = await store.get_subscribers(ticket_id)
+    return _json_dumps({"ticket_id": ticket_id, "subscribers": subscribers, "count": len(subscribers)})
+
+
+@app.tool()
+@_with_timeout
+async def get_notifications(
+    agent_id: str,
+    state: str = "unread",
+    limit: int = 20,
+    offset: int = 0,
+) -> str:
+    """Get notifications for an agent, sorted newest first.
+
+    Notifications are automatically created when tickets you subscribe to
+    are updated, commented on, or reassigned.
+
+    Args:
+        agent_id: Your agent ID.
+        state: Filter by state: 'unread' (default), 'read', or 'all'.
+        limit: Max notifications to return. Default 20.
+        offset: Skip first N notifications. Default 0.
+    """
+    store = await get_store()
+    result = await store.get_notifications(agent_id, state=state, limit=limit, offset=offset)
+    return _json_dumps(result, indent=2)
+
+
+@app.tool()
+@_with_timeout
+async def mark_notifications_read(agent_id: str, notification_ids: str) -> str:
+    """Mark notifications as read.
+
+    Args:
+        agent_id: Your agent ID.
+        notification_ids: Comma-separated notification IDs to mark as read (e.g. '1,2,3').
+    """
+    store = await get_store()
+    ids = [int(x.strip()) for x in notification_ids.split(",") if x.strip()]
+    count = await store.mark_notifications_read(agent_id, ids)
+    return _json_dumps({"marked_read": count})
+
+
+# ════════════════════════════════════════
+# Service Lock Tools
+# ════════════════════════════════════════
+
+
+@app.tool()
+@_with_timeout
+async def acquire_service_lock(service_id: str, agent_id: str, ttl_seconds: int = 300) -> str:
+    """Acquire an advisory lock on a singleton service/resource.
+
+    Use this before performing operations on shared resources (e.g. git push,
+    docker compose) to prevent conflicts with other agents.
+
+    The lock automatically expires after ttl_seconds (default 300s = 5 min).
+    If the lock is already held by another agent, returns the holder info.
+
+    Args:
+        service_id: Unique identifier for the service (e.g. 'git-push', 'docker-compose').
+        agent_id: Your agent ID.
+        ttl_seconds: Lock TTL in seconds (default 300). Max 3600.
+    """
+    if ttl_seconds > 3600:
+        ttl_seconds = 3600
+    store = await get_store()
+    result = await store.acquire_lock(service_id, agent_id, ttl_seconds)
+    return _json_dumps(result)
+
+
+@app.tool()
+@_with_timeout
+async def release_service_lock(service_id: str, agent_id: str) -> str:
+    """Release a service lock you hold.
+
+    Args:
+        service_id: The service lock to release.
+        agent_id: Your agent ID (must be the current holder).
+    """
+    store = await get_store()
+    released = await store.release_lock(service_id, agent_id)
+    return _json_dumps({"released": released, "service_id": service_id})
+
+
+@app.tool()
+@_with_timeout
+async def list_service_locks() -> str:
+    """List all active (non-expired) service locks.
+
+    Returns a list of currently held locks with holder and expiration info.
+    """
+    store = await get_store()
+    locks = await store.list_locks()
+    return _json_dumps({"locks": locks, "count": len(locks)})
+
+
+# ════════════════════════════════════════
+# Morning Brief Tools
+# ════════════════════════════════════════
+
+
+@app.tool()
+@_with_timeout
+async def generate_morning_brief() -> str:
+    """Generate today's Morning Brief on demand.
+
+    Returns a formatted daily digest with system health, work summary,
+    decisions needed, and cost report. Also saves to briefs/ directory.
+    """
+    from agents_mcp.morning_brief import save_brief
+    client = get_client()
+    store = await get_store()
+    cfg = get_config()
+    root_dir = cfg.get("_root_dir", ".")
+    briefs_dir = os.path.join(root_dir, "briefs")
+    filepath = await save_brief(client, store, config=cfg, output_dir=briefs_dir)
+    # Read and return the generated brief
+    with open(filepath) as f:
+        content = f.read()
+    return content
+
+
+# ════════════════════════════════════════
 # Background auto-dispatch
 # ════════════════════════════════════════
 
 
 _dispatch_task = None
+_v2_dispatch_task = None
 _usage_task = None
+_brief_task = None
 
 
 async def _usage_collection_loop(root_dir: str, agents: list[str], interval: int = 300):
@@ -1265,6 +1561,22 @@ async def _start_auto_dispatch_async():
     if seeded:
         logger.info(f"Seeded {seeded} schedule(s) from agents.yaml")
 
+    # Pub/Sub: backfill existing ticket assignees as subscribers
+    try:
+        all_tickets = await client.list_tickets(status="all", limit=0)
+        backfilled = 0
+        for ticket in all_tickets.get("tickets", []):
+            assignee = ticket.get("assignee")
+            tid = ticket.get("id")
+            if assignee and tid:
+                if await store.subscribe(tid, assignee):
+                    backfilled += 1
+                await store.subscribe(tid, "admin")
+        if backfilled:
+            logger.info(f"Pub/Sub: backfilled {backfilled} ticket subscription(s)")
+    except Exception as e:
+        logger.warning(f"Pub/Sub subscription backfill failed: {e}")
+
     _dispatch_task = asyncio.create_task(
         dispatch_loop(client, agents_list, tmux_session, store=store,
                       interval=30,
@@ -1273,6 +1585,29 @@ async def _start_auto_dispatch_async():
     )
     logger.info(f"Auto-dispatch background task started for {agents_list}")
 
+    # V2 dispatcher: task-driven, ephemeral sessions (behind feature flag)
+    v2_config = cfg.get("v2", {})
+    if v2_config.get("enabled", False):
+        from agents_mcp.session_manager import SessionManager
+        from agents_mcp.dispatcher_v2 import dispatch_loop_v2
+
+        max_sessions = v2_config.get("max_concurrent_sessions", 4)
+        session_mgr = SessionManager(
+            tmux_session=tmux_session,
+            root_dir=root_dir,
+            max_sessions=max_sessions,
+        )
+        project_config = cfg.get("projects", {})
+
+        global _v2_dispatch_task
+        _v2_dispatch_task = asyncio.create_task(
+            dispatch_loop_v2(client, session_mgr, store,
+                             interval=30, project_config=project_config)
+        )
+        logger.info(f"V2 dispatcher started: max_sessions={max_sessions}")
+    else:
+        logger.info("V2 dispatcher disabled (set v2.enabled: true to activate)")
+
     # Start usage collection background task (collect from ALL agents, not just dispatchable)
     global _usage_task
     all_agents = list(agents_expanded.keys())
@@ -1280,6 +1615,16 @@ async def _start_auto_dispatch_async():
         _usage_collection_loop(root_dir, all_agents, interval=300)
     )
     logger.info(f"Usage collection background task started for {all_agents}")
+
+    # Morning Brief: daily digest generation
+    from agents_mcp.morning_brief import brief_loop
+    global _brief_task
+    briefs_dir = os.path.join(root_dir, "briefs")
+    _brief_task = asyncio.create_task(
+        brief_loop(client, store, config=cfg, target_hour=7, target_minute=0,
+                   output_dir=briefs_dir)
+    )
+    logger.info(f"Morning Brief loop started (daily at 07:00, output: {briefs_dir}/)")
 
 
 # ════════════════════════════════════════

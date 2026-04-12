@@ -1,0 +1,71 @@
+# Scheduled Jobs Backup - 2026-04-06
+# All schedules paused by admin. To restore, use schedule_task MCP tool.
+
+schedules:
+  - id: 15
+    agent_id: founder-noah
+    interval_hours: 24
+    offset_hours: 12
+    prompt: >
+      定时唤醒：请推进你的创业工作。1) 用 get_inbox 检查未读消息
+      2) 用 list_tickets 检查待办任务 3) 检查 projects/ 目录下活跃项目的进展
+      4) 如果有活跃项目，与 product-mia 沟通进度，做商业判断
+      5) 如果没有活跃项目，研究市场寻找新的商业机会并制定项目计划。
+
+  - id: 10
+    agent_id: inspector
+    interval_hours: 24
+    offset_hours: 0
+    prompt: >
+      定时唤醒：请执行每日系统巡检。1) 用 get_inbox 检查未读消息
+      2) 使用 /inspect-agents skill 执行完整的 Agent 行为检查
+      3) 将检查报告保存到 journal 4) 对发现的问题创建修复 ticket
+      5) 重大问题通过 send_message 通知 admin。
+
+  - id: 1
+    agent_id: product-kevin
+    interval_hours: 24
+    offset_hours: 0
+    prompt: >
+      定时唤醒：请检查 Agent-Hub 项目的 GitHub Issues。查找与 Agent-Hub
+      相关的新 issue，评估是否需要创建 Leantime ticket 分配给 Dev 处理。
+      重点关注 bug 报告和功能请求。
+
+  - id: 13
+    agent_id: product-lisa
+    interval_hours: 24
+    offset_hours: 9
+    prompt: >
+      定时唤醒：请检查 VM MCP 项目状态。1) 用 get_inbox 检查未读消息，
+      特别是 user-jack 的测试反馈 2) 用 list_tickets 检查待办任务
+      3) 思考可以增加的新能力或改进方向 4) 规划功能改进，创建 ticket 给 Dev。
+
+  - id: 12
+    agent_id: product-sarah
+    interval_hours: 24
+    offset_hours: 6
+    prompt: >
+      定时唤醒：请检查 Trading 项目状态。1) 用 get_inbox 检查未读消息
+      2) 用 list_tickets 检查待办任务 3) 检查策略表现和 GitHub Actions
+      执行日志（gh run list）4) 分析是否需要调整策略或股票池
+      5) 如有改动需求，创建 agent:human ticket 等待审批。
+
+  - id: 14
+    agent_id: user-jack
+    interval_hours: 12
+    offset_hours: 3
+    prompt: >
+      定时唤醒：请测试 VM MCP 工具。1) 用 get_inbox 检查未读消息
+      2) 用 list_tickets 检查待办任务 3) 选择一个使用场景（网上购物调研、
+      制作 PPT、写代码部署网站、文件管理等），直接使用 VM MCP 的 MCP tools
+      进行测试 4) 发现问题后创建 ticket 给 product-lisa。
+
+  - id: 16
+    agent_id: user-sophia
+    interval_hours: 12
+    offset_hours: 0
+    prompt: >
+      定时唤醒：请继续你的用户测试工作。先用 get_inbox 检查是否有未读消息，
+      再用 list_tickets 检查待办任务。然后检查是否有活跃测试环境
+      （python3 tests/e2e_env.py list）。如果有，检查进度继续测试；
+      如果没有，构思一个新项目并创建隔离环境开始测试。

@@ -15,6 +15,7 @@ SUMMARY_FIELDS = {
     "id", "headline", "status", "tags", "priority",
     "date", "dateToEdit", "type", "dependingTicketId",
     "projectId", "milestoneid", "assignee", "start_time",
+    "phase",
 }
 
 DETAIL_FIELDS = SUMMARY_FIELDS | {
@@ -91,7 +92,8 @@ CREATE TABLE IF NOT EXISTS tickets (
     acceptanceCriteria  TEXT DEFAULT '',
     assignee            TEXT DEFAULT '',
     depends_on          TEXT DEFAULT '',
-    start_time          TEXT DEFAULT ''
+    start_time          TEXT DEFAULT '',
+    phase               TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS comments (
@@ -138,6 +140,7 @@ class SQLiteTaskClient:
             ("tickets", "depends_on", "TEXT DEFAULT ''"),
             ("comments", "author", "TEXT DEFAULT ''"),
             ("tickets", "start_time", "TEXT DEFAULT ''"),
+            ("tickets", "phase", "TEXT DEFAULT ''"),  # v2: plan/implement/test/deliver
         ]
         changed = False
         for table, column, col_type in migrations:

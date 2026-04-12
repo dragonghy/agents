@@ -158,30 +158,19 @@ def cmd_up(args):
             print(f"Error: template CLAUDE.md not found: {template_claude}", file=sys.stderr)
             sys.exit(1)
 
-    # 5. Create Leantime project
+    # 5. Generate project ID and test agents.yaml
     prod_cfg = load_yaml(PROD_CONFIG)
-    lt_cfg = prod_cfg["leantime"]
     project_name = f"e2e-{name}"
+    # Use timestamp-based project ID to avoid collisions
+    project_id = int(time.time()) % 100000
 
-    print(f"Creating Leantime project '{project_name}'...")
-    result = leantime_rpc(
-        "leantime.rpc.Projects.addProject",
-        {"values": {"name": project_name, "clientId": 1}},
-        lt_cfg,
-    )
-    project_id = result[0] if isinstance(result, list) else result
-    print(f"  Project ID: {project_id}")
+    print(f"Creating project '{project_name}' (id={project_id})...")
 
     # 6. Generate test agents.yaml
     os.makedirs(work_dir, exist_ok=True)
     test_config = {
         "tmux_session": f"e2e-{name}",
-        "leantime": {
-            "url": lt_cfg["url"],
-            "api_key": lt_cfg["api_key"],
-            "project_id": project_id,
-            "user_id": lt_cfg.get("user_id", 1),
-        },
+        "project_id": project_id,
         "daemon": {
             "host": "127.0.0.1",
             "port": port,
@@ -255,8 +244,6 @@ def cmd_up(args):
         "work_dir": work_dir,
         "config_path": config_path,
         "created_at": datetime.now().isoformat(),
-        "leantime_url": lt_cfg["url"],
-        "leantime_api_key": lt_cfg["api_key"],
     }
     with open(os.path.join(work_dir, "env.json"), "w") as f:
         json.dump(metadata, f, indent=2)
@@ -291,11 +278,6 @@ def cmd_down(args):
         meta = json.load(f)
 
     port = meta["port"]
-    project_id = meta["project_id"]
-    lt_cfg = {
-        "url": meta.get("leantime_url", "http://localhost:9090"),
-        "api_key": meta["leantime_api_key"],
-    }
 
     # 1. Stop daemon
     print(f"Stopping daemon on port {port}...")
@@ -304,19 +286,7 @@ def cmd_down(args):
     else:
         print("  Daemon not running")
 
-    # 2. Delete Leantime project
-    print(f"Deleting Leantime project {meta['project_name']} (id={project_id})...")
-    try:
-        leantime_rpc(
-            "leantime.rpc.AgentsApi.deleteProject",
-            {"id": project_id},
-            lt_cfg,
-        )
-        print("  Project deleted")
-    except Exception as e:
-        print(f"  Warning: failed to delete project: {e}", file=sys.stderr)
-
-    # 3. Remove work directory
+    # 2. Remove work directory
     print(f"Removing {work_dir}...")
     shutil.rmtree(work_dir, ignore_errors=True)
     print("  Done")

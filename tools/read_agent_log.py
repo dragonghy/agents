@@ -228,7 +228,7 @@ def detect_anomalies(messages: list[dict]) -> list[dict]:
             all_text.append((i, text))
             # Detect dispatch messages: must be short and match specific daemon dispatch patterns
             if len(text) < 500 and re.search(
-                r"你有待处理的 Leantime|你有 \d+ 条未读消息|定时唤醒[：:]",
+                r"你有待处理的|你有新任务|你有 \d+ 条未读消息|定时唤醒[：:]",
                 text,
             ):
                 dispatch_indices.append(i)

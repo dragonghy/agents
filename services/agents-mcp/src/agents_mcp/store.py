@@ -83,10 +83,49 @@ CREATE TABLE IF NOT EXISTS dispatch_events (
 
 CREATE INDEX IF NOT EXISTS idx_dispatch_agent
     ON dispatch_events(agent_id, created_at DESC);
+
+-- Pub/Sub: ticket subscriptions
+CREATE TABLE IF NOT EXISTS ticket_subscribers (
+    ticket_id   INTEGER NOT NULL,
+    agent_id    TEXT NOT NULL,
+    created_at  TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (ticket_id, agent_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sub_agent
+    ON ticket_subscribers(agent_id);
+
+-- Pub/Sub: event-driven notifications
+CREATE TABLE IF NOT EXISTS notifications (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id        TEXT NOT NULL,
+    ticket_id       INTEGER,
+    type            TEXT NOT NULL,
+    source_agent_id TEXT,
+    title           TEXT DEFAULT '',
+    body            TEXT DEFAULT '',
+    state           TEXT DEFAULT 'unread',
+    created_at      TEXT DEFAULT (datetime('now')),
+    read_at         TEXT DEFAULT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_notif_agent
+    ON notifications(agent_id, state, created_at DESC);
+
+-- Singleton service advisory locks
+CREATE TABLE IF NOT EXISTS service_locks (
+    service_id  TEXT PRIMARY KEY,
+    agent_id    TEXT NOT NULL,
+    acquired_at TEXT DEFAULT (datetime('now')),
+    expires_at  TEXT NOT NULL
+);
 """
 
 # Max dispatch events to keep per agent (auto-cleanup on insert)
 _MAX_DISPATCH_EVENTS_PER_AGENT = 200
+
+# Max notifications to keep per agent (auto-cleanup on insert)
+_MAX_NOTIFICATIONS_PER_AGENT = 500
 
 
 class AgentStore:
@@ -678,3 +717,231 @@ class AgentStore:
             "events": [dict(r) for r in rows],
             "total": total,
         }
+
+    # ── Pub/Sub: Subscriber methods ──
+
+    async def subscribe(self, ticket_id: int, agent_id: str) -> bool:
+        """Subscribe an agent to a ticket. Idempotent (INSERT OR IGNORE).
+
+        Returns True if a new subscription was created, False if already existed.
+        """
+        async with self._db.execute(
+            "INSERT OR IGNORE INTO ticket_subscribers (ticket_id, agent_id) VALUES (?, ?)",
+            (ticket_id, agent_id),
+        ) as cursor:
+            created = cursor.rowcount > 0
+        await self._db.commit()
+        return created
+
+    async def unsubscribe(self, ticket_id: int, agent_id: str) -> bool:
+        """Unsubscribe an agent from a ticket. Returns True if removed."""
+        async with self._db.execute(
+            "DELETE FROM ticket_subscribers WHERE ticket_id = ? AND agent_id = ?",
+            (ticket_id, agent_id),
+        ) as cursor:
+            removed = cursor.rowcount > 0
+        await self._db.commit()
+        return removed
+
+    async def get_subscribers(self, ticket_id: int) -> list[str]:
+        """Get all agent_ids subscribed to a ticket."""
+        async with self._db.execute(
+            "SELECT agent_id FROM ticket_subscribers WHERE ticket_id = ? ORDER BY agent_id",
+            (ticket_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [row["agent_id"] for row in rows]
+
+    async def get_subscriptions(self, agent_id: str) -> list[int]:
+        """Get all ticket_ids an agent is subscribed to."""
+        async with self._db.execute(
+            "SELECT ticket_id FROM ticket_subscribers WHERE agent_id = ? ORDER BY ticket_id",
+            (agent_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [row["ticket_id"] for row in rows]
+
+    # ── Pub/Sub: Notification methods ──
+
+    async def create_notification(
+        self,
+        agent_id: str,
+        type: str,
+        title: str,
+        ticket_id: int = None,
+        source_agent_id: str = None,
+        body: str = "",
+    ) -> int:
+        """Create a notification for an agent. Returns notification id.
+
+        Auto-cleans old notifications beyond _MAX_NOTIFICATIONS_PER_AGENT.
+        """
+        async with self._db.execute(
+            """INSERT INTO notifications
+               (agent_id, ticket_id, type, source_agent_id, title, body)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (agent_id, ticket_id, type, source_agent_id, title, body),
+        ) as cursor:
+            notif_id = cursor.lastrowid
+        await self._db.commit()
+
+        # Auto-cleanup: keep only the most recent notifications per agent
+        await self._db.execute(
+            """DELETE FROM notifications
+               WHERE agent_id = ? AND id NOT IN (
+                   SELECT id FROM notifications
+                   WHERE agent_id = ?
+                   ORDER BY created_at DESC
+                   LIMIT ?
+               )""",
+            (agent_id, agent_id, _MAX_NOTIFICATIONS_PER_AGENT),
+        )
+        await self._db.commit()
+        return notif_id
+
+    async def get_notifications(
+        self,
+        agent_id: str,
+        state: str = "unread",
+        limit: int = 20,
+        offset: int = 0,
+    ) -> dict:
+        """Get notifications for an agent.
+
+        Args:
+            state: 'unread', 'read', or 'all'.
+
+        Returns:
+            {"notifications": [...], "total": N, "unread_count": N}
+        """
+        where = "agent_id = ?"
+        params: list = [agent_id]
+        if state != "all":
+            where += " AND state = ?"
+            params.append(state)
+
+        async with self._db.execute(
+            f"SELECT COUNT(*) FROM notifications WHERE {where}", params
+        ) as cursor:
+            total = (await cursor.fetchone())[0]
+
+        async with self._db.execute(
+            "SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND state = 'unread'",
+            (agent_id,),
+        ) as cursor:
+            unread_count = (await cursor.fetchone())[0]
+
+        async with self._db.execute(
+            f"""SELECT * FROM notifications WHERE {where}
+                ORDER BY created_at DESC LIMIT ? OFFSET ?""",
+            params + [limit, offset],
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        return {
+            "notifications": [dict(r) for r in rows],
+            "total": total,
+            "unread_count": unread_count,
+        }
+
+    async def mark_notifications_read(
+        self, agent_id: str, notification_ids: list[int]
+    ) -> int:
+        """Mark notifications as read. Returns count updated."""
+        if not notification_ids:
+            return 0
+        placeholders = ", ".join("?" for _ in notification_ids)
+        async with self._db.execute(
+            f"""UPDATE notifications
+                SET state = 'read', read_at = datetime('now')
+                WHERE agent_id = ? AND id IN ({placeholders})""",
+            [agent_id] + notification_ids,
+        ) as cursor:
+            count = cursor.rowcount
+        await self._db.commit()
+        return count
+
+    async def get_unread_notification_count(self, agent_id: str) -> int:
+        """Get count of unread notifications for an agent."""
+        async with self._db.execute(
+            "SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND state = 'unread'",
+            (agent_id,),
+        ) as cursor:
+            return (await cursor.fetchone())[0]
+
+    # ── Service lock methods ──
+
+    async def acquire_lock(
+        self, service_id: str, agent_id: str, ttl_seconds: int = 300
+    ) -> dict:
+        """Try to acquire an advisory lock on a singleton service.
+
+        Expired locks are automatically reclaimed.
+
+        Returns:
+            {"acquired": bool, "holder": str, "expires_at": str}
+        """
+        # First, delete expired lock for this service
+        await self._db.execute(
+            "DELETE FROM service_locks WHERE service_id = ? AND expires_at < datetime('now')",
+            (service_id,),
+        )
+        await self._db.commit()
+
+        expires_at = f"datetime('now', '+{ttl_seconds} seconds')"
+        try:
+            await self._db.execute(
+                f"""INSERT INTO service_locks (service_id, agent_id, expires_at)
+                    VALUES (?, ?, {expires_at})""",
+                (service_id, agent_id),
+            )
+            await self._db.commit()
+            # Fetch the actual expires_at value
+            async with self._db.execute(
+                "SELECT expires_at FROM service_locks WHERE service_id = ?",
+                (service_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            return {"acquired": True, "holder": agent_id, "expires_at": row["expires_at"]}
+        except Exception:
+            # Lock already held — fetch the current holder
+            async with self._db.execute(
+                "SELECT agent_id, expires_at FROM service_locks WHERE service_id = ?",
+                (service_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row:
+                return {"acquired": False, "holder": row["agent_id"], "expires_at": row["expires_at"]}
+            # Race condition: lock was released between our check and insert
+            return {"acquired": False, "holder": "unknown", "expires_at": ""}
+
+    async def release_lock(self, service_id: str, agent_id: str) -> bool:
+        """Release a lock held by agent_id. Returns True if released."""
+        async with self._db.execute(
+            "DELETE FROM service_locks WHERE service_id = ? AND agent_id = ?",
+            (service_id, agent_id),
+        ) as cursor:
+            released = cursor.rowcount > 0
+        await self._db.commit()
+        return released
+
+    async def list_locks(self) -> list[dict]:
+        """List all active (non-expired) service locks."""
+        async with self._db.execute(
+            """SELECT service_id, agent_id, acquired_at, expires_at
+               FROM service_locks
+               WHERE expires_at >= datetime('now')
+               ORDER BY acquired_at"""
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def cleanup_expired_locks(self) -> int:
+        """Remove expired locks. Returns count removed."""
+        async with self._db.execute(
+            "DELETE FROM service_locks WHERE expires_at < datetime('now')"
+        ) as cursor:
+            count = cursor.rowcount
+        if count:
+            await self._db.commit()
+        return count

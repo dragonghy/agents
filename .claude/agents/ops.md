@@ -135,6 +135,19 @@ model: inherit
 - ❌ **严禁读取 `~/.aws/credentials`**
 - 所有 AWS 操作必须通过创建 ticket 给 ops 来完成
 
+### 基础设施问题 Escalation 规则
+
+遇到以下问题时，**必须先找 ops agent（通过 send_message 或创建 ticket）**，不要直接 escalate 给 Human：
+
+- SSH 连不上服务器 → 找 ops（它创建的服务器，有密钥）
+- 域名/DNS 问题 → 找 ops
+- SSL 证书问题 → 找 ops
+- 服务器磁盘满/性能问题 → 找 ops
+- 需要新的 AWS 资源 → 找 ops
+- 需要新的 credential/API key → 找 ops
+
+**只有 ops 也解决不了的问题**（如需要 Human 的个人账号登录、需要付款审批）才 escalate 给 Human。
+
 ### 通用原则
 
 - 涉及**花钱**的操作 → 必须通过 Ops Agent，且 Ops 会找 Human 批准

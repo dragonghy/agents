@@ -348,6 +348,16 @@ def _dispatch_agent_schedule(tmux_session: str, agent: str, prompt: str):
     _send_tmux_message(tmux_session, agent, prompt)
 
 
+def _dispatch_agent_notifications(tmux_session: str, agent: str, notif_count: int):
+    """Dispatch agent about pending notifications (Pub/Sub)."""
+    msg = (
+        f"你有 {notif_count} 条未读通知。"
+        f"请使用 get_notifications(agent_id=\"{agent}\") 查看并处理通知，"
+        f"然后检查未读消息（get_inbox）和待处理任务（assignee={agent}，status=3,4）。"
+    )
+    _send_tmux_message(tmux_session, agent, msg)
+
+
 async def deferred_dispatch(
     tmux_session: str,
     agent: str,
@@ -490,6 +500,15 @@ async def dispatch_cycle(client: SQLiteTaskClient, agents: list[str],
     for msg in unblocked:
         logger.info(msg)
 
+    # Clean up expired service locks
+    if store:
+        try:
+            expired_locks = await store.cleanup_expired_locks()
+            if expired_locks:
+                logger.info(f"Cleaned up {expired_locks} expired service lock(s)")
+        except Exception as e:
+            logger.debug(f"Service lock cleanup failed: {e}")
+
     # Load schedules from DB (once per cycle, shared across all agents)
     all_schedules = []
     if store:
@@ -505,7 +524,15 @@ async def dispatch_cycle(client: SQLiteTaskClient, agents: list[str],
             results[agent] = "rate_limited"
             continue
 
-        # Check for unread messages first
+        # Check for unread notifications (Pub/Sub)
+        notif_count = 0
+        if store:
+            try:
+                notif_count = await store.get_unread_notification_count(agent)
+            except Exception:
+                pass
+
+        # Check for unread messages
         unread_count = 0
         if store:
             unread_count = await store.get_unread_count(agent)
@@ -516,7 +543,7 @@ async def dispatch_cycle(client: SQLiteTaskClient, agents: list[str],
         schedule_prompts = []
         due_schedule_ids = []
 
-        if not unread_count and not has_tasks:
+        if not notif_count and not unread_count and not has_tasks:
             for sched in all_schedules:
                 if sched["agent_id"] != agent:
                     continue
@@ -528,7 +555,7 @@ async def dispatch_cycle(client: SQLiteTaskClient, agents: list[str],
 
         schedule_due = bool(schedule_prompts)
 
-        if not unread_count and not has_tasks and not schedule_due:
+        if not notif_count and not unread_count and not has_tasks and not schedule_due:
             results[agent] = "no_work"
             continue
 
@@ -555,8 +582,17 @@ async def dispatch_cycle(client: SQLiteTaskClient, agents: list[str],
             results[agent] = "rate_limited"
             continue
 
-        # Priority: messages > tasks > schedule
-        if unread_count:
+        # Priority: notifications > messages > tasks > schedule
+        if notif_count:
+            _dispatch_agent_notifications(tmux_session, agent, notif_count)
+            results[agent] = f"dispatched_notifications({notif_count})"
+            logger.info(f"Dispatched {agent} (notifications: {notif_count})")
+            if store:
+                try:
+                    await store.log_dispatch_event(agent, "notifications", f"{notif_count} unread notifications")
+                except Exception:
+                    pass
+        elif unread_count:
             _dispatch_agent_messages(tmux_session, agent, unread_count)
             results[agent] = f"dispatched_messages({unread_count})"
             logger.info(f"Dispatched {agent} (messages: {unread_count})")
