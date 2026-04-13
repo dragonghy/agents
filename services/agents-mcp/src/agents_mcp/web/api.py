@@ -335,43 +335,6 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
             response["comment_error"] = comment_error
         return JSONResponse(response)
 
-    async def dispatch_agent(request: Request) -> JSONResponse:
-        agent_id = request.path_params["id"]
-        from agents_mcp.dispatcher import dispatch_cycle
-        cfg = get_config()
-        tmux_session = cfg.get("tmux_session", "agents")
-        client = get_client()
-        store = await get_store()
-        results = await dispatch_cycle(client, [agent_id], tmux_session, store=store)
-        # Log manual dispatch event
-        result_str = results.get(agent_id, "unknown")
-        if result_str.startswith("dispatched"):
-            try:
-                await store.log_dispatch_event(agent_id, "manual", f"Manual dispatch via Web UI: {result_str}")
-            except Exception:
-                pass
-        # Broadcast dispatch result
-        from agents_mcp.web.events import event_bus
-        await event_bus.broadcast("dispatch_completed", results)
-        return JSONResponse(results)
-
-    async def dispatch_all_agents(request: Request) -> JSONResponse:
-        from agents_mcp.dispatcher import dispatch_cycle
-        cfg = get_config()
-        tmux_session = cfg.get("tmux_session", "agents")
-        agents_expanded = resolve_agents(cfg)
-        targets = [
-            name for name, info in agents_expanded.items()
-            if info.get("dispatchable", False)
-        ]
-        client = get_client()
-        store = await get_store()
-        results = await dispatch_cycle(client, targets, tmux_session, store=store)
-        # Broadcast dispatch result
-        from agents_mcp.web.events import event_bus
-        await event_bus.broadcast("dispatch_completed", results)
-        return JSONResponse(results)
-
     async def submit_feedback(request: Request) -> JSONResponse:
         body = await request.json()
         title = body.get("title")
@@ -653,8 +616,6 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
     # ── Health ──
 
     async def health(request: Request) -> JSONResponse:
-        from agents_mcp.dispatcher import get_rate_limit_info
-
         cfg = get_config()
         tmux_session = cfg.get("tmux_session", "agents")
 
@@ -682,10 +643,6 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
             "tmux_session": tmux_session,
             "tmux_active": tmux_ok,
         }
-        rate_limit = get_rate_limit_info()
-        if rate_limit:
-            result["rate_limit"] = rate_limit
-
         return JSONResponse(result)
 
     # ── Onboarding ──
@@ -923,8 +880,6 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
         Route("/v1/messages/send", send_message, methods=["POST"]),
         Route("/v1/tickets/create", create_ticket, methods=["POST"]),
         Route("/v1/tickets/{id}/update", update_ticket, methods=["PATCH", "POST"]),
-        Route("/v1/agents/{id}/dispatch", dispatch_agent, methods=["POST"]),
-        Route("/v1/agents/dispatch-all", dispatch_all_agents, methods=["POST"]),
         Route("/v1/feedback", submit_feedback, methods=["POST"]),
         Route("/v1/dispatch-events", list_dispatch_events),
         Route("/v1/service-locks", list_service_locks),
