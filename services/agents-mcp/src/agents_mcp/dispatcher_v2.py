@@ -129,10 +129,26 @@ async def dispatch_cycle_v2(
         actionable.append(task)
 
     # Check which tasks already have active sessions
+    # Check both in-memory state AND tmux windows (survives daemon restart)
     active_task_ids = {
         s.task_id for s in session_mgr._sessions.values()
         if s.status in ("starting", "active")
     }
+    # Also check tmux for existing ticket windows (deduplication after restart)
+    try:
+        import subprocess
+        tmux_out = subprocess.check_output(
+            ["tmux", "list-windows", "-t", session_mgr.tmux_session, "-F", "#{window_name}"],
+            text=True, timeout=5,
+        )
+        for wname in tmux_out.strip().split("\n"):
+            if wname.startswith("ticket-") and "-" in wname:
+                # Parse ticket-{id}-{type}
+                parts = wname.split("-")
+                if len(parts) >= 3 and parts[1].isdigit():
+                    active_task_ids.add(int(parts[1]))
+    except Exception:
+        pass
 
     for task in actionable:
         tid = task["id"]
