@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Session pool configuration
 MAX_CONCURRENT_SESSIONS = 4
-SESSION_IDLE_TIMEOUT = 300  # 5 min idle → release session
+SESSION_IDLE_TIMEOUT = 1800  # 30 min idle → release session (agents need time between stages)
 SESSION_CHECK_INTERVAL = 15  # seconds between idle checks
 
 _SUBPROCESS_TIMEOUT = 10
@@ -326,8 +326,27 @@ class SessionManager:
         del self._sessions[session_id]
         logger.info(f"Released session {session_id}")
 
+    async def _is_task_done(self, task_id: int) -> bool:
+        """Check if the task's ticket is marked as Done (status=0)."""
+        if not task_id:
+            return False
+        try:
+            # Import lazily to avoid circular imports
+            import agents_mcp.server as srv
+            client = srv.get_client()
+            ticket = await client.get_ticket(task_id)
+            return ticket.get("status") == 0
+        except Exception:
+            return False
+
     async def monitor_loop(self):
-        """Background loop to monitor sessions and release idle ones."""
+        """Background loop to monitor sessions and release idle ones.
+
+        Release policy:
+        - If ticket is Done (status=0) and session idle > 60s → release
+        - If ticket is NOT Done and session idle > SESSION_IDLE_TIMEOUT → release
+        - Never release while agent is actively working (esc to interrupt)
+        """
         logger.info("Session monitor started")
         while True:
             try:
@@ -340,9 +359,18 @@ class SessionManager:
 
                     if self.is_session_idle(sid):
                         idle_time = now - info.last_active_at
-                        if idle_time > SESSION_IDLE_TIMEOUT:
+
+                        # If task is done, release quickly (60s grace)
+                        task_done = await self._is_task_done(info.task_id)
+                        if task_done and idle_time > 60:
                             logger.info(
-                                f"Session {sid} idle for {int(idle_time)}s, releasing"
+                                f"Session {sid} task done + idle {int(idle_time)}s, releasing"
+                            )
+                            to_release.append(sid)
+                        # If task not done, only release after long timeout
+                        elif not task_done and idle_time > SESSION_IDLE_TIMEOUT:
+                            logger.warning(
+                                f"Session {sid} idle {int(idle_time)}s with task not done, releasing"
                             )
                             to_release.append(sid)
 
