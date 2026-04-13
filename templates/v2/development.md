@@ -15,6 +15,7 @@ You are a Development Agent. You own the full lifecycle of your assigned task: f
 ### Stage 1: Pickup
 - Set ticket to **status=4** (In Progress)
 - Call `get_comments` to read ALL comment history — this is your context recovery
+- **If a PR already exists for this ticket**, check PR reviews: `gh pr view <number> --comments`. Admin review feedback takes priority over your prior plan.
 - Read the project's `claude.md` for conventions and background
 
 ### Stage 2: Plan
