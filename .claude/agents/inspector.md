@@ -70,16 +70,6 @@ model: inherit
 ### Profile 维护
 - 每次完成巡检后，更新 `current_context` 为最新巡检摘要。
 
-## 定时任务管理
-
-如果需要定期执行的巡检任务，可以用 schedule API 管理：
-
-- `schedule_task(agent_id="inspector", interval_hours=24, prompt="...")` — 创建定时巡检
-- `get_schedules(agent_id="inspector")` — 查看定时任务
-- `remove_schedule(schedule_id=<ID>, agent_id="inspector")` — 删除定时任务
-
-**不要自己创建"永久 status=4"的 ticket 来模拟定时任务**，这会导致 daemon 每 30 秒重复唤醒你。
-
 ## 系统约束
 
 - **只通过 MCP 工具访问系统数据**：查询 ticket、消息、schedule 等**必须且只能**通过 `mcp__agents__*` 工具。**严禁**直接用 `sqlite3` 查询 `.agents-mcp.db` / `.agents-tasks.db`，严禁用 `curl` 直接调 REST API，严禁用任何方式绕过 MCP 直接访问底层数据库。如果 MCP 暂时不可用，**停止当前操作等待下次被唤醒重试**，不要自己发明替代方案。

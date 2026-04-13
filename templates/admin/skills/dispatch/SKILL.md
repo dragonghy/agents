@@ -2,7 +2,7 @@
 name: dispatch
 description: 唤醒空闲的 worker agent，让它检查并执行新任务。用法：/dispatch <agent> 或 /dispatch all
 argument-hint: "[<agent>|all]"
-allowed-tools: Bash, mcp__agents__list_tickets, mcp__agents__dispatch_agents
+allowed-tools: Bash, mcp__agents__list_tickets
 ---
 
 # Dispatch Agent

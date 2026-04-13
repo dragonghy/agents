@@ -19,7 +19,7 @@ Agent-Hub is a multi-agent development framework where autonomous AI agents coll
 │  ┌──────┴───────────────────────────────────────────────────┐  │
 │  │                    FastMCP Server                         │  │
 │  │  MCP Tools: list_tickets, create_ticket, reassign_ticket, │  │
-│  │  send_message, get_inbox, dispatch_agents, update_profile │  │
+│  │  send_message, get_inbox, get_profile, update_profile     │  │
 │  └──────┬───────────────────────────────────────────────────┘  │
 │         │ SSE                                                   │
 │  ┌──────┴──────┐  ┌──────────────┐  ┌────────────────────────┐│
