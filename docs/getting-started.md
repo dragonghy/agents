@@ -200,7 +200,7 @@ daemon:
 # Agent definitions
 agents:
   dev-alex:
-    template: dev             # Uses templates/dev/ for role config
+    type: development         # Uses templates/v2/development.md for role config
     role: Developer
     description: Tech design, code implementation, and testing
     dispatchable: true        # Daemon can auto-assign work
@@ -211,14 +211,14 @@ agents:
 **Key concepts:**
 
 - Each agent has a unique ID in the format `<role>-<name>` (e.g., `dev-alex`, `qa-lucy`)
-- `template` points to a directory under `templates/` containing the agent's system prompt and skills
+- `type` points to a v2 agent type defined in `templates/v2/<type>.md` (currently: `development`, `operations`, `assistant`)
 - `dispatchable: true` means the daemon will auto-assign pending tasks to this agent
 - `add_dirs` lists additional directories the agent can read/write
 
 **To customize your team**, edit the `agents:` section. You can:
 
 - Remove agents you don't need
-- Add new agents with existing templates (`dev`, `qa`, `product`, `admin`)
+- Add new agents using existing v2 types (`development`, `operations`, `assistant`) or `admin`/`ops`
 - Change agent descriptions and directory access
 
 ### Step 3: Generate Agent Workspaces
@@ -233,7 +233,7 @@ This creates the runtime workspace for each agent defined in `agents.yaml`:
 - `.claude/agents/<name>.md` — Agent definition with role-specific system prompt
 - `.mcp.json` — MCP server configuration (proxy to central daemon)
 - `agents/shared/team-roster.md` — Auto-generated team roster
-- Skill symlinks from `templates/shared/skills/` and `templates/<role>/skills/`
+- Skill symlinks from `templates/shared/skills/`
 
 ### Step 4: Start the System
 
@@ -464,6 +464,6 @@ python3 setup-agents.py
 ## Next Steps
 
 - Read [Architecture](architecture.md) to understand how the system works internally
-- Explore agent templates in `templates/` to customize agent behavior
-- Add project-specific skills in `templates/<role>/skills/`
+- Explore agent templates in `templates/v2/` to customize agent behavior
+- Add shared skills in `templates/shared/skills/`
 - Check the Web UI at `http://localhost:8765` for real-time monitoring
