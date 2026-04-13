@@ -357,6 +357,18 @@ class SessionManager:
                     if info.status == "releasing":
                         continue
 
+                    # Check if tmux window still exists; if not, clean up
+                    try:
+                        subprocess.check_output(
+                            ["tmux", "has-session", "-t",
+                             f"{self.tmux_session}:{info.tmux_window}"],
+                            stderr=subprocess.DEVNULL, timeout=5,
+                        )
+                    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                        logger.info(f"Session {sid} tmux window gone, cleaning up")
+                        to_release.append(sid)
+                        continue
+
                     if self.is_session_idle(sid):
                         idle_time = now - info.last_active_at
 
