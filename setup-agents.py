@@ -266,6 +266,45 @@ def validate_agent(agent_name, source_dir):
     return issues
 
 
+def setup_v2_agent_types(cfg, source_dir, output_dir):
+    """Sync v2 agent type definitions from templates/v2/ to .claude/agents/.
+
+    V2 agent types (development/operations/assistant) live in
+    templates/v2/<type>.md. Claude Code's --agent flag resolves
+    <type>.md under .claude/agents/, so we copy the v2 prompts into
+    place. This is the only writer of .claude/agents/<v2_type>.md;
+    setup_all() must not regenerate them from v1 templates.
+
+    templates/v2/*.md files are never written to by this script.
+
+    Returns the list of v2 type names synced.
+    """
+    agent_types = cfg.get("agent_types") or {}
+    if not agent_types:
+        return []
+
+    v2_dir = os.path.join(source_dir, "templates", "v2")
+    out_agents_defs = os.path.join(output_dir, ".claude", "agents")
+    ensure_dir(out_agents_defs)
+
+    synced = []
+    for type_name, type_cfg in agent_types.items():
+        prompt_template = (type_cfg or {}).get(
+            "prompt_template", f"templates/v2/{type_name}.md"
+        )
+        src = os.path.join(source_dir, prompt_template)
+        if not os.path.isfile(src):
+            src = os.path.join(v2_dir, f"{type_name}.md")
+        if not os.path.isfile(src):
+            print(f"  v2 {type_name}: SKIP (no prompt template found)")
+            continue
+        dst = os.path.join(out_agents_defs, f"{type_name}.md")
+        shutil.copy2(src, dst)
+        synced.append(type_name)
+        print(f"  v2 {type_name}: OK")
+    return synced
+
+
 def setup_all(cfg, config_path, source_dir, output_dir):
     """Set up workspaces for all agents.
 
@@ -278,8 +317,30 @@ def setup_all(cfg, config_path, source_dir, output_dir):
     source_templates_dir = os.path.join(source_dir, "templates")
     output_agents_dir = os.path.join(output_dir, "agents")
 
-    agents_expanded = resolve_agents(cfg)
+    # V2: sync agent type prompts first so we can skip any v1 entry
+    # whose name collides with a v2 agent type.
+    v2_types = set(setup_v2_agent_types(cfg, source_dir, output_dir))
+
+    all_agents = resolve_agents(cfg)
+    # V2 migration: only scaffold workspaces for dispatchable v1 agents.
+    # Non-dispatchable agents (frozen projects, scheduled-only, etc.)
+    # no longer need .mcp.json / skill symlinks — v2 ephemeral sessions
+    # handle task execution. Also drop any v1 entry shadowed by a v2
+    # agent type; the v2 prompt is authoritative.
+    skipped = []
+    agents_expanded = {}
+    for name, info in all_agents.items():
+        if name in v2_types:
+            skipped.append((name, "shadowed by v2 agent type"))
+            continue
+        if not info.get("dispatchable", False):
+            skipped.append((name, "non-dispatchable"))
+            continue
+        agents_expanded[name] = info
+
     print(f"Setting up {len(agents_expanded)} agent(s)...")
+    for name, reason in skipped:
+        print(f"  {name}: SKIP ({reason})")
     if output_dir != source_dir:
         print(f"  source: {source_dir}")
         print(f"  output: {output_dir}")
@@ -344,7 +405,9 @@ def setup_all(cfg, config_path, source_dir, output_dir):
     generate_mcp_json(cfg, config_path, output_dir, source_dir)
     print("  .mcp.json (root): OK")
 
-    generate_roster(cfg, agents_expanded, output_agents_dir)
+    # Roster reflects the full set of defined agents (dispatchable + frozen)
+    # so agents remain aware of frozen team members while v1 phases out.
+    generate_roster(cfg, all_agents, output_agents_dir)
     print("  team-roster.md: OK")
 
     if all_issues:
