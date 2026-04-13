@@ -102,10 +102,7 @@ git pull origin main
 ./restart_all_agents.sh              # 改了 agents.yaml 结构
 ```
 
-重启后通过 dispatch 恢复在途工作：
-```
-dispatch_agents(agent="all")
-```
+重启后 v2 daemon 的 auto-dispatch 循环会自动为在途 ticket 拉起新的 session，无需手动 dispatch。
 
 ### Step 6: 清理 Worktree
 

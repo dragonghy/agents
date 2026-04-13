@@ -157,18 +157,7 @@ tmux capture-pane -t agents:<agent-name> -p | tail -10
 
 #### Step 4: Post-restart — 恢复在途工作
 
-重启后，agent 的 Claude Code session 通过 `--resume` 恢复，但 agent 可能不知道自己之前正在做什么。需要主动 dispatch 让它们检查：
-
-```
-# 方式 1：通过 MCP 统一 dispatch 所有 agent
-dispatch_agents(agent="all")
-
-# 方式 2：只 dispatch 有在途工作的 agent
-dispatch_agents(agent="dev-alex")
-dispatch_agents(agent="qa-lucy")
-```
-
-Dispatch 会向 agent 发送提示，让它检查 in-progress ticket 并继续执行。
+重启后，v2 daemon 的 auto-dispatch 循环会自动扫描在途 ticket 并为每个 in-progress ticket 拉起一个新的 ephemeral session。无需手动 dispatch。
 
 #### Step 5: Post-restart — 验证恢复
 
@@ -192,6 +181,5 @@ list_tickets(project_id=3, status="4")
 # 改了 agents.yaml → 全部重启
 ./restart_all_agents.sh
 
-# 重启后恢复工作
-# （通过 MCP）dispatch_agents(agent="all")
+# 重启后 v2 daemon auto-dispatch 会自动恢复在途 ticket
 ```

@@ -1,7 +1,7 @@
 ---
 name: tasks
 description: 任务管理使用手册。查看任务管理、Agent 间任务分发、评论沟通的规范。
-allowed-tools: mcp__agents__list_tickets, mcp__agents__get_ticket, mcp__agents__create_ticket, mcp__agents__update_ticket, mcp__agents__add_comment, mcp__agents__get_comments, mcp__agents__get_status_labels, mcp__agents__upsert_subtask, mcp__agents__get_all_subtasks, mcp__agents__list_agents, mcp__agents__dispatch_agents, mcp__agents__get_agent_status, mcp__agents__suggest_assignee, mcp__agents__send_message, mcp__agents__get_inbox, mcp__agents__get_conversation, mcp__agents__mark_messages_read, mcp__agents__update_profile, mcp__agents__get_profile, mcp__agents__reassign_ticket
+allowed-tools: mcp__agents__list_tickets, mcp__agents__get_ticket, mcp__agents__create_ticket, mcp__agents__update_ticket, mcp__agents__add_comment, mcp__agents__get_comments, mcp__agents__get_status_labels, mcp__agents__upsert_subtask, mcp__agents__get_all_subtasks, mcp__agents__list_agents, mcp__agents__get_agent_status, mcp__agents__suggest_assignee, mcp__agents__send_message, mcp__agents__get_inbox, mcp__agents__get_conversation, mcp__agents__mark_messages_read, mcp__agents__update_profile, mcp__agents__get_profile, mcp__agents__reassign_ticket
 ---
 
 # 任务管理使用手册

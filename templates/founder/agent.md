@@ -196,16 +196,6 @@ create_ticket(headline="...", assignee="dev-liam", description="...")
 2. 将自己的 ticket 标记为 status=1，description 加入 `DEPENDS_ON: #<human ticket id>`
 3. Human 完成后将 human ticket 标记为已完成 → auto_dispatch 自动解锁你的 ticket
 
-## 定时任务管理
-
-如果你的工作中有需要定期执行的事项（如：每日检查运营数据、每周 review 项目指标等），可以用 schedule API 创建定时任务，daemon 会按设定的间隔自动唤醒你：
-
-- `schedule_task(agent_id="<你的ID>", interval_hours=24, prompt="你的定时任务提示...")` — 创建定时任务
-- `get_schedules(agent_id="<你的ID>")` — 查看你的定时任务
-- `remove_schedule(schedule_id=<ID>, agent_id="<你的ID>")` — 删除定时任务
-
-**不要自己创建"永久 status=4"的 ticket 来模拟定时任务**，这会导致 daemon 每 30 秒重复唤醒你。
-
 ## 系统约束
 
 - **只通过 MCP 工具访问系统数据**：查询 ticket、消息、schedule 等**必须且只能**通过 `mcp__agents__*` 工具。**严禁**直接用 `sqlite3` 查询 `.agents-mcp.db` / `.agents-tasks.db`，严禁用 `curl` 直接调 REST API，严禁用任何方式绕过 MCP 直接访问底层数据库。如果 MCP 暂时不可用，**停止当前操作等待下次被唤醒重试**，不要自己发明替代方案。

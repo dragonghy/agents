@@ -210,11 +210,7 @@ _TOOL_TIMEOUTS = {
     "update_depends_on": 30,
     "suggest_assignee": 120,
     "get_agent_status": 120,
-    "get_schedules": 120,
-    "schedule_task": 120,
-    "remove_schedule": 120,
     # Slow tools: involve subprocess, tmux, or heavy operations (300s)
-    "dispatch_agents": 300,
     "request_restart": 300,
     # Pub/Sub tools: fast DB operations (30s)
     "subscribe_to_ticket": 30,
@@ -792,34 +788,6 @@ async def suggest_assignee(role: str = None, task_context: str = None) -> str:
     return _json_dumps(result, indent=2)
 
 
-@app.tool()
-@_with_timeout
-async def dispatch_agents(agent: str = "all") -> str:
-    """Manually trigger dispatch for one or all agents.
-
-    Args:
-        agent: Agent name or 'all' for all dispatchable agents.
-    """
-    from agents_mcp.dispatcher import dispatch_cycle
-
-    cfg = get_config()
-    tmux_session = cfg.get("tmux_session", "agents")
-    agents_expanded = resolve_agents(cfg)
-
-    if agent == "all":
-        targets = [
-            name for name, info in agents_expanded.items()
-            if info.get("dispatchable", False)
-        ]
-    else:
-        targets = [agent]
-
-    client = get_client()
-    store = await get_store()
-    results = await dispatch_cycle(client, targets, tmux_session, store=store)
-    return _json_dumps(results, indent=2)
-
-
 # ════════════════════════════════════════
 # Profile & Messaging Tools
 # ════════════════════════════════════════
@@ -1153,158 +1121,6 @@ async def request_restart(agent_id: str, target_agent_id: str = "", reason: str 
         "requested_by": agent_id,
         "message": f"Restart of {target} will happen in ~2 seconds. A continuation message has been sent.",
     })
-
-
-# ════════════════════════════════════════
-# Agent Lifecycle Tools
-# ════════════════════════════════════════
-
-
-@app.tool()
-@_with_timeout
-async def get_agent_session(agent_id: str) -> str:
-    """Get the stored session ID for an agent.
-
-    Returns the session ID used for --resume on restart.
-    """
-    config_path = os.environ.get("AGENTS_CONFIG_PATH", ".")
-    root_dir = os.path.dirname(os.path.abspath(config_path))
-    config_script = os.path.join(root_dir, "agent-config.py")
-
-    proc = await asyncio.create_subprocess_exec(
-        sys.executable, config_script, "get-session", agent_id,
-        cwd=root_dir,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
-    sid = stdout.decode().strip()
-    return _json_dumps({"agent_id": agent_id, "session_id": sid or None})
-
-
-@app.tool()
-@_with_timeout
-async def capture_agent_session(agent_id: str) -> str:
-    """Detect and save the latest session ID for an agent.
-
-    Scans ~/.claude/projects/ for the most recent JSONL file matching
-    the agent's workspace, then saves it to .agent-sessions.
-
-    Use after starting or restarting an agent to ensure --resume works.
-    """
-    config_path = os.environ.get("AGENTS_CONFIG_PATH", ".")
-    root_dir = os.path.dirname(os.path.abspath(config_path))
-    config_script = os.path.join(root_dir, "agent-config.py")
-
-    # Detect session
-    proc = await asyncio.create_subprocess_exec(
-        sys.executable, config_script, "detect-session", agent_id,
-        cwd=root_dir,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
-    sid = stdout.decode().strip()
-
-    if not sid:
-        return _json_dumps({
-            "agent_id": agent_id,
-            "status": "not_found",
-            "message": "No session JSONL found. The agent may not have started yet.",
-        })
-
-    # Save session
-    proc = await asyncio.create_subprocess_exec(
-        sys.executable, config_script, "set-session", agent_id, sid,
-        cwd=root_dir,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    await asyncio.wait_for(proc.communicate(), timeout=10)
-
-    return _json_dumps({
-        "agent_id": agent_id,
-        "status": "captured",
-        "session_id": sid,
-    })
-
-
-# ════════════════════════════════════════
-# Schedule Management Tools
-# ════════════════════════════════════════
-
-
-@app.tool()
-@_with_timeout
-async def schedule_task(
-    agent_id: str,
-    interval_hours: float,
-    prompt: str,
-) -> str:
-    """Create a scheduled task that periodically dispatches an agent with a prompt.
-
-    The schedule runs automatically: when interval_hours elapses since the last
-    dispatch, the agent is woken up with the given prompt message.
-
-    Permission: Admin can create schedules for any agent. Other agents should
-    only create schedules for themselves (enforced by convention).
-
-    Args:
-        agent_id: Target agent ID for the schedule.
-        interval_hours: How often to dispatch (e.g. 24 for daily, 12 for twice daily).
-        prompt: The message to send when the schedule triggers.
-    """
-    store = await get_store()
-    result = await store.create_schedule(agent_id, interval_hours, prompt)
-    logger.info(f"Schedule created: #{result['id']} for {agent_id} every {interval_hours}h")
-    return _json_dumps(result, indent=2)
-
-
-@app.tool()
-@_with_timeout
-async def get_schedules(agent_id: str = None) -> str:
-    """Get scheduled tasks for an agent or all agents.
-
-    Args:
-        agent_id: Agent ID to filter by. Pass 'all' or omit to get all schedules
-                  (admin only by convention). Other agents should pass their own ID.
-    """
-    store = await get_store()
-    if agent_id and agent_id != "all":
-        result = await store.get_agent_schedules(agent_id)
-    else:
-        result = await store.get_all_schedules()
-    return _json_dumps(result, indent=2)
-
-
-@app.tool()
-@_with_timeout
-async def remove_schedule(schedule_id: int, agent_id: str) -> str:
-    """Remove a scheduled task.
-
-    Permission: Admin can remove any schedule. Other agents can only remove
-    their own schedules (server-side enforced).
-
-    Args:
-        schedule_id: ID of the schedule to remove.
-        agent_id: Your agent ID (for permission check).
-    """
-    store = await get_store()
-    schedule = await store.get_schedule(schedule_id)
-    if not schedule:
-        return _json_dumps({"error": f"Schedule #{schedule_id} not found"})
-
-    # Permission check: non-admin agents can only remove their own schedules
-    if agent_id != "admin" and schedule["agent_id"] != agent_id:
-        return _json_dumps({
-            "error": f"Permission denied: {agent_id} cannot remove schedule "
-                     f"belonging to {schedule['agent_id']}. Only admin or the "
-                     f"schedule owner can remove it."
-        })
-
-    deleted = await store.delete_schedule(schedule_id)
-    logger.info(f"Schedule #{schedule_id} removed by {agent_id}")
-    return _json_dumps({"status": "deleted", "schedule_id": schedule_id})
 
 
 # ════════════════════════════════════════
