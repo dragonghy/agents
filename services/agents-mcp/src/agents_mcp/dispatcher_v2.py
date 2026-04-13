@@ -135,6 +135,8 @@ async def dispatch_cycle_v2(
         if s.status in ("starting", "active")
     }
     # Also check tmux for existing ticket windows (deduplication after restart)
+    # If we find orphan sessions (tmux window exists but not in _sessions),
+    # adopt them and ensure ticket status=4
     try:
         import subprocess
         tmux_out = subprocess.check_output(
@@ -146,7 +148,27 @@ async def dispatch_cycle_v2(
                 # Parse ticket-{id}-{type}
                 parts = wname.split("-")
                 if len(parts) >= 3 and parts[1].isdigit():
-                    active_task_ids.add(int(parts[1]))
+                    orphan_tid = int(parts[1])
+                    active_task_ids.add(orphan_tid)
+                    # Adopt orphan: register in session manager + ensure status=4
+                    if wname not in {s.tmux_window for s in session_mgr._sessions.values()}:
+                        from agents_mcp.session_manager import SessionInfo
+                        agent_type = "-".join(parts[2:])  # e.g. "development"
+                        info = SessionInfo(
+                            session_id=wname,
+                            agent_type=agent_type,
+                            task_id=orphan_tid,
+                            project=None,
+                            tmux_window=wname,
+                            status="active",
+                        )
+                        session_mgr._sessions[wname] = info
+                        # Ensure ticket is status=4
+                        try:
+                            await client.update_ticket(orphan_tid, status=4)
+                        except Exception:
+                            pass
+                        logger.info(f"Adopted orphan session {wname} for task #{orphan_tid}")
     except Exception:
         pass
 
