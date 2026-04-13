@@ -2,7 +2,7 @@
 """E2E isolated test environment manager.
 
 Creates and destroys isolated test environments for QA agents.
-Each environment gets its own daemon port, Leantime project, and work directory.
+Each environment gets its own daemon port, project ID, and work directory.
 
 Usage:
   python3 tests/e2e_env.py up      [--name NAME] [--port PORT] [--preset minimal|full]
@@ -19,7 +19,6 @@ import shutil
 import subprocess
 import sys
 import time
-import urllib.request
 from datetime import datetime
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -42,34 +41,6 @@ def load_yaml(path):
     with open(path) as f:
         cfg = yaml.safe_load(f)
     return resolve_env_vars(cfg)
-
-
-def leantime_rpc(method, params=None, config=None):
-    """Call Leantime JSON-RPC API."""
-    if config is None:
-        config = load_yaml(PROD_CONFIG).get("leantime", {})
-    url = config["url"].rstrip("/") + "/api/jsonrpc"
-    api_key = config["api_key"]
-
-    payload = json.dumps({
-        "jsonrpc": "2.0",
-        "method": method,
-        "params": params or {},
-        "id": 1,
-    }).encode()
-    req = urllib.request.Request(
-        url, data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "x-api-key": api_key,
-        },
-    )
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        data = json.loads(resp.read())
-    if "error" in data:
-        err = data["error"]
-        raise RuntimeError(f"Leantime API error {err.get('code')}: {err.get('message')} - {err.get('data', '')}")
-    return data.get("result")
 
 
 def port_is_free(port):
@@ -356,7 +327,7 @@ def _generate_archive_readme(showcase_dir, name, meta):
         if meta.get("created_at"):
             lines.append(f"- **创建时间**: {meta['created_at'][:19]}")
         if meta.get("project_id"):
-            lines.append(f"- **Leantime Project ID**: {meta['project_id']}")
+            lines.append(f"- **Project ID**: {meta['project_id']}")
         if meta.get("port"):
             lines.append(f"- **Daemon Port**: {meta['port']}")
         if meta.get("preset"):
