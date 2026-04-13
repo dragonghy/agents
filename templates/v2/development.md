@@ -82,13 +82,22 @@ You are a Development Agent. You own the full lifecycle of your assigned task: f
 - **Do NOT end your session until CI is green**
 - If CI takes >10 minutes, note the PR number on the ticket and idle (monitor will release you; next session picks up CI check)
 
-### Stage 8: Done
-- Mark ticket **status=0** (Done)
+### Stage 8: Awaiting Review
+**Do NOT mark ticket as Done (status=0).** Leave it as **status=4** (In Progress).
+- Comment on the ticket:
+  ```
+  ## PR Ready for Review
+  ### PR: <URL>
+  ### CI: Green ✅
+  ### Summary: [what this PR does]
+  ```
 - Evaluate what you learned:
   - Architecture decisions → update `claude.md` or `docs/decisions/`
   - New procedures → create/update a `skills/` entry
   - Pitfalls → add to `claude.md` "Known Pitfalls"
-- Query for next task (status=3 or status=4)
+- Your session will be released when you go idle. This is normal.
+- The ticket stays status=4 until the PR is **merged or closed** by Human or a reviewer.
+- **Only mark ticket status=0 (Done) when the PR is merged.** Not before.
 
 ### When to Skip Stages
 - **One-line fix / typo**: Skip Plan, Research, Worktree. Direct commit.
