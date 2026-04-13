@@ -112,8 +112,7 @@ class SessionManager:
                 )
                 return None
 
-            session_id = f"{agent_type[:3]}-{self._next_id:03d}"
-            self._next_id += 1
+            session_id = f"ticket-{task_id}-{agent_type}"
 
             # Map agent type to agent definition file
             agent_def = self._resolve_agent_def(agent_type)
