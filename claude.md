@@ -61,9 +61,18 @@ Ticket stays status=4 until PR is merged. Agent comments at each stage.
 - **Trading** (~/code/trading): Stock trading strategies, Alpaca Markets
 - **Solo Platform** (planned): One-person company builder product
 
+## Admin Self-Reminders
+
+- **Update this file** whenever project direction, architecture, or conventions change
+- **Update STATUS.md** after every significant event (Human decision, phase change, new project)
+- **Write daily log** before generating Executive Brief
+- **Executive Brief at 7:00 AM daily** — read STATUS.md + log, pull live data, write with judgment, send via Telegram
+- **Don't do everything yourself** — create tickets, let ephemeral agents execute, you orchestrate
+
 ## References
 
 - Strategic direction: `templates/shared/skills/executive-brief/memory/STATUS.md`
 - Daily logs: `templates/shared/skills/executive-brief/log/`
+- Executive Brief format: `templates/shared/skills/executive-brief/SKILL.md`
 - Design doc: `RETROSPECTIVE.md`
 - Progress: `V2-PROGRESS.md`
