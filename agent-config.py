@@ -68,6 +68,18 @@ def save_sessions(sessions):
 
 
 def cmd_list_agents(cfg, _args):
+    """List dispatchable v1 agents (the set restart_all_agents.sh --all
+    actually launches). Non-dispatchable entries are frozen under v2 and
+    no longer get tmux windows or workspace scaffolding — use
+    `list-all-defined` for the unfiltered roster."""
+    agents = resolve_agents(cfg)
+    for name, info in agents.items():
+        if info.get("dispatchable", False):
+            print(name)
+
+
+def cmd_list_all_defined(cfg, _args):
+    """Every agent entry in agents.yaml, including frozen ones."""
     agents = resolve_agents(cfg)
     for name in agents:
         print(name)
@@ -78,6 +90,12 @@ def cmd_list_workers(cfg, _args):
     for name, info in agents.items():
         if info.get("dispatchable", False):
             print(name)
+
+
+def cmd_list_agent_types(cfg, _args):
+    """List v2 agent types (development/operations/assistant)."""
+    for name in (cfg.get("agent_types") or {}):
+        print(name)
 
 
 def cmd_get(cfg, args):
@@ -180,13 +198,6 @@ def cmd_generate_roster(cfg, _args):
     print("\n".join(lines))
 
 
-def cmd_leantime(cfg, args):
-    lt = cfg.get("leantime", {})
-    field = args.field
-    val = lt.get(field, "")
-    print(val)
-
-
 def cmd_tmux_session(cfg, _args):
     print(cfg.get("tmux_session", "agents"))
 
@@ -211,8 +222,10 @@ def main():
     parser = argparse.ArgumentParser(description="Agent config CLI helper")
     sub = parser.add_subparsers(dest="command")
 
-    sub.add_parser("list-agents", help="List all agent names")
+    sub.add_parser("list-agents", help="List dispatchable v1 agents (launched by restart_all_agents.sh --all)")
+    sub.add_parser("list-all-defined", help="List every agent entry in agents.yaml (includes frozen)")
     sub.add_parser("list-workers", help="List dispatchable agents")
+    sub.add_parser("list-agent-types", help="List v2 agent types (development/operations/assistant)")
 
     p_get = sub.add_parser("get", help="Get agent field value")
     p_get.add_argument("agent")
@@ -233,9 +246,6 @@ def main():
 
     sub.add_parser("generate-roster", help="Generate team roster markdown")
 
-    p_lt = sub.add_parser("leantime", help="Get leantime config field")
-    p_lt.add_argument("field")
-
     sub.add_parser("tmux-session", help="Get tmux session name")
 
     sub.add_parser("daemon-host", help="Get resolved daemon host (for restart_all_agents.sh)")
@@ -251,14 +261,15 @@ def main():
 
     commands = {
         "list-agents": cmd_list_agents,
+        "list-all-defined": cmd_list_all_defined,
         "list-workers": cmd_list_workers,
+        "list-agent-types": cmd_list_agent_types,
         "get": cmd_get,
         "get-add-dirs": cmd_get_add_dirs,
         "get-session": cmd_get_session,
         "set-session": cmd_set_session,
         "detect-session": cmd_detect_session,
         "generate-roster": cmd_generate_roster,
-        "leantime": cmd_leantime,
         "tmux-session": cmd_tmux_session,
         "daemon-host": cmd_daemon_host,
         "daemon-port": cmd_daemon_port,
