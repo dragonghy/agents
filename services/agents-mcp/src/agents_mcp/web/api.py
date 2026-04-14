@@ -561,7 +561,12 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
         return PlainTextResponse(brief, media_type="text/markdown")
 
     async def post_human_message(request: Request) -> JSONResponse:
-        """Receive a message from Human (via Telegram Bot or other channel)."""
+        """Receive a message from Human (via Telegram Bot or other channel).
+
+        Message routing logic (per HUMAN-COMMUNICATION.md §4.4):
+        - /start, /brief, /status → handled by bot directly (not routed here)
+        - Regular messages → stored + auto-create a ticket for agent to respond
+        """
         body = await request.json()
         text = body.get("body", "")
         channel = body.get("channel", "telegram")
@@ -574,7 +579,64 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
             channel=channel,
             context_type=body.get("context_type", ""),
         )
-        return JSONResponse({"received": True, "message_id": msg_id})
+
+        # Message routing: create a ticket so v2 dispatcher spawns an agent to respond
+        routed = False
+        try:
+            # Skip routing for bot commands (already handled by bot)
+            if not text.startswith("/"):
+                client = get_client()
+
+                # Check if this looks like a brief response (approve/defer/cancel + ticket refs)
+                from agents_mcp.brief_responder import parse_brief_response
+                actions = parse_brief_response(text)
+                has_ticket_actions = any(a.get("ticket_id") for a in actions)
+
+                if has_ticket_actions:
+                    # Brief response → execute directly, reply with confirmation
+                    from agents_mcp.brief_responder import execute_actions
+                    results = await execute_actions(actions, client, store)
+                    summary = ", ".join(
+                        f"#{r['ticket_id']} {r['action']}" for r in results if r.get("ticket_id")
+                    )
+                    # Send confirmation back to Human
+                    await store.insert_human_message(
+                        direction="outbound", body=f"✅ Done: {summary}",
+                        channel="system", context_type="execution_confirmation",
+                    )
+                    routed = True
+                else:
+                    # General question/instruction → create ticket for agent to handle
+                    headline = f"Human message: {text[:80]}"
+                    # Include recent conversation context in description
+                    recent = await store.get_human_conversation(limit=5)
+                    context_lines = []
+                    for m in reversed(recent.get("messages", [])):
+                        direction = "→" if m["direction"] == "outbound" else "←"
+                        context_lines.append(f"{direction} {m['body'][:200]}")
+                    context_str = "\n".join(context_lines[-5:])
+
+                    ticket_id = await client.create_ticket(
+                        headline=headline,
+                        description=(
+                            f"Human sent a message via Telegram that needs a response.\n\n"
+                            f"## Human's Message\n{text}\n\n"
+                            f"## Recent Conversation Context\n```\n{context_str}\n```\n\n"
+                            f"## Instructions\n"
+                            f"1. Understand what Human is asking\n"
+                            f"2. Research/check the relevant systems\n"
+                            f"3. Compose a clear, concise reply\n"
+                            f"4. Send the reply via send_human_message() MCP tool\n"
+                            f"5. Mark this ticket Done"
+                        ),
+                        tags="phase:implement,human-message",
+                    )
+                    routed = True
+                    logger.info(f"Routed Human message to ticket #{ticket_id}")
+        except Exception as e:
+            logger.warning(f"Human message routing failed: {e}")
+
+        return JSONResponse({"received": True, "message_id": msg_id, "routed": routed})
 
     async def get_human_outbox(request: Request) -> JSONResponse:
         """Get outbound messages pending delivery to Human (for Telegram Bot polling)."""
