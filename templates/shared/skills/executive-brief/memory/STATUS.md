@@ -1,61 +1,79 @@
 # Executive Status — Agent Harness
 
 > Last updated: 2026-04-13
-> Updated by: admin
+> Updated by: admin (after strategic direction session with Human)
 
 ## Project
 
-**Agent Harness** — A self-running multi-agent development platform. Agents autonomously pick up tasks, write code, create PRs, and deliver. Human acts as Chairman (direction + decisions), admin acts as COO (execution + management).
+**Agent Harness** — A self-running multi-agent development platform. Long-term vision: productize into a platform that enables anyone to build a one-person company through AI-guided decision-making.
+
+## Strategic Direction (from Human, 2026-04-13)
+
+Three parallel tracks:
+
+### Track 1: Agent Capability Expansion
+Prove that agents can handle real-world tasks autonomously:
+- **Personal assistant tasks**: Pickleball court booking (browser automation), travel research with evaluation criteria
+- **Development tasks**: Full lifecycle — plan, code, test, deploy, ship to production
+- **Goal**: Demonstrate the agent can be a genuine personal assistant + developer, not just a ticket processor
+
+### Track 2: Trading Project (URGENT)
+- Existing stock trading project has been losing money — Human is anxious
+- Needs agent to either: (a) optimize existing strategies, or (b) actively manage trades
+- Constraint: agent must not buy Human's prohibited stock list
+- This is a real, live project with financial consequences — high priority
+
+### Track 3: Startup Product — "One-Person Company Platform"
+Core insight: In the AI era, one person can build what used to require a team. But most people don't know where to start.
+
+Product concept:
+- User comes in not knowing what to do
+- Platform does research, generates ideas, presents options
+- User makes choices (A/B/C/D) — like a "choose your adventure" game
+- AI executes: registers domain, builds product, deploys, sets up payment
+- Platform capabilities: domain registration, deployment, payment, identity — all shared infrastructure
+- Each choice narrows the funnel until a real product exists
+
+Key challenges:
+- User still needs to provide: money, basic info, final decisions
+- Some steps can't be fully automated (but minimize these)
+- The "choice-making" UX is the product differentiator
+
+Revenue model: Platform fee + potentially rev share on products built
 
 ## Current Phase
 
-**V2 Stabilization & Cleanup** (started 2026-04-12)
+**V2 Stabilization Complete** → transitioning to **Capability Expansion + Product Exploration**
 
-V2 migration is functionally complete:
-- Ephemeral agent sessions (spawn per task, release when done) ✅
-- Task-driven dispatch (v1 agent-polling disabled) ✅
-- Memory system (claude.md + skills + ticket comments) ✅
-- Telegram communication (bot + message routing) ✅
-- Executive Brief format defined ✅
+V2 infrastructure is done:
+- Ephemeral agent sessions ✅
+- Task-driven dispatch ✅
+- Telegram communication ✅
+- Executive Brief ✅
+- V1 cleanup (9 PRs merged) ✅
 
-V1 cleanup completed today (9 PRs merged):
-- Removed v1 dispatcher dead code
-- Removed 14 obsolete agent definitions from agents.yaml
-- Removed v1 template directories
-- Updated setup-agents.py and restart_all_agents.sh for v2
-- Cleaned up Leantime dead code from tests
+## Next Actions (COO priorities)
 
-## Next Phase
-
-**Autonomous Project Re-enablement** (not started)
-
-Re-enable one frozen project (likely Wedding Website, deadline May 23) as the first test of full autonomous operation. Success criteria: agents plan, implement, test, deploy, and report — Human only reviews Executive Brief.
+1. **Immediate**: Set up agent capability demos
+   - Pickleball booking (browser automation proof of concept)
+   - Resume trading project (find existing code, assess state)
+2. **This week**: Research the "one-person company platform" idea
+   - Market analysis: competitors, TAM, existing solutions
+   - Technical feasibility: what platform capabilities do we already have vs need to build
+3. **Ongoing**: Continue harness improvements as needed (bugs, performance)
 
 ## Open Questions (for Human)
 
-None currently. All v2 infrastructure is in place.
-
-## Key Metrics
-
-- Active agent sessions: 0 (all cleanup tickets completed)
-- Open PRs: 0
-- Open tickets: 0 (all stale tickets archived)
-- Total PRs merged: 9 (today)
-- System health: ✅
-
-## Human Communication
-
-- Primary channel: Telegram (@agents_daemon_bot)
-- Message routing: active (Telegram → auto-ticket → agent responds)
-- Executive Brief: daily 7:00 AM (format defined, generation code needs rewrite)
-- Last Human interaction: 2026-04-13 (v2 stabilization review, feedback on brief format)
+1. Trading project: Where is the existing code? What broker/API is being used? What's the current strategy?
+2. One-person company platform: Do you want to start with a landing page / MVP to test interest, or go deeper on research first?
+3. Priority ranking: If you had to pick ONE track to focus on first, which one?
 
 ## Key Decisions Log
 
 | Date | Decision | By |
 |------|----------|-----|
 | 2026-04-12 | Focus 100% on Agent Harness, freeze all other projects | Human |
-| 2026-04-12 | V2 architecture: ephemeral agents, task-driven dispatch, 3 agent types | Human + Admin |
-| 2026-04-12 | Admin role = COO (executor/manager), Human role = Chairman (direction/decisions) | Human |
-| 2026-04-13 | Executive Brief replaces Morning Brief — Chairman-level format | Human |
-| 2026-04-13 | All v1 cleanup PRs approved for merge | Human |
+| 2026-04-12 | V2 architecture: ephemeral agents, 3 agent types | Human + Admin |
+| 2026-04-12 | Admin = COO, Human = Chairman | Human |
+| 2026-04-13 | Executive Brief format with working memory | Human |
+| 2026-04-13 | Three strategic tracks: capabilities, trading, startup platform | Human |
