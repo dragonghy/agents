@@ -2,70 +2,68 @@
 
 ## Purpose
 
-Multi-agent development platform that orchestrates multiple Claude Code agents as a team. Agents communicate through a shared MCP server, pick up tasks from a project management system (Leantime), and collaborate through structured message passing and ticket workflows.
+Self-running multi-agent platform. Admin (COO) manages execution, Human (Chairman) sets direction. Agents are ephemeral — spawned per task, released when done. All state is externalized into tickets, docs, and skills.
 
-## Tech Stack
+Long-term vision: Productize into a platform enabling anyone to build a one-person company through AI-guided decision-making.
 
-- **Runtime**: Python 3.12, FastMCP, SQLite
-- **Agent shell**: Claude Code CLI (`claude` command), tmux sessions
-- **Task management**: Leantime (self-hosted), accessed via JSON-RPC API
-- **Communication**: agents-mcp daemon (FastMCP SSE server on :8765)
-- **Proxy**: Per-agent MCP proxy (stdio-to-SSE bridge)
-
-## Architecture
+## Architecture (v2)
 
 ```
-tmux sessions (one per agent)
-  -> claude CLI with MCP proxy (stdio)
-    -> agents-mcp daemon (SSE on :8765)
-      -> SQLite stores (.agents-mcp.db, .agents-tasks.db)
-      -> Leantime JSON-RPC API (:9090)
+Human (Telegram / direct session)
+  → Daemon (port 8765)
+    → v2 Dispatcher (task-selection, 30s cycle)
+      → Session Manager (spawn/monitor/release ephemeral agents)
+        → tmux windows: ticket-{id}-{type}
+          → Claude Code --agent {development|operations|assistant}
+
+Data: SQLite (.agents-mcp.db, .agents-tasks.db)
+Communication: Telegram bot ↔ Daemon ↔ Agent sessions
 ```
 
-- **Daemon** (`services/agents-mcp/`): Central MCP server. Handles messaging, profiles, dispatch, ticket operations.
-- **Proxy** (`services/agents-mcp/src/agents_mcp/proxy.py`): Per-agent stdio-to-SSE bridge with auto-reconnect.
-- **Dispatcher** (`dispatcher.py`): Runs every 30s. Checks messages first, then tasks. Wakes idle agents.
-- **SQLite**: Single-writer. `.agents-mcp.db` for profiles/messages/notifications. `.agents-tasks.db` for task cache.
+## Agent Types
+
+3 types (defined in `templates/v2/`):
+- **development**: Full lifecycle — plan, implement, test, PR, CI
+- **operations**: System health, infra, config, monitoring
+- **assistant**: Personal tasks, research, browser automation
 
 ## Key Directories
 
-- `services/agents-mcp/` -- Daemon source code
-- `templates/` -- Agent role configs (admin/, dev/, qa/, product/, ops/, shared/)
-- `templates/shared/skills/` -- Skills available to all agents
-- `projects/` -- Sub-project working directories
-- `agents/` -- Per-agent working directories and logs
-- `tests/` -- E2E and integration tests
-- `.claude/agents/` -- Claude Code agent definitions (role prompts)
+- `services/agents-mcp/` — Daemon source (server.py, dispatcher_v2.py, session_manager.py)
+- `services/telegram-bot/` — Telegram transport bridge
+- `templates/v2/` — Agent type system prompts
+- `templates/shared/skills/` — Global skills (executive-brief, development-lifecycle, etc.)
+- `.claude/agents/` — Agent definitions loaded by Claude Code
 
-## Conventions
+## Ticket Status Codes
 
-- Agent IDs use `<role>-<name>` format (e.g., `dev-alex`, `qa-lucy`, `product-kevin`)
-- All inter-agent communication through MCP tools (send_message, reassign_ticket, etc.)
-- Ticket tags: `agent:<name>` for assignment targeting
-- Status codes: 0=done, 1=locked, 3=new, 4=in-progress, -1=archived. Never use status=2.
-- Skills are SKILL.md files in a named directory under `templates/<role>/skills/`
-- Pub/Sub: `ticket_subscribers` + `notifications` tables for ticket update notifications
+0=Done, 1=Blocked, 3=New, 4=In Progress, -1=Archived. **Never use 2.**
+
+## Workflow
+
+Tickets drive everything. Development agents follow 8 stages:
+Pickup → Plan → Research → Implement (worktree) → Test → PR → CI → Awaiting Review
+
+Ticket stays status=4 until PR is merged. Agent comments at each stage.
 
 ## Known Pitfalls
 
-1. **Don't kill admin's tmux window** -- admin manages dispatch; killing it stops all agent coordination.
-2. **SQLite single-writer** -- No concurrent writes. The daemon serializes access, but direct DB writes will conflict.
-3. **Claude API rate limits** -- Shared across all agent sessions. Bursts of agent activity can cause 429s.
-4. **Context loss on restart** -- Agent memory is ephemeral. Use ticket comments and docs for persistence.
-5. **Leantime API quirks** -- `Tickets.patch` returns false even on success (verify with getTicket). Comment API uses plugin endpoint. See MEMORY.md for details.
-6. **MCP proxy disconnect** -- SSE connections drop. Proxy has auto-reconnect, but long outages can stall agents.
-7. **Don't use status=2** -- Reserved/broken. Use DEPENDS_ON pattern (status=1 + linked ticket) for blocking.
-8. **429 rate limiting on Leantime** -- Space API calls 15-30s apart when doing bulk operations.
+1. **Don't kill admin's tmux window** — admin is the running COO session
+2. **SQLite single-writer** — daemon serializes; never write directly
+3. **Rate limits** — Claude API shared across all sessions
+4. **Ephemeral sessions** — all knowledge must be written to tickets/docs/skills
+5. **setup-agents.py can overwrite templates/v2/*.md** — be aware after running restart
+6. **Telegram outbound** — use POST /api/v1/human/send (not /human/messages which is inbound)
 
-## Current Status
+## Active Projects
 
-v2 migration in progress. See `RETROSPECTIVE.md` for lessons from v1 and `V2-PROGRESS.md` for migration status.
+- **Agent Harness** (this repo): Platform itself
+- **Trading** (~/code/trading): Stock trading strategies, Alpaca Markets
+- **Solo Platform** (planned): One-person company builder product
 
 ## References
 
-- Agent role prompts: `.claude/agents/*.md`
-- Shared context and permissions: `templates/shared/context.md`
-- Team roster: `agents/shared/team-roster.md`
-- Task management skill: `templates/shared/skills/tasks/SKILL.md`
-- Development workflow: `templates/shared/skills/development-workflow/SKILL.md`
-- Dispatch system: `services/agents-mcp/src/agents_mcp/dispatcher.py`
+- Strategic direction: `templates/shared/skills/executive-brief/memory/STATUS.md`
+- Daily logs: `templates/shared/skills/executive-brief/log/`
+- Design doc: `RETROSPECTIVE.md`
+- Progress: `V2-PROGRESS.md`
