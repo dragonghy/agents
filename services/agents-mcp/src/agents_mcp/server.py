@@ -22,7 +22,6 @@ from fastmcp import FastMCP
 _json_dumps = functools.partial(json.dumps, ensure_ascii=False)
 
 from agents_mcp.sqlite_task_client import SQLiteTaskClient
-from agents_mcp.dispatcher import dispatch_loop
 from agents_mcp.store import AgentStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -976,55 +975,15 @@ async def reassign_ticket(
     except Exception as e:
         logger.debug(f"Notification on reassign #{ticket_id} failed: {e}")
 
-    # Auto-dispatch target agent (best-effort)
-    # If agent is idle → dispatch immediately
-    # If agent is busy → schedule deferred dispatch (retry until idle or timeout)
-    dispatch_result = None
-    deferred_result = None
-    try:
-        from agents_mcp.dispatcher import (
-            _tmux_window_exists, _is_idle, _dispatch_agent,
-            schedule_deferred_dispatch,
-        )
-
-        cfg = get_config()
-        tmux_session = cfg.get("tmux_session", "agents")
-        store = await get_store()
-
-        if not _tmux_window_exists(tmux_session, to_agent):
-            dispatch_result = "no_window"
-        elif not _is_idle(tmux_session, to_agent):
-            dispatch_result = "busy"
-            # Schedule deferred dispatch: retry until agent becomes idle
-            deferred_result = schedule_deferred_dispatch(
-                tmux_session, to_agent, ticket_id, store=store,
-            )
-        else:
-            _dispatch_agent(tmux_session, to_agent)
-            dispatch_result = "dispatched"
-            # Log dispatch event
-            try:
-                await store.log_dispatch_event(
-                    to_agent, "reassign",
-                    f"Immediate dispatch after reassign #{ticket_id} from {from_agent}",
-                )
-            except Exception:
-                pass  # Logging is best-effort
-        logger.info(
-            f"Reassign #{ticket_id} → {to_agent}: "
-            f"auto-dispatch={dispatch_result}, deferred={deferred_result}"
-        )
-    except Exception as e:
-        dispatch_result = f"error"
-        logger.warning(f"Auto-dispatch failed for {to_agent} after reassign #{ticket_id}: {e}")
+    # v2 dispatcher will pick up the newly-assigned task on its next cycle
+    # (status=3 + new assignee → ephemeral session spawn). No manual dispatch.
+    logger.info(f"Reassign #{ticket_id}: {from_agent} → {to_agent}")
 
     response = {
         "status": "reassigned", "ticket_id": ticket_id,
-        "to": to_agent, "auto_dispatch": dispatch_result,
+        "to": to_agent,
         "comment_added": comment_added,
     }
-    if deferred_result:
-        response["deferred_dispatch"] = deferred_result
     if comment_error:
         response["comment_error"] = comment_error
     return _json_dumps(response)
@@ -1498,15 +1457,6 @@ async def _start_auto_dispatch_async():
             logger.info(f"Pub/Sub: backfilled {backfilled} ticket subscription(s)")
     except Exception as e:
         logger.warning(f"Pub/Sub subscription backfill failed: {e}")
-
-    # V1 dispatcher: disabled — replaced by v2 task-driven dispatch
-    # _dispatch_task = asyncio.create_task(
-    #     dispatch_loop(client, agents_list, tmux_session, store=store,
-    #                   interval=30,
-    #                   staleness_threshold=staleness_threshold,
-    #                   root_dir=root_dir)
-    # )
-    logger.info("V1 dispatcher disabled (v2 is active)")
 
     # V2 dispatcher: task-driven, ephemeral sessions
     v2_config = cfg.get("v2", {})

@@ -35,8 +35,6 @@ export default function AgentDetail() {
   const [terminal, setTerminal] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [dispatching, setDispatching] = useState(false);
-  const [dispatchResult, setDispatchResult] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -120,33 +118,7 @@ export default function AgentDetail() {
         <h2 className="text-2xl font-bold text-gray-800 dark:text-gray-100">{agent.id}</h2>
         <StatusBadge status={agent.tmux_status} />
         <span className="text-sm text-gray-500 dark:text-gray-400">{agent.role}</span>
-        <button
-          onClick={async () => {
-            setDispatching(true);
-            setDispatchResult(null);
-            try {
-              const res = await fetch(`/api/v1/agents/${id}/dispatch`, { method: 'POST' });
-              const data = await res.json();
-              const status = data[id!] || 'unknown';
-              setDispatchResult(`Dispatch: ${status}`);
-              setTimeout(() => setDispatchResult(null), 5000);
-            } catch (e) {
-              setDispatchResult(`Error: ${e}`);
-            } finally {
-              setDispatching(false);
-            }
-          }}
-          disabled={dispatching}
-          className="ml-auto px-3 py-1.5 bg-green-600 text-white rounded text-sm hover:bg-green-700 disabled:opacity-50"
-        >
-          {dispatching ? 'Dispatching...' : 'Dispatch'}
-        </button>
       </div>
-      {dispatchResult && (
-        <div className="mb-4 p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded text-sm text-green-800 dark:text-green-300">
-          {dispatchResult}
-        </div>
-      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Profile card */}

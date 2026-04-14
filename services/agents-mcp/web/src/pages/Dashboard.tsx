@@ -14,8 +14,6 @@ export default function Dashboard() {
   const [usageMap, setUsageMap] = useState<Record<string, AgentUsageSummary>>({});
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [dispatching, setDispatching] = useState(false);
-  const [dispatchResult, setDispatchResult] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -63,28 +61,11 @@ export default function Dashboard() {
     return () => { active = false; clearInterval(interval); };
   }, []);
 
-  async function handleDispatchAll() {
-    setDispatching(true);
-    setDispatchResult(null);
-    try {
-      const res = await fetch('/api/v1/agents/dispatch-all', { method: 'POST' });
-      const data = await res.json();
-      const summary = Object.entries(data).map(([a, s]) => `${a}: ${s}`).join(', ');
-      setDispatchResult(summary);
-      setTimeout(() => setDispatchResult(null), 5000);
-    } catch (e) {
-      setDispatchResult(`Error: ${e}`);
-    } finally {
-      setDispatching(false);
-    }
-  }
-
   if (loading) {
     return (
       <div>
         <div className="flex items-center justify-between mb-6">
           <Skeleton className="h-8 w-40" />
-          <Skeleton className="h-10 w-32" />
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {[1, 2, 3].map((i) => (
@@ -107,19 +88,7 @@ export default function Dashboard() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-2xl font-bold text-gray-800 dark:text-gray-100">Dashboard</h2>
-        <button
-          onClick={handleDispatchAll}
-          disabled={dispatching}
-          className="px-4 py-2 bg-green-600 text-white rounded text-sm font-medium hover:bg-green-700 disabled:opacity-50"
-        >
-          {dispatching ? 'Dispatching...' : 'Dispatch All'}
-        </button>
       </div>
-      {dispatchResult && (
-        <div className="mb-4 p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded text-sm text-green-800 dark:text-green-300">
-          {dispatchResult}
-        </div>
-      )}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {agents.map((agent) => (
           <AgentCard key={agent.id} agent={agent} usage={usageMap[agent.id]} />

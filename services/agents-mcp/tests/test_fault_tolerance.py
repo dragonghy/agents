@@ -22,8 +22,7 @@ def test_reassign_mcp_comment_failure_does_not_block():
     fn = getattr(reassign_ticket, "fn", reassign_ticket)
 
     with patch("agents_mcp.server.get_client", return_value=mock_client), \
-         patch("agents_mcp.server.get_config", return_value={"tmux_session": "agents"}), \
-         patch("agents_mcp.dispatcher._tmux_window_exists", return_value=False):
+         patch("agents_mcp.server.get_config", return_value={"tmux_session": "agents"}):
 
         result_str = asyncio.run(
             fn(ticket_id=42, from_agent="dev-alex",
@@ -52,8 +51,7 @@ def test_reassign_mcp_comment_success():
     fn = getattr(reassign_ticket, "fn", reassign_ticket)
 
     with patch("agents_mcp.server.get_client", return_value=mock_client), \
-         patch("agents_mcp.server.get_config", return_value={"tmux_session": "agents"}), \
-         patch("agents_mcp.dispatcher._tmux_window_exists", return_value=False):
+         patch("agents_mcp.server.get_config", return_value={"tmux_session": "agents"}):
 
         result_str = asyncio.run(
             fn(ticket_id=42, from_agent="dev-alex",
@@ -78,8 +76,7 @@ def test_reassign_mcp_no_comment():
     fn = getattr(reassign_ticket, "fn", reassign_ticket)
 
     with patch("agents_mcp.server.get_client", return_value=mock_client), \
-         patch("agents_mcp.server.get_config", return_value={"tmux_session": "agents"}), \
-         patch("agents_mcp.dispatcher._tmux_window_exists", return_value=False):
+         patch("agents_mcp.server.get_config", return_value={"tmux_session": "agents"}):
 
         result_str = asyncio.run(
             fn(ticket_id=42, from_agent="dev-alex",
