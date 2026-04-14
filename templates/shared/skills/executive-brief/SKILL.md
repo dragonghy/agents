@@ -108,6 +108,56 @@ All references should be clickable URLs:
 - Docs: If a document exists in the repo, link to GitHub blob view
 - External: Full URL
 
+## Working Memory
+
+The Executive Brief is NOT a stateless report. It requires continuity across sessions.
+
+### File Structure
+
+```
+templates/shared/skills/executive-brief/
+├── SKILL.md          ← This file (format + process)
+├── memory/
+│   └── STATUS.md     ← Current project state, phase, open questions, key metrics
+└── log/
+    ├── 2026-04-13.md ← Daily log entries
+    ├── 2026-04-14.md
+    └── ...
+```
+
+### STATUS.md (Current State)
+
+Read this FIRST before writing any brief. It contains:
+- What project we're building and current phase
+- What's next
+- Open questions for Human
+- Key metrics
+- Last Human decisions
+
+Update STATUS.md after every significant event (phase change, Human decision, architecture shift).
+
+### Daily Log (log/YYYY-MM-DD.md)
+
+Write a log entry at the end of each day (or when generating the brief). Contains:
+- Summary of the day
+- Key events with timestamps
+- PRs merged / tickets completed
+- Bugs found and fixed
+- Human feedback received
+- Tomorrow's priorities
+
+Use log entries to look back when writing the brief — "what changed since last brief?"
+
+### Brief Generation Process
+
+1. Read `memory/STATUS.md` for current context
+2. Read recent `log/` entries for what happened
+3. Pull live data: tickets, PRs, sessions, health
+4. **Think**: What matters? What needs Human's attention? What can I handle?
+5. Write the brief using the format above
+6. Send via Telegram
+7. Update STATUS.md if anything changed
+
 ## Delivery
 
 Primary: Telegram (@agents_daemon_bot)

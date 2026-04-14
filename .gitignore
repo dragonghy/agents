@@ -53,3 +53,4 @@ projects/pomodoro-timer/
 Thumbs.db
 briefs/
 tmp/
+.admin-monitor.log
