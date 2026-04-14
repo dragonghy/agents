@@ -21,6 +21,10 @@ from agents_mcp.store import AgentStore
 logger = logging.getLogger(__name__)
 
 # Task phase → agent type mapping
+#
+# Note: "assistant" is a reserved type template (templates/v2/assistant.md) but
+# no instance is currently registered. Personal / research tasks are routed to
+# "operations" (admin) until an assistant instance is added to agents.yaml.
 _PHASE_AGENT_MAP = {
     "plan": "development",
     "implement": "development",
@@ -28,8 +32,8 @@ _PHASE_AGENT_MAP = {
     "deliver": "development",
     "ops": "operations",
     "infra": "operations",
-    "personal": "assistant",
-    "research": "assistant",
+    "personal": "operations",
+    "research": "operations",
 }
 
 # Default agent type when phase is not set
@@ -58,14 +62,13 @@ def _select_agent_type(task: dict) -> str:
     assignee = task.get("assignee", "")
     if assignee in ("ops", "admin", "inspector"):
         return "operations"
-    if assignee == "assistant":
-        return "assistant"
 
     # Check tags for hints
     if "ops" in tags or "infra" in tags:
         return "operations"
-    if "personal" in tags or "assistant" in tags:
-        return "assistant"
+    if "personal" in tags:
+        # No assistant instance registered; personal tasks handled by operations.
+        return "operations"
 
     return _DEFAULT_AGENT_TYPE
 

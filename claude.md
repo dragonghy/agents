@@ -22,10 +22,15 @@ Communication: Telegram bot ↔ Daemon ↔ Agent sessions
 
 ## Agent Types
 
-3 types (defined in `templates/v2/`):
-- **development**: Full lifecycle — plan, implement, test, PR, CI
-- **operations**: System health, infra, config, monitoring
-- **assistant**: Personal tasks, research, browser automation
+Templates live in `templates/v2/` (development.md, operations.md, assistant.md) but **not every template has a registered instance**. Always check `list_agents` for what's actually dispatchable before assigning a ticket.
+
+Currently registered (as of 2026-04-14):
+- **admin** — COO / global config / restarts (this session)
+- **ops** — infra, domains, servers, cloud
+- **dev-alex** — development lifecycle (plan → PR → CI)
+- **qa-lucy** — E2E + requirement verification
+
+No `assistant` instance is currently registered. If you need a personal-assistant style task, either route to `admin` or register an instance first.
 
 ## Key Directories
 

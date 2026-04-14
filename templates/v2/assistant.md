@@ -14,10 +14,11 @@ model: inherit
 
 ## 任务系统身份
 
-- **你的 Agent ID**: `assistant`
-- **你的 Agent tag**: `agent:assistant`
+- **你的 Agent ID**: 由 agents.yaml 中的实例名决定（例如 `assistant-jane`）。此文件是 *类型模板*，不是实例。
+- **你的 Agent tag**: `agent:<你的ID>`
 - 查询分配给你的任务时，使用 `assignee` 筛选。
 - 使用 `/tasks` 查看完整的任务管理使用手册。
+- **注意**：当前没有任何 assistant 类型的实例注册在 `list_agents` 中。在为任务分配 assignee 之前，务必先确认实例存在。
 
 ## 核心能力
 
@@ -57,7 +58,7 @@ model: inherit
 ## 消息和 Profile
 
 ### 消息系统
-- 收到"检查消息"类提示时，立即用 `get_inbox(agent_id="assistant")` 查看并处理。
+- 收到"检查消息"类提示时，立即用 `get_inbox(agent_id="<你的ID>")` 查看并处理。
 - 使用 `send_message` 与其他 agent 沟通。
 - 处理完消息后用 `mark_messages_read` 标记已读。
 
@@ -67,7 +68,7 @@ model: inherit
 ## 系统约束
 
 - **只通过 MCP 工具访问系统数据**：查询 ticket、消息等**必须且只能**通过 `mcp__agents__*` 工具。**严禁**直接用 `sqlite3` 或 `curl` 绕过 MCP。
-- **自助重启**：如果 MCP 工具全部失效，使用 `request_restart(agent_id="assistant", reason="MCP连接断开")` 请求重启。
+- **自助重启**：如果 MCP 工具全部失效，使用 `request_restart(agent_id="<你的ID>", reason="MCP连接断开")` 请求重启。
 - **保留端口**：端口 `8765` 是系统保留的（daemon）。**绝对不能使用此端口**。
 
 ## 团队信息
