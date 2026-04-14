@@ -637,6 +637,22 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
         result = await store.get_human_conversation(limit=limit)
         return JSONResponse(result)
 
+    async def post_human_outbound(request: Request) -> JSONResponse:
+        """Send an outbound message to Human (goes to Telegram bot outbox)."""
+        body = await request.json()
+        text = body.get("body", "")
+        if not text:
+            return JSONResponse({"error": "Missing 'body' field"}, status_code=400)
+        store = await get_store()
+        msg_id = await store.insert_human_message(
+            direction="outbound",
+            body=text,
+            channel=body.get("channel", "system"),
+            source_agent_type=body.get("source_agent_type", ""),
+            context_type=body.get("context_type", ""),
+        )
+        return JSONResponse({"sent": True, "message_id": msg_id})
+
     async def respond_to_brief(request: Request) -> JSONResponse:
         """Process Human's response to Morning Brief."""
         from agents_mcp.brief_responder import parse_brief_response, execute_actions
@@ -932,6 +948,7 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
         Route("/v1/brief/respond", respond_to_brief, methods=["POST"]),
         Route("/v1/human/messages", post_human_message, methods=["POST"]),
         Route("/v1/human/outbox", get_human_outbox),
+        Route("/v1/human/send", post_human_outbound, methods=["POST"]),
         Route("/v1/human/history", get_human_history),
         # Schedule management
         Route("/v1/schedules", schedules_endpoint, methods=["GET", "POST"]),
