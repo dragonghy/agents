@@ -1,4 +1,4 @@
-"""Admin monitoring script: runs periodically to check system state.
+"""Admin monitoring script: prints system state snapshot on stdout.
 
 Checks:
 1. Active sessions and their ticket status
@@ -6,13 +6,16 @@ Checks:
 3. Tickets that need attention (status=4 with no active session)
 4. System health
 
-Sends report via Telegram outbox — but ONLY when meaningful state has changed
-since the last run (deduped via hash in /tmp/admin-monitor-state.json), or when
-more than FORCE_SEND_AFTER seconds have elapsed since the last send.
+**Telegram sending is DISABLED by default.** Human complained (#462, #463)
+that periodic admin check-ins — even deduped — were still spamming Telegram,
+and that the script was accidentally running in multiple stacked background
+loops from prior admin sessions. This script is now a pure local-logging
+tool: run it on demand (or from a single background loop) to write state to
+`.admin-monitor.log`, and nothing will be sent to Human.
 
-Rationale: Human complained that hourly identical "0 sessions, no PRs, same
-tickets" check-ins are token waste (#462). Silence is the default; Telegram
-only fires when something actually changes.
+Pass `--send` explicitly to send a one-shot Telegram report (e.g. for a
+manual wake-up check). State dedup via /tmp/admin-monitor-state.json still
+applies to `--send` invocations.
 """
 import hashlib
 import json
@@ -139,6 +142,7 @@ def state_hash(state):
 
 
 def main():
+    send_enabled = "--send" in sys.argv
     now_ts = time.time()
     now_str = datetime.now().strftime("%H:%M")
 
@@ -152,19 +156,25 @@ def main():
     changed = h != prev_hash
     overdue = (now_ts - last_send) > FORCE_SEND_AFTER
 
-    if not (changed or overdue):
-        print(f"[{now_str}] no change since last check-in; skipping Telegram send")
-        # Still update timestamp of last poll so we know monitor ran
-        prev["last_poll_ts"] = now_ts
-        save_state(prev)
-        return
-
+    # Always print the snapshot locally — cheap, useful for log tailing.
     header_note = ""
     if not changed and overdue:
         header_note = " (heartbeat — no changes)"
-
     report = "\n".join([f"🔍 Admin Check-in ({now_str}){header_note}", ""] + lines)
     print(report)
+
+    # Persist the latest poll regardless.
+    prev["hash"] = h
+    prev["last_poll_ts"] = now_ts
+    save_state(prev)
+
+    if not send_enabled:
+        print("\n(Telegram send disabled; pass --send to deliver to Human)")
+        return
+
+    if not (changed or overdue):
+        print(f"[{now_str}] no change since last send; skipping Telegram")
+        return
 
     result = api_post("human/send", {"body": report, "context_type": "admin_checkin"})
     if "error" not in result:
