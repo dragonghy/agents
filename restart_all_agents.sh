@@ -25,6 +25,10 @@ mkdir -p "$PROJECT_DIR"
 DAEMON_LOG="${ROOT_DIR}/.daemon.log"
 DAEMON_PID_FILE="${ROOT_DIR}/.daemon.pid"
 
+TELEGRAM_BOT_DIR="${ROOT_DIR}/services/telegram-bot"
+TELEGRAM_BOT_LOG="${ROOT_DIR}/.telegram-bot.log"
+TELEGRAM_BOT_PID_FILE="${ROOT_DIR}/.telegram-bot.pid"
+
 # Use agent-config.py so daemon host/port match setup-agents.py (resolve_env_vars, .env).
 get_daemon_port() {
   python3 "$CONFIG" daemon-port
@@ -147,6 +151,88 @@ ensure_daemon_for_agents() {
   fi
   echo "  Or skip daemon:  SKIP_DAEMON=1 $0"
   echo ""
+}
+
+# --- Telegram bot management ---
+# v2: Telegram bot is a long-running transport bridge (no AI). It polls the
+# daemon's outbox and relays Human <-> Agent messages. It runs as a plain
+# background process (not in tmux).
+
+telegram_bot_pid() {
+  if [[ -f "$TELEGRAM_BOT_PID_FILE" ]]; then
+    local pid
+    pid="$(cat "$TELEGRAM_BOT_PID_FILE" 2>/dev/null || true)"
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      echo "$pid"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+telegram_bot_is_running() {
+  telegram_bot_pid >/dev/null 2>&1
+}
+
+start_telegram_bot() {
+  if [[ ! -f "${TELEGRAM_BOT_DIR}/bot.py" ]]; then
+    echo "  Telegram bot: source not found at ${TELEGRAM_BOT_DIR}, skipping"
+    return 0
+  fi
+
+  if [[ -z "${TELEGRAM_BOT_TOKEN:-}" ]]; then
+    echo "  Telegram bot: TELEGRAM_BOT_TOKEN not set in .env, skipping"
+    return 0
+  fi
+
+  if telegram_bot_is_running; then
+    echo "  Telegram bot already running (pid: $(telegram_bot_pid))"
+    return 0
+  fi
+
+  # Rotate log
+  if [[ -f "$TELEGRAM_BOT_LOG" ]] && [[ -s "$TELEGRAM_BOT_LOG" ]]; then
+    mv "$TELEGRAM_BOT_LOG" "${TELEGRAM_BOT_LOG}.prev"
+  fi
+
+  echo "  Starting telegram-bot..."
+  nohup uv run --directory "$TELEGRAM_BOT_DIR" python bot.py \
+    >> "$TELEGRAM_BOT_LOG" 2>&1 &
+  local pid=$!
+  echo "$pid" > "$TELEGRAM_BOT_PID_FILE"
+
+  # Give it a moment to actually start, then verify it didn't immediately die
+  sleep 1
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "  Telegram bot started (pid: $pid)"
+  else
+    echo "  ERROR: Telegram bot failed to start. Check ${TELEGRAM_BOT_LOG}"
+    rm -f "$TELEGRAM_BOT_PID_FILE"
+    return 1
+  fi
+}
+
+stop_telegram_bot() {
+  if ! telegram_bot_is_running; then
+    echo "  Telegram bot not running"
+    rm -f "$TELEGRAM_BOT_PID_FILE"
+    return 0
+  fi
+
+  local pid
+  pid="$(telegram_bot_pid)"
+  kill "$pid" 2>/dev/null || true
+  # Wait up to 3s for clean exit
+  local waited=0
+  while kill -0 "$pid" 2>/dev/null && [[ $waited -lt 3 ]]; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+  rm -f "$TELEGRAM_BOT_PID_FILE"
+  echo "  Telegram bot stopped"
 }
 
 # --- Agent management ---
@@ -341,18 +427,29 @@ cleanup_init_window() {
 # --- Main ---
 
 usage() {
-  echo "Usage: $0 [agent|--workers|--all|--daemon|--stop-daemon] [--skip-busy|--force|--request-restart]"
-  echo ""
-  echo "  (no args)           Restart all agents (including admin) + ensure daemon"
-  echo "  --workers           Restart all except admin"
-  echo "  <name>              Restart a single agent (${ALL_AGENTS})"
-  echo "  --daemon            Restart the MCP daemon only"
-  echo "  --stop-daemon       Stop the MCP daemon"
-  echo ""
-  echo "  Restart modes (default: --skip-busy):"
-  echo "  --skip-busy         Skip agents with in-progress tickets"
-  echo "  --force             Graceful /exit for all agents (wait, then force kill)"
-  echo "  --request-restart   Ask busy agents to self-restart via MCP"
+  cat <<EOF
+Usage: $0 [command] [restart-mode]
+
+v2 is task-driven: ephemeral agent sessions are spawned by the daemon's
+session_manager when tasks arrive. This script no longer launches the 18
+persistent v1 agent windows by default.
+
+Commands:
+  (no args)           Ensure daemon + telegram-bot are running (v2 default)
+  --daemon            Restart the MCP daemon only
+  --stop-daemon       Stop the MCP daemon
+  --telegram          Restart the telegram-bot transport service
+  --stop-telegram     Stop the telegram-bot transport service
+  --stop-all          Stop daemon + telegram-bot + all legacy v1 agents
+  <name>              Restart a single v1 agent (${ALL_AGENTS})
+  --legacy            Legacy v1 mode: restart daemon + ALL persistent v1 agents
+  --legacy-workers    Legacy v1 mode: restart all v1 agents except admin
+
+Restart modes (apply to agent restarts, default: --skip-busy):
+  --skip-busy         Skip agents with in-progress tickets
+  --force             Graceful /exit for all agents (wait, then force kill)
+  --request-restart   Ask busy agents to self-restart via MCP
+EOF
 }
 
 # Parse restart mode flags from any position in args
@@ -372,7 +469,7 @@ python3 "${ROOT_DIR}/setup-agents.py"
 
 echo "  Restart mode: ${RESTART_MODE}"
 
-case "${1:-__all__}" in
+case "${1:-__default__}" in
   --daemon)
     echo "=== Restarting daemon ==="
     stop_daemon
@@ -382,28 +479,63 @@ case "${1:-__all__}" in
     echo "=== Stopping daemon ==="
     stop_daemon
     ;;
-  --workers)
+  --telegram|--telegram-bot)
+    echo "=== Restarting telegram-bot ==="
+    stop_telegram_bot
+    start_telegram_bot
+    ;;
+  --stop-telegram|--stop-telegram-bot)
+    echo "=== Stopping telegram-bot ==="
+    stop_telegram_bot
+    ;;
+  --stop-all)
+    echo "=== Stopping all services ==="
+    # Stop legacy v1 agent windows if any
+    if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+      for agent in $ALL_AGENTS; do
+        if is_agent_window_alive "$agent"; then
+          graceful_stop_agent "$agent" 5
+        fi
+      done
+    fi
+    stop_telegram_bot
+    stop_daemon
+    ;;
+  --default|__default__)
+    # v2 default: only ensure daemon + telegram-bot. No v1 agent windows.
+    echo "=== v2 default: ensure daemon + telegram-bot ==="
+    echo "    (v2 agents are ephemeral — the daemon spawns them per task.)"
+    echo "    (For legacy v1 behavior, use --legacy.)"
+    if [[ "${SKIP_DAEMON:-}" != "1" ]]; then
+      ensure_daemon_for_agents
+    fi
+    start_telegram_bot || true
+    ;;
+  --legacy|--all)
+    # Legacy v1: restart daemon + ALL persistent v1 agent windows.
+    # Kept for migration-period fallback; not the recommended path in v2.
     if [[ "${SKIP_DAEMON:-}" != "1" ]]; then
       echo "=== Ensuring daemon ==="
       ensure_daemon_for_agents
     fi
-    echo "=== Restarting workers ==="
+    echo "=== [legacy] Restarting all v1 agents ==="
     ensure_session
-    for agent in $WORKERS; do
+    for agent in $ALL_AGENTS; do
       start_agent "$agent"
     done
     cleanup_init_window
     capture_new_sessions
+    start_telegram_bot || true
     tmux select-window -t "$TMUX_SESSION:$(tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' | head -1)"
     ;;
-  --all|__all__)
+  --legacy-workers|--workers)
     if [[ "${SKIP_DAEMON:-}" != "1" ]]; then
       echo "=== Ensuring daemon ==="
       ensure_daemon_for_agents
     fi
-    echo "=== Restarting all agents ==="
+    echo "=== [legacy] Restarting v1 workers ==="
     ensure_session
-    for agent in $ALL_AGENTS; do
+    for agent in $WORKERS; do
       start_agent "$agent"
     done
     cleanup_init_window
@@ -426,7 +558,7 @@ case "${1:-__all__}" in
       start_agent "$agent"
       capture_new_sessions
     else
-      echo "Unknown agent: $agent"
+      echo "Unknown command or agent: $agent"
       usage
       exit 1
     fi
@@ -442,7 +574,12 @@ if [[ "${SKIP_DAEMON:-}" != "1" ]]; then
     echo "  Web UI:  http://${DAEMON_HOST}:${DAEMON_PORT}/"
   fi
 fi
-echo "  tmux attach -t $TMUX_SESSION"
-echo ""
-echo "Switch tabs:  Ctrl-b n / Ctrl-b p"
-echo "Detach:       Ctrl-b d"
+if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+  echo "  tmux attach -t $TMUX_SESSION"
+  echo ""
+  echo "Switch tabs:  Ctrl-b n / Ctrl-b p"
+  echo "Detach:       Ctrl-b d"
+fi
+if telegram_bot_is_running; then
+  echo "  Telegram bot: pid $(telegram_bot_pid)  log: ${TELEGRAM_BOT_LOG}"
+fi
