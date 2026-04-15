@@ -59,6 +59,8 @@ Ticket stays status=4 until PR is merged. Agent comments at each stage.
 4. **Ephemeral sessions** — all knowledge must be written to tickets/docs/skills
 5. **setup-agents.py can overwrite templates/v2/*.md** — be aware after running restart
 6. **Telegram outbound** — use POST /api/v1/human/send (not /human/messages which is inbound)
+7. **`crontab` on macOS hangs on Full Disk Access** — if modifying the user crontab from a shell that doesn't have TCC permission, `crontab <file>` blocks forever waiting on a system dialog that never comes. Use `~/Library/LaunchAgents/*.plist` + `launchctl load` instead; launchd has no such restriction.
+8. **Silent-failure bugs in scheduled scrapers** — if a scraper returns `[]` when the target dataset is missing, the filter downstream reports "nothing open" and Human never learns the job broke. Always distinguish "loaded the target, nothing matched" from "never loaded the target" and make the latter raise loudly (see `projects/pickleball/daily_check.py` `TargetNotReached`).
 
 ## Active Projects
 
