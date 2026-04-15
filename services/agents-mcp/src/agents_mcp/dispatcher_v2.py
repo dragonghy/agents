@@ -256,18 +256,17 @@ async def dispatch_loop_v2(
                 unread = await store.get_unread_count("admin")
                 if unread > _last_admin_unread:
                     tmux = session_mgr.tmux_session
-                    # Inline idle check + tmux send (dispatcher.py functions were deleted in v1 cleanup)
+                    # Inline idle check — mirrors dispatcher.py _is_idle() logic
                     import subprocess as _sp
                     pane = _sp.check_output(
-                        ["tmux", "capture-pane", "-t", f"{tmux}:admin", "-p", "-S", "-5"],
+                        ["tmux", "capture-pane", "-t", f"{tmux}:admin", "-p"],
                         text=True, timeout=5,
                     )
-                    last_line = ""
-                    for l in reversed(pane.strip().split("\n")):
-                        if l.strip():
-                            last_line = l.strip()
-                            break
-                    idle = last_line.startswith("❯")
+                    lines = [l for l in pane.split("\n") if l.strip()]
+                    tail = lines[-10:]
+                    has_prompt = any(l.startswith("❯") for l in tail)
+                    has_esc = "esc to interrupt" in "\n".join(tail)
+                    idle = has_prompt and not has_esc
                     logger.info(f"Admin unread {_last_admin_unread}→{unread}, idle={idle}")
                     if idle:
                         msg = (
