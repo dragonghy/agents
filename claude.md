@@ -68,6 +68,7 @@ Ticket stays status=4 until PR is merged. Agent comments at each stage.
 
 ## Admin Self-Reminders
 
+- **After EVERY conversation with Human**: Update STATUS.md + write/append daily log with discussion details (reasoning, not just conclusions)
 - **Update this file** whenever project direction, architecture, or conventions change
 - **Update STATUS.md** after every significant event (Human decision, phase change, new project)
 - **Write daily log** before generating Executive Brief
