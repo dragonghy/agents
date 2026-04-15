@@ -47,24 +47,9 @@ def parse_brief_response(text: str) -> list[dict]:
         if action:
             actions.append(action)
 
-    # If no structured actions found, treat entire text as a general instruction
-    if not actions:
-        # Check if it references any ticket numbers
-        ticket_refs = re.findall(r'#(\d+)', text)
-        if ticket_refs:
-            for ref in ticket_refs:
-                actions.append({
-                    "action": "comment",
-                    "ticket_id": int(ref),
-                    "message": text,
-                })
-        else:
-            actions.append({
-                "action": "instruction",
-                "ticket_id": None,
-                "message": text,
-            })
-
+    # If no structured actions found, do NOT auto-interpret.
+    # Only explicit action keywords (approve/defer/cancel + ticket number) trigger execution.
+    # Everything else is just a regular message — routed to admin inbox, not executed.
     return actions
 
 
