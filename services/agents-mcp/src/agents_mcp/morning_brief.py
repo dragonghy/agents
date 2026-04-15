@@ -425,7 +425,16 @@ async def brief_loop(
         output_dir: Directory to save briefs.
     """
     logger.info(f"Morning Brief loop started, target time: {target_hour:02d}:{target_minute:02d}")
+
+    # Check if today's brief already exists (survives daemon restart)
+    if not output_dir:
+        output_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "briefs")
     last_generated_date = None
+    today_check = datetime.now().strftime("%Y-%m-%d")
+    today_file = os.path.join(output_dir, f"brief-{today_check}.md")
+    if os.path.isfile(today_file):
+        last_generated_date = today_check
+        logger.info(f"Morning Brief already exists for {today_check}, skipping on startup")
 
     while True:
         try:
