@@ -241,17 +241,20 @@ async def dispatch_loop_v2(
     # Start session monitor in background
     monitor_task = asyncio.create_task(session_mgr.monitor_loop())
 
-    # Track last admin notification to avoid spamming
-    _last_admin_notify = 0.0
+    # Track admin unread count — notify only when NEW messages arrive
+    _last_admin_unread = 0
 
     while True:
         try:
-            # Notify admin of unread messages (from Telegram routing)
-            # Only when admin is idle and at most every 5 minutes
+            # Notify admin when new Telegram messages arrive
+            # Logic: only notify when unread count INCREASES (new message)
+            # - 0→1: notify (first message)
+            # - 1→1: skip (same message, admin hasn't read yet)
+            # - 1→2: notify (second message arrived)
+            # - 2→0: skip (admin read everything)
             try:
                 unread = await store.get_unread_count("admin")
-                now_ts = time.time()
-                if unread > 0 and (now_ts - _last_admin_notify) > 300:
+                if unread > _last_admin_unread:
                     from agents_mcp.dispatcher import _is_idle, _send_tmux_message
                     tmux = session_mgr.tmux_session
                     if _is_idle(tmux, "admin"):
@@ -260,8 +263,8 @@ async def dispatch_loop_v2(
                             f"请使用 get_inbox(agent_id=\"admin\") 查看并处理。"
                         )
                         _send_tmux_message(tmux, "admin", msg)
-                        _last_admin_notify = now_ts
-                        logger.info(f"Notified admin of {unread} unread message(s)")
+                        logger.info(f"Notified admin: {_last_admin_unread}→{unread} unread")
+                _last_admin_unread = unread
             except Exception:
                 pass
 
