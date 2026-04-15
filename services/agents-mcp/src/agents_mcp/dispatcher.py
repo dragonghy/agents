@@ -55,19 +55,33 @@ def _is_idle(tmux_session: str, agent: str) -> bool:
         lines = [l for l in out.split("\n") if l.strip()]
         tail_lines = lines[-10:]
 
-        # The ❯ prompt must be present (Claude Code is running).
-        has_prompt = any(l.startswith("❯") for l in tail_lines)
-        if not has_prompt:
+        # Find the last meaningful line (skip empty lines and status bar)
+        # The status bar always shows "esc to interrupt" when background shells
+        # are running, even if the agent is idle at the ❯ prompt.
+        #
+        # Idle = the last content line starts with ❯ (prompt waiting for input)
+        # Busy = the last content line is a spinner, tool output, or thinking indicator
+        last_content = ""
+        for l in reversed(tail_lines):
+            stripped = l.strip()
+            # Skip status bar lines (contain bypass/permissions/esc/shift+tab)
+            if any(kw in stripped for kw in ["bypass permissions", "shift+tab to cycle", "↓ to manage"]):
+                continue
+            # Skip separator lines
+            if stripped and all(c in "─═" for c in stripped):
+                continue
+            if stripped:
+                last_content = stripped
+                break
+
+        if not last_content:
             return False
 
-        # "esc to interrupt" in the status bar = Claude is actively working.
-        # Old spinners (✶ Crunched, etc.) may linger on screen after completion,
-        # so we ONLY use the status bar as the busy signal.
-        tail_text = "\n".join(tail_lines)
-        if "esc to interrupt" in tail_text:
-            return False
+        # If the last content line is the ❯ prompt, agent is idle
+        if last_content.startswith("❯"):
+            return True
 
-        return True
+        return False
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return False
 
