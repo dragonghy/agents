@@ -255,18 +255,37 @@ async def dispatch_loop_v2(
             try:
                 unread = await store.get_unread_count("admin")
                 if unread > _last_admin_unread:
-                    from agents_mcp.dispatcher import _is_idle, _send_tmux_message
                     tmux = session_mgr.tmux_session
-                    if _is_idle(tmux, "admin"):
+                    # Inline idle check + tmux send (dispatcher.py functions were deleted in v1 cleanup)
+                    import subprocess as _sp
+                    pane = _sp.check_output(
+                        ["tmux", "capture-pane", "-t", f"{tmux}:admin", "-p", "-S", "-5"],
+                        text=True, timeout=5,
+                    )
+                    last_line = ""
+                    for l in reversed(pane.strip().split("\n")):
+                        if l.strip():
+                            last_line = l.strip()
+                            break
+                    idle = last_line.startswith("❯")
+                    logger.info(f"Admin unread {_last_admin_unread}→{unread}, idle={idle}")
+                    if idle:
                         msg = (
                             f"你有 {unread} 条未读消息。"
                             f"请使用 get_inbox(agent_id=\"admin\") 查看并处理。"
                         )
-                        _send_tmux_message(tmux, "admin", msg)
-                        logger.info(f"Notified admin: {_last_admin_unread}→{unread} unread")
+                        _sp.check_call(
+                            ["tmux", "send-keys", "-l", "-t", f"{tmux}:admin", msg],
+                            timeout=5,
+                        )
+                        _sp.check_call(
+                            ["tmux", "send-keys", "-t", f"{tmux}:admin", "Enter"],
+                            timeout=5,
+                        )
+                        logger.info(f"Notified admin via tmux")
                 _last_admin_unread = unread
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Admin unread check failed: {e}")
 
             results = await dispatch_cycle_v2(
                 client, session_mgr, store,
