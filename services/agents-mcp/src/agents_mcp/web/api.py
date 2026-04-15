@@ -580,59 +580,38 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
             context_type=body.get("context_type", ""),
         )
 
-        # Message routing: create a ticket so v2 dispatcher spawns an agent to respond
+        # Message routing: forward to admin as P2P message
+        # Admin (COO) decides what to do — not every message is a ticket.
         routed = False
         try:
-            # Skip routing for bot commands (already handled by bot)
             if not text.startswith("/"):
-                client = get_client()
-
-                # Check if this looks like a brief response (approve/defer/cancel + ticket refs)
+                # Route 1: Brief response (approve/defer/cancel #xxx) → execute directly
                 from agents_mcp.brief_responder import parse_brief_response
                 actions = parse_brief_response(text)
                 has_ticket_actions = any(a.get("ticket_id") for a in actions)
 
                 if has_ticket_actions:
-                    # Brief response → execute directly, reply with confirmation
                     from agents_mcp.brief_responder import execute_actions
+                    client = get_client()
                     results = await execute_actions(actions, client, store)
                     summary = ", ".join(
                         f"#{r['ticket_id']} {r['action']}" for r in results if r.get("ticket_id")
                     )
-                    # Send confirmation back to Human
                     await store.insert_human_message(
                         direction="outbound", body=f"✅ Done: {summary}",
                         channel="system", context_type="execution_confirmation",
                     )
                     routed = True
                 else:
-                    # General question/instruction → create ticket for agent to handle
-                    headline = f"Human message: {text[:80]}"
-                    # Include recent conversation context in description
-                    recent = await store.get_human_conversation(limit=5)
-                    context_lines = []
-                    for m in reversed(recent.get("messages", [])):
-                        direction = "→" if m["direction"] == "outbound" else "←"
-                        context_lines.append(f"{direction} {m['body'][:200]}")
-                    context_str = "\n".join(context_lines[-5:])
-
-                    ticket_id = await client.create_ticket(
-                        headline=headline,
-                        description=(
-                            f"Human sent a message via Telegram that needs a response.\n\n"
-                            f"## Human's Message\n{text}\n\n"
-                            f"## Recent Conversation Context\n```\n{context_str}\n```\n\n"
-                            f"## Instructions\n"
-                            f"1. Understand what Human is asking\n"
-                            f"2. Research/check the relevant systems\n"
-                            f"3. Compose a clear, concise reply\n"
-                            f"4. Send the reply via send_human_message() MCP tool\n"
-                            f"5. Mark this ticket Done"
-                        ),
-                        tags="phase:implement,human-message",
+                    # Route 2: Everything else → forward to admin as P2P message
+                    # Admin reads it and decides: respond directly, create ticket, or ignore
+                    await store.insert_message(
+                        from_agent="human",
+                        to_agent="admin",
+                        body=f"[Telegram] {text}",
                     )
                     routed = True
-                    logger.info(f"Routed Human message to ticket #{ticket_id}")
+                    logger.info(f"Routed Human Telegram message to admin P2P inbox")
         except Exception as e:
             logger.warning(f"Human message routing failed: {e}")
 
