@@ -1476,7 +1476,7 @@ async def _start_auto_dispatch_async():
         global _v2_dispatch_task
         _v2_dispatch_task = asyncio.create_task(
             dispatch_loop_v2(client, session_mgr, store,
-                             interval=30, project_config=project_config)
+                             interval=10, project_config=project_config)
         )
         logger.info(f"V2 dispatcher started: max_sessions={max_sessions}")
     else:

@@ -226,7 +226,7 @@ async def dispatch_loop_v2(
     client: SQLiteTaskClient,
     session_mgr: SessionManager,
     store: AgentStore,
-    interval: int = 30,
+    interval: int = 10,
     project_config: dict = None,
 ):
     """Run v2 dispatch cycles continuously.
