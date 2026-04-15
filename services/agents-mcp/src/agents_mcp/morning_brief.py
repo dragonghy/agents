@@ -448,10 +448,27 @@ async def brief_loop(
 
                 filepath = await save_brief(client, store, config, output_dir)
                 last_generated_date = today
-                logger.info(f"Morning Brief generated: {filepath}")
+                logger.info(f"Morning Brief data saved: {filepath}")
 
-                # Send via email
-                await _send_brief_email(filepath, today)
+                # Don't auto-send the raw data brief to Human.
+                # Instead, wake up admin to write a proper Executive Brief.
+                # Admin reads STATUS.md + logs + this data file, then composes
+                # a judgment-driven brief and sends it via Telegram.
+                try:
+                    await store.insert_message(
+                        from_agent="system",
+                        to_agent="admin",
+                        body=(
+                            f"[Morning Brief] 7 AM — time to write today's Executive Brief.\n\n"
+                            f"Data file: {filepath}\n"
+                            f"Read: templates/shared/skills/executive-brief/memory/STATUS.md\n"
+                            f"Read: templates/shared/skills/executive-brief/log/\n"
+                            f"Then write a proper brief and send via send_human_message()."
+                        ),
+                    )
+                    logger.info("Admin notified to write Executive Brief")
+                except Exception as e:
+                    logger.warning(f"Failed to notify admin: {e}")
 
         except Exception as e:
             logger.error(f"Morning Brief generation failed: {e}")
