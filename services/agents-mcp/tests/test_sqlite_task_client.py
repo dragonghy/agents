@@ -656,6 +656,219 @@ class TestDependsOn:
         run(_test())
 
 
+class TestTicketHierarchy:
+    """Tests for Project → Milestone → Task hierarchy."""
+
+    def test_create_project_and_milestone(self, db_path):
+        """Create project and milestone with proper types and links."""
+        async def _test():
+            client = SQLiteTaskClient(db_path)
+            # Create project
+            proj_id = await client.create_ticket(
+                "Trading Project", type="project", status=4,
+                description="Live trading strategy execution",
+            )
+            proj = await client.get_ticket(proj_id)
+            assert proj["type"] == "project"
+            assert proj["status"] == 4
+
+            # Create milestone under project
+            ms_id = await client.create_ticket(
+                "Deploy Safeguards", type="milestone", status=4,
+                dependingTicketId=proj_id,
+                description="Set up paper trading safeguards",
+            )
+            ms = await client.get_ticket(ms_id)
+            assert ms["type"] == "milestone"
+            assert ms["dependingTicketId"] == proj_id
+
+            # Create task under milestone
+            task_id = await client.create_ticket(
+                "Implement stop-loss", status=3,
+                dependingTicketId=ms_id,
+            )
+            task = await client.get_ticket(task_id)
+            assert task["type"] == "task"
+            assert task["dependingTicketId"] == ms_id
+            await client.close()
+
+        run(_test())
+
+    def test_get_parent_chain(self, db_path):
+        """get_parent_chain should return [milestone, project] for a task."""
+        async def _test():
+            client = SQLiteTaskClient(db_path)
+            proj_id = await client.create_ticket(
+                "Project", type="project", status=4,
+                description="Project description",
+            )
+            ms_id = await client.create_ticket(
+                "Milestone", type="milestone", status=4,
+                dependingTicketId=proj_id,
+                description="Milestone description",
+            )
+            task_id = await client.create_ticket(
+                "Task", status=3, dependingTicketId=ms_id,
+            )
+
+            chain = await client.get_parent_chain(task_id)
+            assert len(chain) == 2
+            # First in chain is immediate parent (milestone)
+            assert chain[0]["id"] == ms_id
+            assert chain[0]["type"] == "milestone"
+            assert chain[0]["description"] == "Milestone description"
+            # Second is grandparent (project)
+            assert chain[1]["id"] == proj_id
+            assert chain[1]["type"] == "project"
+            assert chain[1]["description"] == "Project description"
+            await client.close()
+
+        run(_test())
+
+    def test_get_parent_chain_no_parent(self, db_path):
+        """get_parent_chain returns [] for standalone tasks."""
+        async def _test():
+            client = SQLiteTaskClient(db_path)
+            task_id = await client.create_ticket("Standalone task")
+
+            chain = await client.get_parent_chain(task_id)
+            assert chain == []
+            await client.close()
+
+        run(_test())
+
+    def test_get_parent_chain_single_level(self, db_path):
+        """get_parent_chain works for task directly under project."""
+        async def _test():
+            client = SQLiteTaskClient(db_path)
+            proj_id = await client.create_ticket(
+                "Project", type="project", status=4,
+            )
+            task_id = await client.create_ticket(
+                "Task", status=3, dependingTicketId=proj_id,
+            )
+
+            chain = await client.get_parent_chain(task_id)
+            assert len(chain) == 1
+            assert chain[0]["id"] == proj_id
+            await client.close()
+
+        run(_test())
+
+    def test_get_children(self, db_path):
+        """get_children returns direct children of any type."""
+        async def _test():
+            client = SQLiteTaskClient(db_path)
+            proj_id = await client.create_ticket(
+                "Project", type="project", status=4,
+            )
+            ms1 = await client.create_ticket(
+                "Milestone 1", type="milestone", status=4,
+                dependingTicketId=proj_id,
+            )
+            ms2 = await client.create_ticket(
+                "Milestone 2", type="milestone", status=3,
+                dependingTicketId=proj_id,
+            )
+
+            children = await client.get_children(proj_id)
+            assert len(children) == 2
+            assert {c["id"] for c in children} == {ms1, ms2}
+            await client.close()
+
+        run(_test())
+
+    def test_get_children_with_type_filter(self, db_path):
+        """get_children filters by child_type."""
+        async def _test():
+            client = SQLiteTaskClient(db_path)
+            ms_id = await client.create_ticket(
+                "Milestone", type="milestone", status=4,
+            )
+            task1 = await client.create_ticket(
+                "Task", status=3, dependingTicketId=ms_id,
+            )
+            sub1 = await client.upsert_subtask(ms_id, "Subtask")
+
+            all_children = await client.get_children(ms_id)
+            assert len(all_children) == 2
+
+            tasks_only = await client.get_children(ms_id, child_type="task")
+            assert len(tasks_only) == 1
+            assert tasks_only[0]["id"] == task1
+
+            subtasks_only = await client.get_children(ms_id, child_type="subtask")
+            assert len(subtasks_only) == 1
+            assert subtasks_only[0]["id"] == sub1
+            await client.close()
+
+        run(_test())
+
+    def test_list_tickets_type_filter(self, db_path):
+        """list_tickets with ticket_type filter excludes other types."""
+        async def _test():
+            client = SQLiteTaskClient(db_path)
+            await client.create_ticket("Project", type="project", status=4)
+            await client.create_ticket("Milestone", type="milestone", status=4)
+            await client.create_ticket("Task 1", status=3)
+            await client.create_ticket("Task 2", status=4)
+
+            # All types
+            result = await client.list_tickets(status="all")
+            assert result["total"] == 4
+
+            # Only tasks
+            result = await client.list_tickets(ticket_type="task", status="all")
+            assert result["total"] == 2
+            for t in result["tickets"]:
+                assert t["type"] == "task"
+
+            # Only projects
+            result = await client.list_tickets(ticket_type="project", status="all")
+            assert result["total"] == 1
+            assert result["tickets"][0]["headline"] == "Project"
+            await client.close()
+
+        run(_test())
+
+    def test_list_tickets_parent_filter(self, db_path):
+        """list_tickets with parent_id filter returns children."""
+        async def _test():
+            client = SQLiteTaskClient(db_path)
+            proj_id = await client.create_ticket("Project", type="project", status=4)
+            ms_id = await client.create_ticket(
+                "Milestone", type="milestone", status=4,
+                dependingTicketId=proj_id,
+            )
+            await client.create_ticket(
+                "Task under milestone", status=3, dependingTicketId=ms_id,
+            )
+            await client.create_ticket("Standalone task", status=3)
+
+            result = await client.list_tickets(parent_id=ms_id, status="all")
+            assert result["total"] == 1
+            assert result["tickets"][0]["headline"] == "Task under milestone"
+            await client.close()
+
+        run(_test())
+
+    def test_projects_not_in_dispatch_query(self, db_path):
+        """Projects and milestones should be excluded from dispatch queries."""
+        async def _test():
+            client = SQLiteTaskClient(db_path)
+            await client.create_ticket("Project", type="project", status=3)
+            await client.create_ticket("Milestone", type="milestone", status=3)
+            await client.create_ticket("Actionable task", status=3)
+
+            # Dispatch query: type='task', status=3
+            result = await client.list_tickets(status="3", ticket_type="task", limit=0)
+            assert result["total"] == 1
+            assert result["tickets"][0]["headline"] == "Actionable task"
+            await client.close()
+
+        run(_test())
+
+
 class TestSubtaskAssignee:
     """Tests for subtask assignee handling."""
 
