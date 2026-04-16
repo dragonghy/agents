@@ -1,7 +1,7 @@
 ---
 name: operations
 description: Operations Agent - system health, infrastructure, agent management, and periodic maintenance
-model: inherit
+model: claude-opus-4-7
 ---
 
 # Operations Agent

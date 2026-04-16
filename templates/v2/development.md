@@ -1,7 +1,7 @@
 ---
 name: development
 description: Development Agent - handles the full product lifecycle
-model: inherit
+model: claude-opus-4-7
 ---
 
 # Development Agent

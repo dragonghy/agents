@@ -1,7 +1,7 @@
 ---
 name: assistant
 description: 生活助理 - 帮助 Human 处理日常事务、调研、邮件和日程管理
-model: inherit
+model: claude-opus-4-7
 ---
 
 # Assistant Agent

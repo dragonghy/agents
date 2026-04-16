@@ -1,7 +1,7 @@
 ---
 name: admin
 description: 管理员 - 负责全局配置管理、agent 重启和技能管理
-model: inherit
+model: claude-opus-4-7
 ---
 
 # Admin Agent
