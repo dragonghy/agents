@@ -243,8 +243,15 @@ class SQLiteTaskClient:
         limit: int = 20,
         offset: int = 0,
         include_future: bool = False,
+        ticket_type: Optional[str] = None,
+        parent_id: Optional[int] = None,
     ) -> dict:
         """List tickets with summary fields and pagination.
+
+        Args:
+            ticket_type: Filter by type (e.g. 'task', 'project', 'milestone').
+                        Use 'task' to exclude subtasks/projects/milestones.
+            parent_id: Filter by dependingTicketId (children of a parent).
 
         Returns:
             {"tickets": [...], "total": N, "offset": N, "limit": N}
@@ -262,6 +269,16 @@ class SQLiteTaskClient:
             placeholders = ",".join("?" for _ in allowed)
             conditions.append(f"status IN ({placeholders})")
             params.extend(allowed)
+
+        # Type filter
+        if ticket_type:
+            conditions.append("type = ?")
+            params.append(ticket_type)
+
+        # Parent filter (children of a specific ticket)
+        if parent_id is not None:
+            conditions.append("dependingTicketId = ?")
+            params.append(parent_id)
 
         # Assignee filter — use native column
         if assignee:
@@ -622,6 +639,79 @@ class SQLiteTaskClient:
             subtask_id = cur.lastrowid
         await db.commit()
         return subtask_id
+
+    # ── Ticket Hierarchy (Project → Milestone → Task) ──
+
+    # Valid ticket types for the hierarchy
+    HIERARCHY_TYPES = ("project", "milestone", "task", "subtask")
+
+    async def get_parent_chain(self, ticket_id: int) -> list[dict]:
+        """Walk up the ticket hierarchy via dependingTicketId.
+
+        Returns a list of ancestor tickets ordered from immediate parent to root.
+        E.g., for a task under a milestone under a project:
+            [milestone_dict, project_dict]
+
+        Each entry contains DETAIL_FIELDS (including description for context injection).
+        Stops when dependingTicketId is 0 or ticket not found. Max depth: 5 (safety).
+        """
+        db = await self._get_db()
+        chain = []
+        current_id = ticket_id
+        visited = set()
+
+        for _ in range(5):  # Safety: max depth
+            async with db.execute(
+                "SELECT dependingTicketId FROM tickets WHERE id = ?", (current_id,)
+            ) as cur:
+                row = await cur.fetchone()
+            if not row:
+                break
+            parent_id = row["dependingTicketId"]
+            if not parent_id or parent_id == 0 or parent_id in visited:
+                break
+            visited.add(parent_id)
+
+            parent = await self.get_ticket(parent_id, prune=True)
+            if not parent:
+                break
+            chain.append(parent)
+            current_id = parent_id
+
+        return chain
+
+    async def get_children(self, ticket_id: int, child_type: Optional[str] = None) -> list[dict]:
+        """Get direct children of a ticket (tickets whose dependingTicketId = ticket_id).
+
+        Unlike get_all_subtasks which only returns type='subtask', this returns
+        children of any type (milestone, task, subtask) or filtered by child_type.
+
+        Args:
+            ticket_id: Parent ticket ID.
+            child_type: Optional type filter (e.g. 'milestone', 'task').
+
+        Returns:
+            List of child tickets with SUMMARY_FIELDS.
+        """
+        db = await self._get_db()
+        conditions = ["dependingTicketId = ?"]
+        params: list[Any] = [ticket_id]
+
+        if child_type:
+            conditions.append("type = ?")
+            params.append(child_type)
+
+        where = " AND ".join(conditions)
+        async with db.execute(
+            f"SELECT * FROM tickets WHERE {where} ORDER BY id",
+            params,
+        ) as cur:
+            rows = await cur.fetchall()
+
+        return [
+            inject_assignee({k: v for k, v in self._row_to_dict(r).items() if k in SUMMARY_FIELDS})
+            for r in rows
+        ]
 
     # ── Status labels ──
 

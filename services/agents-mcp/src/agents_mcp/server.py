@@ -312,6 +312,8 @@ async def list_tickets(
     limit: int = 20,
     offset: int = 0,
     include_future: bool = False,
+    ticket_type: str = None,
+    parent_id: int = None,
 ) -> str:
     """List tickets (summary view). Returns only active tickets by default.
 
@@ -330,12 +332,15 @@ async def list_tickets(
         limit: Max tickets per page (default 20, 0 for unlimited).
         offset: Skip first N tickets (for pagination).
         include_future: If True, include tickets with start_time in the future.
+        ticket_type: Filter by type ('task', 'project', 'milestone', 'subtask').
+        parent_id: Filter by parent ticket ID (dependingTicketId).
     """
     client = get_client()
     result = await client.list_tickets(
         project_id=project_id, status=status, assignee=assignee,
         tags=tags, dateFrom=dateFrom, limit=limit, offset=offset,
         include_future=include_future,
+        ticket_type=ticket_type, parent_id=parent_id,
     )
     return _json_dumps(result, indent=2)
 
@@ -391,8 +396,9 @@ async def create_ticket(
     tags: str = None,
     assignee: str = None,
     start_time: str = None,
+    milestone_id: int = None,
 ) -> str:
-    """Create a new ticket.
+    """Create a new ticket (type='task' by default).
 
     Args:
         headline: Ticket title.
@@ -400,6 +406,8 @@ async def create_ticket(
         tags: Raw tags string. If assignee is also set, agent tag is merged in.
         start_time: Optional future start time (YYYY-MM-DD HH:MM:SS). If set, the ticket
                     won't be dispatched to agents until this time is reached.
+        milestone_id: Optional parent milestone ticket ID. Links this task to a milestone
+                     in the project hierarchy (sets dependingTicketId).
     """
     client = get_client()
     kwargs = {}
@@ -411,6 +419,13 @@ async def create_ticket(
         kwargs["priority"] = priority
     if start_time is not None:
         kwargs["start_time"] = start_time
+    if milestone_id is not None:
+        # Validate milestone exists and is correct type
+        parent = await client.get_ticket(milestone_id, prune=True)
+        if parent and parent.get("type") in ("milestone", "project"):
+            kwargs["dependingTicketId"] = milestone_id
+        else:
+            logger.warning(f"create_ticket: milestone_id={milestone_id} not found or wrong type")
     result = await client.create_ticket(
         headline=headline, project_id=project_id,
         user_id=user_id, tags=tags, assignee=assignee, **kwargs,
@@ -605,6 +620,117 @@ async def update_depends_on(ticket_id: int, depends_on: str) -> str:
     client = get_client()
     result = await client.update_depends_on(ticket_id, depends_on)
     return _json_dumps(result, indent=2)
+
+
+# ════════════════════════════════════════
+# Ticket Hierarchy Tools (Project → Milestone → Task)
+# ════════════════════════════════════════
+
+
+@app.tool()
+@_with_timeout
+async def get_parent_chain(ticket_id: int) -> str:
+    """Get the parent chain for a ticket (walking up the hierarchy).
+
+    Returns ancestor tickets from immediate parent to root.
+    For a task under a milestone under a project, returns:
+        [milestone, project]
+
+    Each entry includes full detail fields (headline, description, status, etc.).
+    Use this to load project-level context when starting work on a task.
+
+    Args:
+        ticket_id: The ticket whose parent chain to fetch.
+    """
+    client = get_client()
+    chain = await client.get_parent_chain(ticket_id)
+    return _json_dumps(chain, indent=2)
+
+
+@app.tool()
+@_with_timeout
+async def get_children(ticket_id: int, child_type: str = None) -> str:
+    """Get direct children of a ticket in the hierarchy.
+
+    Returns tickets whose dependingTicketId equals the given ticket_id.
+    Unlike get_all_subtasks (which only returns type='subtask'), this returns
+    children of any type.
+
+    Args:
+        ticket_id: Parent ticket ID.
+        child_type: Optional type filter ('milestone', 'task', 'subtask').
+    """
+    client = get_client()
+    children = await client.get_children(ticket_id, child_type=child_type)
+    return _json_dumps(children, indent=2)
+
+
+@app.tool()
+@_with_timeout
+async def create_project(
+    headline: str,
+    description: str = None,
+    tags: str = None,
+) -> str:
+    """Create a project-level ticket (type='project').
+
+    Projects are long-lived context containers that track goals, strategy,
+    decision history, and current state. They are NOT dispatched to agents —
+    they serve as memory for all tasks within the project.
+
+    Args:
+        headline: Project name (e.g. 'Live Trading Project').
+        description: Project context — goals, strategy, decisions, current state.
+        tags: Optional tags (e.g. 'project:trading').
+    """
+    client = get_client()
+    kwargs = {"type": "project", "status": 4}
+    if description is not None:
+        kwargs["description"] = description
+    result = await client.create_ticket(
+        headline=headline, tags=tags, **kwargs,
+    )
+    return _json_dumps({"id": result, "type": "project"}, indent=2)
+
+
+@app.tool()
+@_with_timeout
+async def create_milestone(
+    project_id: int,
+    headline: str,
+    description: str = None,
+    tags: str = None,
+) -> str:
+    """Create a milestone under a project (type='milestone').
+
+    Milestones represent phase goals within a project (e.g. 'Deploy safeguards
+    to paper trading'). They track progress and aggregate context from child tasks.
+
+    Args:
+        project_id: The parent project ticket ID.
+        headline: Milestone name.
+        description: Milestone goals and acceptance criteria.
+        tags: Optional tags.
+    """
+    client = get_client()
+    # Verify parent is a project
+    parent = await client.get_ticket(project_id, prune=True)
+    if not parent:
+        return _json_dumps({"error": f"Project #{project_id} not found"})
+    if parent.get("type") != "project":
+        return _json_dumps({"error": f"Ticket #{project_id} is type='{parent.get('type')}', not 'project'"})
+
+    kwargs = {
+        "type": "milestone",
+        "status": 4,
+        "dependingTicketId": project_id,
+    }
+    if description is not None:
+        kwargs["description"] = description
+    result = await client.create_ticket(
+        headline=headline, tags=tags, **kwargs,
+    )
+    return _json_dumps({"id": result, "type": "milestone", "parent_project": project_id}, indent=2)
 
 
 # ════════════════════════════════════════

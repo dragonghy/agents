@@ -112,7 +112,8 @@ async def dispatch_cycle_v2(
     }
 
     # Get all actionable tasks (status=3 New, ordered by priority)
-    all_tasks = await client.list_tickets(status="3", limit=0)
+    # Only dispatch type='task' — projects and milestones are containers, not work items
+    all_tasks = await client.list_tickets(status="3", limit=0, ticket_type="task")
     tasks = all_tasks.get("tickets", [])
     results["tasks_found"] = len(tasks)
 

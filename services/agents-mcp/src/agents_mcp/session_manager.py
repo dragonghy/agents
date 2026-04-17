@@ -134,7 +134,11 @@ class SessionManager:
             self._create_tmux_window(info, agent_def, project_dirs)
             # Wait for Claude Code to start, then send the task
             await asyncio.sleep(5)
-            self._send_task(info, task_description, task_id)
+
+            # Load parent chain context (project → milestone) for hierarchy-aware tasks
+            parent_context = await self._load_parent_context(task_id)
+
+            self._send_task(info, task_description, task_id, parent_context=parent_context)
             info.status = "active"
             logger.info(
                 f"Spawned session {session_id} ({agent_type}) for task #{task_id}"
@@ -220,15 +224,71 @@ class SessionManager:
             timeout=_SUBPROCESS_TIMEOUT,
         )
 
-    def _send_task(self, info: SessionInfo, description: str, task_id: int):
+    async def _load_parent_context(self, task_id: int) -> str:
+        """Load project/milestone context for a task via parent chain.
+
+        Fetches the parent chain (task → milestone → project) and formats
+        a context block to inject into the agent's first message.
+
+        Returns:
+            Formatted context string, or empty string if no parent hierarchy.
+        """
+        try:
+            from agents_mcp.sqlite_task_client import SQLiteTaskClient
+            import os
+
+            db_path = os.path.join(self.root_dir, ".agents-tasks.db")
+            client = SQLiteTaskClient(db_path)
+            try:
+                chain = await client.get_parent_chain(task_id)
+            finally:
+                await client.close()
+
+            if not chain:
+                return ""
+
+            parts = []
+            for ancestor in reversed(chain):  # Root first (project → milestone)
+                atype = ancestor.get("type", "unknown")
+                headline = ancestor.get("headline", "")
+                desc = ancestor.get("description", "")
+                aid = ancestor.get("id", "?")
+                # Truncate long descriptions to keep context manageable
+                if desc and len(desc) > 2000:
+                    desc = desc[:2000] + "\n... (truncated)"
+                parts.append(
+                    f"### [{atype.upper()} #{aid}] {headline}\n{desc}"
+                )
+
+            if parts:
+                return (
+                    "## 📋 项目上下文 (Project Context)\n"
+                    "以下是你当前任务所属的项目/里程碑背景信息，请据此理解大方向：\n\n"
+                    + "\n\n".join(parts)
+                    + "\n\n---\n"
+                )
+            return ""
+        except Exception as e:
+            logger.warning(f"Failed to load parent context for task #{task_id}: {e}")
+            return ""
+
+    def _send_task(self, info: SessionInfo, description: str, task_id: int, parent_context: str = ""):
         """Send the task to the agent session.
 
         The message instructs the agent to:
         1. Read the full ticket (description + all comments) for context recovery
         2. Read the project's claude.md for project conventions
         3. Start working according to the ticket's phase
+
+        If parent_context is provided, it's prepended to give the agent
+        project-level awareness before it starts working.
         """
+        context_block = ""
+        if parent_context:
+            context_block = parent_context + "\n"
+
         msg = (
+            f"{context_block}"
             f"你的任务是 ticket #{task_id}。\n\n"
             f"**第一步**：调用 get_ticket(ticket_id={task_id}) 读取完整 ticket 信息，"
             f"然后调用 get_comments(module=\"ticket\", module_id={task_id}, limit=0) 读取所有历史评论。"
