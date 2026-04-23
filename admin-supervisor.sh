@@ -27,9 +27,9 @@
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
-DAEMON_LOG="${ROOT_DIR}/.daemon.log"
-STATE_FILE="${ROOT_DIR}/.admin-supervisor.state"
-BRIEF_LOG_DIR="${ROOT_DIR}/templates/shared/skills/executive-brief/log"
+DAEMON_LOG="${DAEMON_LOG:-${ROOT_DIR}/.daemon.log}"
+STATE_FILE="${STATE_FILE:-${ROOT_DIR}/.admin-supervisor.state}"
+BRIEF_LOG_DIR="${BRIEF_LOG_DIR:-${ROOT_DIR}/templates/shared/skills/executive-brief/log}"
 
 # Tunables (override via env for testing)
 STALL_THRESHOLD_SECS="${STALL_THRESHOLD_SECS:-14400}"   # 4h
