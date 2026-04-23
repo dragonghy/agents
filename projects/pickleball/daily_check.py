@@ -322,143 +322,215 @@ def find_best_1h_slot(open_slots: list[dict]) -> dict | None:
 # Booking via Playwright
 # ---------------------------------------------------------------------------
 
-def book_slot_via_ui(page: Page, target_date: dt.date,
-                     best_slot: dict) -> bool:
+_SAFE_REASON_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _slugify_reason(reason: str) -> str:
+    """Produce a filesystem-safe slug from a human reason string."""
+    slug = _SAFE_REASON_RE.sub("-", (reason or "").lower()).strip("-")
+    return (slug or "unknown")[:40]
+
+
+def _save_screenshot(page: Page, target_date: dt.date, reason: str) -> Path | None:
+    """Save a full-page screenshot with a descriptive filename.
+
+    Filename format: ``book-{YYYY-MM-DD}-{reason-slug}-{HHMMSS}.png``.
+    Returns the path on success, None on failure. Never raises.
+    """
+    ts = dt.datetime.now().strftime("%H%M%S")
+    ss_path = LOG_DIR / f"book-{target_date.isoformat()}-{_slugify_reason(reason)}-{ts}.png"
+    try:
+        page.screenshot(path=str(ss_path), full_page=True)
+        log(f"screenshot saved [{reason}]: {ss_path}")
+        return ss_path
+    except Exception as e:
+        log(f"screenshot save failed [{reason}]: {e}")
+        return None
+
+
+def _time_label(start_hour: int, start_min: int) -> str:
+    """Format 24h hour/min as CourtReserve 12h label, e.g. (19, 0) -> '7:00 PM'."""
+    if start_hour >= 12:
+        display_hour = start_hour - 12 if start_hour > 12 else 12
+        ampm = "PM"
+    else:
+        display_hour = start_hour if start_hour > 0 else 12
+        ampm = "AM"
+    return f"{display_hour}:{start_min:02d} {ampm}"
+
+
+# JS helper: find the matching Kendo scheduler event by target start timestamp
+# and click its DOM element. Returns a diagnostic dict either way so the caller
+# can log exactly what the page looked like.
+_CLICK_SLOT_JS = r"""
+(params) => {
+    const { targetMs, targetHour, targetMin } = params;
+    const diag = { success: false };
+
+    const scheduler = document.querySelector("[data-role='scheduler']");
+    if (!scheduler) { diag.error = 'no scheduler'; return diag; }
+
+    const $el = (typeof jQuery !== 'undefined') ? jQuery(scheduler) : null;
+    const widget = $el ? $el.data('kendoScheduler') : null;
+    if (!widget) { diag.error = 'no kendo widget'; return diag; }
+
+    // Strategy A: iterate the dataSource and match by .start timestamp.
+    let items = [];
+    try { items = widget.dataSource.data() || []; } catch (e) {}
+    diag.dataSourceCount = items.length;
+
+    const matches = [];
+    for (const it of items) {
+        const start = it && it.start ? it.start.getTime() : null;
+        if (start === targetMs) {
+            matches.push({ uid: it.uid, id: it.id || it.Id });
+        }
+    }
+    diag.strategyAMatches = matches.length;
+
+    for (const m of matches) {
+        if (!m.uid) continue;
+        const el = document.querySelector(`.k-event[data-uid="${m.uid}"]`);
+        if (el) {
+            el.scrollIntoView({ block: 'center' });
+            el.click();
+            diag.success = true;
+            diag.strategy = 'A-dataSource';
+            diag.uid = m.uid;
+            return diag;
+        }
+    }
+
+    // Strategy B: iterate visible .k-event elements, ask the widget for each.
+    const events = Array.from(document.querySelectorAll('.k-event[data-uid]'));
+    diag.domEventCount = events.length;
+    for (const el of events) {
+        const uid = el.getAttribute('data-uid');
+        if (!uid) continue;
+        let occ = null;
+        try { occ = widget.occurrenceByUid(uid); } catch (e) {}
+        const start = occ && occ.start ? occ.start.getTime() : null;
+        if (start === targetMs) {
+            el.scrollIntoView({ block: 'center' });
+            el.click();
+            diag.success = true;
+            diag.strategy = 'B-occurrenceByUid';
+            diag.uid = uid;
+            return diag;
+        }
+    }
+
+    // Strategy C: legacy — match the time label row, click its content cell.
+    const ampm = targetHour >= 12 ? 'PM' : 'AM';
+    const disp = targetHour % 12 === 0 ? 12 : targetHour % 12;
+    const label = `${disp}:${String(targetMin).padStart(2,'0')} ${ampm}`;
+    diag.legacyLabel = label;
+
+    const timeCells = document.querySelectorAll('.k-scheduler-times td, .k-scheduler-timecolumn td');
+    let rowIdx = -1;
+    for (let i = 0; i < timeCells.length; i++) {
+        const txt = (timeCells[i].textContent || '').replace(/\s+/g, ' ').trim();
+        if (txt.toUpperCase().includes(label.toUpperCase())) { rowIdx = i; break; }
+    }
+    diag.legacyRowIndex = rowIdx;
+    if (rowIdx >= 0) {
+        const rows = document.querySelectorAll('.k-scheduler-content tr');
+        if (rowIdx < rows.length) {
+            const cell = rows[rowIdx].querySelector('td');
+            if (cell) {
+                cell.scrollIntoView({ block: 'center' });
+                cell.click();
+                diag.success = true;
+                diag.strategy = 'C-legacy-row';
+                return diag;
+            }
+        }
+    }
+
+    diag.error = 'no strategy matched';
+    return diag;
+}
+"""
+
+
+def book_slot_via_ui(
+    page: Page, target_date: dt.date, best_slot: dict
+) -> tuple[bool, str, list[Path]]:
     """Book a 1-hour slot by interacting with the CourtReserve scheduler UI.
 
     Flow:
-    1. Click on the target time cell in the Kendo scheduler
-    2. A booking modal appears
-    3. Set duration to 60 min
-    4. Confirm the booking
+    1. Click the target time event in the Kendo scheduler.
+    2. Booking modal appears.
+    3. Set duration to 60 min.
+    4. Confirm the booking.
 
-    Returns True on success, False on failure.
+    Returns ``(success, reason, screenshots)``. ``reason`` is a human-readable
+    short description of the outcome suitable for Telegram. ``screenshots`` is
+    a list of local paths for every screenshot captured during the attempt
+    (may be empty if playwright screenshotting itself failed).
     """
     start_time = best_slot["start_time"]
     start_hour = start_time.hour
     start_min = start_time.minute
+    target_start_ms = int(start_time.timestamp() * 1000)
+    time_label = _time_label(start_hour, start_min)
+    screenshots: list[Path] = []
 
-    log(f"attempting to book {start_time.strftime('%H:%M')}-{best_slot['end_time'].strftime('%H:%M')} on {target_date}")
+    log(
+        f"attempting to book {start_time.strftime('%H:%M')}-"
+        f"{best_slot['end_time'].strftime('%H:%M')} on {target_date}"
+    )
+    log(f"looking for time label: {time_label}")
 
     try:
-        # Strategy: Click on the time slot in the scheduler grid.
-        # Kendo scheduler day-view has td cells with data-slot attributes,
-        # or we can click the event/availability block directly.
-
-        # First, try clicking on the availability block at the target time.
-        # The scheduler shows availability as colored blocks.
-        # We look for a slot element that matches our target start time.
-
-        # CourtReserve scheduler: time slots are in a table with rows per 30min.
-        # The time label format is "7:00 PM", "7:30 PM", etc.
-        # We target the row matching our start time.
-
-        # Format time for AM/PM matching (CourtReserve uses 12h format)
-        if start_hour >= 12:
-            display_hour = start_hour - 12 if start_hour > 12 else 12
-            ampm = "PM"
-        else:
-            display_hour = start_hour if start_hour > 0 else 12
-            ampm = "AM"
-        time_label = f"{display_hour}:{start_min:02d} {ampm}"
-        log(f"looking for time label: {time_label}")
-
-        # Try to click directly on a scheduler slot cell for the target time.
-        # Kendo scheduler cells have data attributes with slot timestamps.
-        # Alternative: find the row with the time label and click the first
-        # available court column in that row.
-
-        # Approach: Use JavaScript to find and click the right slot
-        clicked = page.evaluate("""(params) => {
-            const { targetHour, targetMin } = params;
-
-            // Find all scheduler slots
-            const scheduler = document.querySelector("[data-role='scheduler']");
-            if (!scheduler) return { success: false, error: 'no scheduler found' };
-
-            // Try Kendo scheduler API
-            const widget = $(scheduler).data('kendoScheduler');
-            if (!widget) return { success: false, error: 'no kendo widget' };
-
-            // Find slot elements - Kendo scheduler uses .k-scheduler-content td elements
-            const cells = document.querySelectorAll('.k-scheduler-content td.k-scheduler-cell');
-            if (!cells.length) return { success: false, error: 'no cells found', cellCount: 0 };
-
-            // Each cell has a data-slot attribute or we can compute from position
-            // Alternative: trigger slot click programmatically
-            // The cells are arranged: rows = time slots, columns = courts
-
-            // Look for time slots in the left column
-            const timeSlots = document.querySelectorAll('.k-scheduler-times td');
-            let targetRowIndex = -1;
-            for (let i = 0; i < timeSlots.length; i++) {
-                const text = timeSlots[i].textContent.trim();
-                if (text) {
-                    // Parse "7:00 PM" format
-                    const m = text.match(/(\\d+):(\\d+)\\s*(AM|PM)/i);
-                    if (m) {
-                        let h = parseInt(m[1]);
-                        const min = parseInt(m[2]);
-                        if (m[3].toUpperCase() === 'PM' && h !== 12) h += 12;
-                        if (m[3].toUpperCase() === 'AM' && h === 12) h = 0;
-                        if (h === targetHour && min === targetMin) {
-                            targetRowIndex = i;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if (targetRowIndex < 0) return { success: false, error: 'time row not found' };
-
-            // Click the corresponding content cell (first available court column)
-            const contentRows = document.querySelectorAll('.k-scheduler-content tr');
-            if (targetRowIndex < contentRows.length) {
-                const row = contentRows[targetRowIndex];
-                const firstCell = row.querySelector('td');
-                if (firstCell) {
-                    firstCell.click();
-                    return { success: true, rowIndex: targetRowIndex };
-                }
-            }
-
-            return { success: false, error: 'could not click cell' };
-        }""", {"targetHour": start_hour, "targetMin": start_min})
-
+        # Step 1: click the availability event matching the target start time.
+        clicked = page.evaluate(
+            _CLICK_SLOT_JS,
+            {
+                "targetMs": target_start_ms,
+                "targetHour": start_hour,
+                "targetMin": start_min,
+            },
+        )
         log(f"slot click result: {clicked}")
 
+        # Python-side fallback: if the in-page strategies all failed, try
+        # clicking a Playwright-located .k-event whose bounding text contains
+        # the time label. Last-ditch — kept to match legacy behaviour.
         if not clicked or not clicked.get("success"):
-            # Fallback: try clicking on any visible availability event at this time
-            log("primary click failed, trying fallback: click on event element")
+            ss = _save_screenshot(page, target_date, "click-fail-primary")
+            if ss:
+                screenshots.append(ss)
+
+            log("primary click failed, trying Python fallback on .k-event")
             events = page.locator(".k-event").all()
             log(f"found {len(events)} event elements")
-
-            target_start_ms = int(start_time.timestamp() * 1000)
             clicked_any = False
             for ev in events:
                 try:
-                    # Check if this event's data matches our target time
-                    text = ev.text_content() or ""
-                    if time_label.replace(" ", "") in text.replace(" ", ""):
+                    text = (ev.text_content() or "").replace(" ", "")
+                    if time_label.replace(" ", "") in text:
                         ev.click(timeout=3000)
                         clicked_any = True
-                        log(f"clicked event with text: {text[:50]}")
+                        log(f"clicked event via text match: {text[:60]}")
                         break
                 except Exception:
                     continue
 
             if not clicked_any:
-                log("fallback also failed; could not click any matching slot")
-                return False
+                log("all click strategies failed; could not open booking modal")
+                ss = _save_screenshot(page, target_date, "click-fail-all")
+                if ss:
+                    screenshots.append(ss)
+                err = (clicked or {}).get("error") or "no strategy matched"
+                return (
+                    False,
+                    f"未能点击 {time_label} 的预定格子 ({err})",
+                    screenshots,
+                )
 
-        # Wait for booking modal to appear
+        # Step 2: wait for booking modal.
         time.sleep(2)
-
-        # Look for the booking form/modal
-        # CourtReserve booking modal typically has:
-        # - Duration dropdown
-        # - Court selection
-        # - "Reserve" or "Book" button
         modal_selectors = [
             ".modal.show",
             ".k-window",
@@ -478,20 +550,16 @@ def book_slot_via_ui(page: Page, target_date: dt.date,
 
         if not modal_found:
             log("no booking modal appeared after clicking slot")
-            # Take screenshot for debugging
-            try:
-                ss_path = LOG_DIR / f"book-fail-{target_date}.png"
-                page.screenshot(path=str(ss_path))
-                log(f"screenshot saved: {ss_path}")
-            except Exception:
-                pass
-            return False
+            ss = _save_screenshot(page, target_date, "no-modal")
+            if ss:
+                screenshots.append(ss)
+            return False, "点击后未出现预定弹窗", screenshots
 
-        # Try to set duration to 60 minutes
+        # Step 3: try to set duration to 60 minutes.
         duration_set = _set_duration(page, 60)
         log(f"duration set to 60min: {duration_set}")
 
-        # Click the Book/Reserve button
+        # Step 4: click the book/reserve button.
         book_btn_selectors = [
             "button:has-text('Reserve')",
             "button:has-text('Book')",
@@ -515,18 +583,14 @@ def book_slot_via_ui(page: Page, target_date: dt.date,
 
         if not booked:
             log("could not find booking button in modal")
-            try:
-                ss_path = LOG_DIR / f"book-no-btn-{target_date}.png"
-                page.screenshot(path=str(ss_path))
-                log(f"screenshot saved: {ss_path}")
-            except Exception:
-                pass
-            return False
+            ss = _save_screenshot(page, target_date, "no-book-button")
+            if ss:
+                screenshots.append(ss)
+            return False, "预定弹窗中找不到 Reserve/Book 按钮", screenshots
 
-        # Wait for confirmation
+        # Step 5: wait and check for confirmation / error.
         time.sleep(3)
 
-        # Check for success indicators
         success_indicators = [
             ".alert-success",
             ":has-text('successfully')",
@@ -543,29 +607,27 @@ def book_slot_via_ui(page: Page, target_date: dt.date,
             except Exception:
                 continue
 
-        # Also check: if modal closed and no error, treat as success
+        # Check for explicit errors before falling back to "modal gone = ok".
+        error_reason = ""
         if not confirmed:
-            # Check if any error message appeared
             error_indicators = [
                 ".alert-danger",
                 ".alert-error",
                 ":has-text('error')",
                 ":has-text('failed')",
             ]
-            has_error = False
             for sel in error_indicators:
                 try:
                     el = page.locator(sel).first
                     if el.is_visible(timeout=1000):
-                        error_text = el.text_content() or ""
+                        error_text = (el.text_content() or "").strip()
                         log(f"booking error: {error_text[:200]}")
-                        has_error = True
+                        error_reason = error_text[:200]
                         break
                 except Exception:
                     continue
 
-            if not has_error:
-                # If no error and modal is gone, assume success
+            if not error_reason:
                 modal_gone = True
                 for sel in modal_selectors:
                     try:
@@ -578,26 +640,28 @@ def book_slot_via_ui(page: Page, target_date: dt.date,
                     log("modal closed without error — treating as success")
                     confirmed = True
 
-        # Take post-booking screenshot
-        try:
-            ss_path = LOG_DIR / f"book-result-{target_date}.png"
-            page.screenshot(path=str(ss_path))
-            log(f"screenshot saved: {ss_path}")
-        except Exception:
-            pass
+        # Always record a post-attempt screenshot for evidence.
+        ss = _save_screenshot(
+            page, target_date, "book-confirmed" if confirmed else "book-unconfirmed"
+        )
+        if ss:
+            screenshots.append(ss)
 
-        return confirmed
+        if confirmed:
+            return True, "预定成功", screenshots
+        return (
+            False,
+            f"未看到成功提示 ({error_reason or 'no success/error signal'})",
+            screenshots,
+        )
 
     except Exception as e:
         log(f"booking failed with exception: {e}")
         traceback.print_exc()
-        try:
-            ss_path = LOG_DIR / f"book-error-{target_date}.png"
-            page.screenshot(path=str(ss_path))
-            log(f"screenshot saved: {ss_path}")
-        except Exception:
-            pass
-        return False
+        ss = _save_screenshot(page, target_date, "exception")
+        if ss:
+            screenshots.append(ss)
+        return False, f"预定过程异常: {e}", screenshots
 
 
 def _set_duration(page: Page, minutes: int) -> bool:
@@ -695,8 +759,10 @@ def format_report(target_date: dt.date, open_slots: list[dict], window: str) -> 
 
 
 def format_booking_result(target_date: dt.date, best_slot: dict | None,
-                          success: bool, reason: str = "") -> str:
+                          success: bool, reason: str = "",
+                          screenshots: list[Path] | None = None) -> str:
     weekday = target_date.strftime("%A")
+    screenshots = screenshots or []
     if success and best_slot:
         t1 = best_slot["start_time"].strftime("%H:%M")
         t2 = best_slot["end_time"].strftime("%H:%M")
@@ -706,23 +772,29 @@ def format_booking_result(target_date: dt.date, best_slot: dict | None,
             f"\u23f0 {t1}\u2013{t2}\n"
             f"\U0001f3be Sunnyvale pickleball court"
         )
-    elif best_slot:
+    if best_slot:
         t1 = best_slot["start_time"].strftime("%H:%M")
         t2 = best_slot["end_time"].strftime("%H:%M")
-        return (
-            f"\u26a0\ufe0f Pickleball \u9884\u5b9a\u5931\u8d25\n"
-            f"\U0001f4c5 {target_date.strftime('%Y-%m-%d')} ({weekday})\n"
-            f"\u23f0 \u5c1d\u8bd5\u9884\u5b9a {t1}\u2013{t2}\n"
-            f"\u539f\u56e0: {reason or '\u672a\u77e5\u9519\u8bef'}\n"
-            f"\U0001f517 https://app.courtreserve.com/Online/Reservations/Bookings/13233?sId=16984"
-        )
+        lines = [
+            f"\u26a0\ufe0f Pickleball \u9884\u5b9a\u5931\u8d25",
+            f"\U0001f4c5 {target_date.strftime('%Y-%m-%d')} ({weekday})",
+            f"\u23f0 \u5c1d\u8bd5\u9884\u5b9a {t1}\u2013{t2}",
+            f"\u539f\u56e0: {reason or '\u672a\u77e5\u9519\u8bef'}",
+        ]
     else:
-        return (
-            f"\u26a0\ufe0f Pickleball \u65e0\u53ef\u7528\u65f6\u6bb5\n"
-            f"\U0001f4c5 {target_date.strftime('%Y-%m-%d')} ({weekday})\n"
-            f"7-9PM \u65e0\u8fde\u7eed 1 \u5c0f\u65f6\u7a7a\u95f2\u65f6\u6bb5\n"
-            f"\U0001f517 https://app.courtreserve.com/Online/Reservations/Bookings/13233?sId=16984"
-        )
+        lines = [
+            f"\u26a0\ufe0f Pickleball \u65e0\u53ef\u7528\u65f6\u6bb5",
+            f"\U0001f4c5 {target_date.strftime('%Y-%m-%d')} ({weekday})",
+            f"7-9PM \u65e0\u8fde\u7eed 1 \u5c0f\u65f6\u7a7a\u95f2\u65f6\u6bb5",
+        ]
+    if screenshots:
+        lines.append(f"\U0001f4f8 \u622a\u56fe ({len(screenshots)}):")
+        for p in screenshots:
+            lines.append(f"  {p}")
+    lines.append(
+        "\U0001f517 https://app.courtreserve.com/Online/Reservations/Bookings/13233?sId=16984"
+    )
+    return "\n".join(lines)
 
 
 def notify_human(body: str) -> None:
@@ -829,18 +901,19 @@ def main() -> int:
                 best = find_best_1h_slot(open_slots)
                 if best:
                     log(f"best 1h slot: {best['start_time'].strftime('%H:%M')}-{best['end_time'].strftime('%H:%M')}")
-                    success = book_slot_via_ui(page, target_date, best)
+                    success, reason, shots = book_slot_via_ui(page, target_date, best)
                     if success:
                         save_booking(
                             target_date,
                             best["start_time"].strftime("%H:%M"),
                             best["end_time"].strftime("%H:%M"),
                         )
-                        booking_result = format_booking_result(target_date, best, True)
+                        booking_result = format_booking_result(
+                            target_date, best, True, screenshots=shots
+                        )
                     else:
                         booking_result = format_booking_result(
-                            target_date, best, False,
-                            "UI booking failed - check screenshots in logs/"
+                            target_date, best, False, reason=reason, screenshots=shots
                         )
                 else:
                     log("no suitable 1h slot found in window")

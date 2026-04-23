@@ -177,5 +177,87 @@ class TestBookingsLedger:
         assert dc.has_booking_for_date(dt.date(2026, 4, 14)) is False
 
 
+class TestSlugifyReason:
+    def test_basic(self):
+        assert dc._slugify_reason("click-fail-primary") == "click-fail-primary"
+
+    def test_spaces_and_caps(self):
+        assert dc._slugify_reason("No Modal") == "no-modal"
+
+    def test_special_chars(self):
+        assert dc._slugify_reason("book/confirmed!") == "book-confirmed"
+
+    def test_empty_falls_back(self):
+        assert dc._slugify_reason("") == "unknown"
+        assert dc._slugify_reason("   ") == "unknown"
+
+    def test_truncates_to_40(self):
+        long = "x" * 100
+        out = dc._slugify_reason(long)
+        assert len(out) <= 40
+
+
+class TestTimeLabel:
+    def test_morning(self):
+        assert dc._time_label(9, 0) == "9:00 AM"
+
+    def test_noon(self):
+        assert dc._time_label(12, 30) == "12:30 PM"
+
+    def test_evening(self):
+        assert dc._time_label(19, 0) == "7:00 PM"
+
+    def test_midnight(self):
+        assert dc._time_label(0, 0) == "12:00 AM"
+
+    def test_pads_minutes(self):
+        assert dc._time_label(7, 5) == "7:05 AM"
+
+
+class TestFormatBookingResult:
+    def _slot(self):
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("America/Los_Angeles")
+        return {
+            "start_time": dt.datetime(2026, 4, 25, 19, 0, tzinfo=tz),
+            "end_time": dt.datetime(2026, 4, 25, 20, 0, tzinfo=tz),
+        }
+
+    def test_success_no_screenshots(self):
+        out = dc.format_booking_result(dt.date(2026, 4, 25), self._slot(), True)
+        # "已预定" in Chinese
+        assert "\u5df2\u9884\u5b9a" in out
+        assert "19:00" in out and "20:00" in out
+
+    def test_failure_includes_reason(self):
+        out = dc.format_booking_result(
+            dt.date(2026, 4, 25), self._slot(), False,
+            reason="\u672a\u80fd\u70b9\u51fb 7:00 PM \u7684\u9884\u5b9a\u683c\u5b50 (no strategy matched)",
+        )
+        # "预定失败"
+        assert "\u9884\u5b9a\u5931\u8d25" in out
+        assert "no strategy matched" in out
+        assert "courtreserve.com" in out
+
+    def test_failure_includes_screenshot_paths(self):
+        shots = [
+            Path("/tmp/pickleball-logs/book-2026-04-25-click-fail-all-120030.png"),
+            Path("/tmp/pickleball-logs/book-2026-04-25-exception-120031.png"),
+        ]
+        out = dc.format_booking_result(
+            dt.date(2026, 4, 25), self._slot(), False,
+            reason="oops", screenshots=shots,
+        )
+        # "截图"
+        assert "\u622a\u56fe" in out
+        for p in shots:
+            assert str(p) in out
+
+    def test_no_slot_available(self):
+        out = dc.format_booking_result(dt.date(2026, 4, 25), None, False)
+        # "无可用时段"
+        assert "\u65e0\u53ef\u7528\u65f6\u6bb5" in out
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
