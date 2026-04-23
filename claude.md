@@ -61,6 +61,7 @@ Ticket stays status=4 until PR is merged. Agent comments at each stage.
 6. **Telegram outbound** — use POST /api/v1/human/send (not /human/messages which is inbound)
 7. **`crontab` on macOS hangs on Full Disk Access** — if modifying the user crontab from a shell that doesn't have TCC permission, `crontab <file>` blocks forever waiting on a system dialog that never comes. Use `~/Library/LaunchAgents/*.plist` + `launchctl load` instead; launchd has no such restriction.
 8. **Silent-failure bugs in scheduled scrapers** — if a scraper returns `[]` when the target dataset is missing, the filter downstream reports "nothing open" and Human never learns the job broke. Always distinguish "loaded the target, nothing matched" from "never loaded the target" and make the latter raise loudly (see `projects/pickleball/daily_check.py` `TargetNotReached`).
+9. **Admin has its own launchd supervisor** — `admin-supervisor.sh` (loaded via `com.agents.admin.supervisor.plist`) checks the `agents:admin` tmux window every 60s and auto-restarts it via `./restart_all_agents.sh admin --force` if stalled > 4h AND there is pending work (unread inbox or unsent morning brief). If admin ever "mysteriously reappears" after a long silence, check `.admin-supervisor.log` and `.daemon.log` for `ADMIN-SUPERVISOR:` lines — that's not a glitch, that's recovery. The supervisor is intentionally out-of-process so it survives daemon death. Daemon death itself is handled by `daemon-watchdog.sh` (its own separate launchd job).
 
 ## Active Projects
 
