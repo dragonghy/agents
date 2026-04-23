@@ -1,6 +1,6 @@
 # Executive Status — Agent Harness
 
-> Last updated: 2026-04-15
+> Last updated: 2026-04-23
 > Updated by: admin
 
 ## What We're Building
@@ -117,11 +117,12 @@ The product flow:
 
 - V2 dispatcher: running (10s cycle)
 - Telegram bot: running
-- Active sessions: 0 (all cleanup tickets completed)
-- Open PRs: 0
-- Open tickets: #460 (trading, pending live), #461 (VM, blocked), #467 (strategy doc)
+- Active sessions: 0 ephemeral (3 permanent: admin, mcp-daemon, telegram-bot)
+- Open PRs: 0 (PR #13 merged 4/23)
+- Open tickets: #479 (Human review, waiting 8d) — #485/#483 closed 4/23
 - Admin wake-up: fixed (Telegram → admin inbox → tmux notify when idle)
 - Brief responder: fixed (no longer auto-executes on bare #numbers)
+- **⚠️ Admin session was offline 4/18–4/22** — no briefs dispatched for 5 days, tmux recreated 4/22 21:27. Cause unknown; needs engineering fix so admin auto-recovers.
 
 ## Human Communication Preferences
 
@@ -146,3 +147,5 @@ The product flow:
 | 4/14 | Reports must be CEO-level, not ticket dumps | Human (Telegram) |
 | 4/14 | Lovable/Replit = website builders, not company builders | Human (Telegram) |
 | 4/15 | Memory system must capture discussion details | Human (tmux session) |
+| 4/17 | Self-merge PRs when Human can't review (low-risk) | Human (Telegram) |
+| 4/23 | Same policy applied: PR #13 Pickleball fix self-merged | admin (applied rule) |
