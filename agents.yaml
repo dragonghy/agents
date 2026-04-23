@@ -91,6 +91,23 @@ agent_types:
     prompt_template: templates/v2/assistant.md
     mcp_servers: [agents, microsoft]
 
+# ═══════════════════════════════════════════════
+# PR Monitor: auto-close tickets when linked PRs merge (ticket #487)
+# ═══════════════════════════════════════════════
+#
+# Polls `gh pr list` every `interval_seconds` for merged PRs in the listed
+# repos. When a merged PR references `#NNN` in its title/body, the matching
+# ticket is transitioned to status=0 (Done) with a comment. If the ticket
+# has open children, the close is skipped and admin is flagged instead.
+pr_monitor:
+  enabled: true
+  interval_seconds: 600      # check every 10 minutes
+  lookback_days: 7           # only reconcile PRs merged in the last N days
+  repos:
+    - dragonghy/agents
+    # Add trading once it has a GitHub origin:
+    # - dragonghy/trading
+
 # Project definitions: each project specifies its context and resource config.
 projects:
   agent-hub:
