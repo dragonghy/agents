@@ -29,6 +29,14 @@ TELEGRAM_BOT_DIR="${ROOT_DIR}/services/telegram-bot"
 TELEGRAM_BOT_LOG="${ROOT_DIR}/.telegram-bot.log"
 TELEGRAM_BOT_PID_FILE="${ROOT_DIR}/.telegram-bot.pid"
 
+# Tmux window names for long-running services (not Claude agent tabs).
+TMUX_WIN_MCP_DAEMON="mcp-daemon"
+TMUX_WIN_TELEGRAM="telegram-bot"
+
+services_use_tmux() {
+  [[ "${SKIP_SERVICES_TMUX:-}" != "1" ]]
+}
+
 # Use agent-config.py so daemon host/port match setup-agents.py (resolve_env_vars, .env).
 get_daemon_port() {
   python3 "$CONFIG" daemon-port
@@ -79,8 +87,19 @@ start_daemon() {
   [[ -z "$port" ]] && return 0  # No daemon configured
 
   if daemon_is_running; then
-    echo "  Daemon already running on ${host}:${port}"
-    return 0
+    if services_use_tmux; then
+      ensure_session 2>/dev/null || true
+      if tmux has-session -t "$TMUX_SESSION" 2>/dev/null \
+        && is_service_window_alive "$TMUX_WIN_MCP_DAEMON"; then
+        echo "  Daemon already running on ${host}:${port} (tmux: ${TMUX_SESSION}:${TMUX_WIN_MCP_DAEMON})"
+        return 0
+      fi
+      echo "  Daemon is up but not in tmux; stopping listener to relaunch in ${TMUX_WIN_MCP_DAEMON}..."
+      stop_daemon
+    else
+      echo "  Daemon already running on ${host}:${port}"
+      return 0
+    fi
   fi
 
   # Build Web UI if not already built
@@ -91,25 +110,40 @@ start_daemon() {
     mv "$DAEMON_LOG" "${DAEMON_LOG}.prev"
   fi
 
-  echo "  Starting daemon on ${host}:${port}..."
-  AGENTS_CONFIG_PATH="${ROOT_DIR}/agents.yaml" \
-    nohup uv run --directory "${ROOT_DIR}/services/agents-mcp" \
-    agents-mcp --daemon --host "$host" --port "$port" \
-    >> "$DAEMON_LOG" 2>&1 &
-  local pid=$!
-  echo "$pid" > "$DAEMON_PID_FILE"
+  if services_use_tmux; then
+    ensure_session
+    if is_service_window_alive "$TMUX_WIN_MCP_DAEMON"; then
+      tmux kill-window -t "$TMUX_SESSION:$TMUX_WIN_MCP_DAEMON" 2>/dev/null || true
+    fi
+    echo "  Starting daemon on ${host}:${port} (tmux: ${TMUX_SESSION}:${TMUX_WIN_MCP_DAEMON})..."
+    tmux new-window -t "$TMUX_SESSION" -n "$TMUX_WIN_MCP_DAEMON"
+    local dcmd="cd \"${ROOT_DIR}\" && AGENTS_CONFIG_PATH=\"${ROOT_DIR}/agents.yaml\" uv run --directory \"${ROOT_DIR}/services/agents-mcp\" agents-mcp --daemon --host \"${host}\" --port \"${port}\" 2>&1 | tee -a \"${DAEMON_LOG}\""
+    tmux send-keys -t "$TMUX_SESSION:$TMUX_WIN_MCP_DAEMON" "$dcmd" Enter
+  else
+    echo "  Starting daemon on ${host}:${port} (background, log: ${DAEMON_LOG})..."
+    AGENTS_CONFIG_PATH="${ROOT_DIR}/agents.yaml" \
+      nohup uv run --directory "${ROOT_DIR}/services/agents-mcp" \
+      agents-mcp --daemon --host "$host" --port "$port" \
+      >> "$DAEMON_LOG" 2>&1 &
+    echo "$!" > "$DAEMON_PID_FILE"
+  fi
 
   # Wait for daemon to be ready (up to 15 seconds)
   local tries=0
   while ! daemon_is_running; do
     tries=$((tries + 1))
     if [[ $tries -ge 30 ]]; then
-      echo "  ERROR: Daemon failed to start. Check ${DAEMON_LOG}"
+      echo "  ERROR: Daemon failed to start. Check ${DAEMON_LOG} or tmux window ${TMUX_WIN_MCP_DAEMON}"
       return 1
     fi
     sleep 0.5
   done
-  echo "  Daemon started (pid: $pid)"
+  local listen_pid
+  listen_pid="$(lsof -t -i ":${port}" -sTCP:LISTEN 2>/dev/null | head -1 || true)"
+  if [[ -n "$listen_pid" ]]; then
+    echo "$listen_pid" > "$DAEMON_PID_FILE"
+  fi
+  echo "  Daemon started (pid: ${listen_pid:-?})"
 }
 
 stop_daemon() {
@@ -128,6 +162,9 @@ stop_daemon() {
   if [[ -n "$pids" ]]; then
     echo "$pids" | xargs kill 2>/dev/null || true
     echo "  Daemon stopped"
+  fi
+  if services_use_tmux && is_service_window_alive "$TMUX_WIN_MCP_DAEMON"; then
+    tmux kill-window -t "$TMUX_SESSION:$TMUX_WIN_MCP_DAEMON" 2>/dev/null || true
   fi
   rm -f "$DAEMON_PID_FILE"
 }
@@ -155,8 +192,20 @@ ensure_daemon_for_agents() {
 
 # --- Telegram bot management ---
 # v2: Telegram bot is a long-running transport bridge (no AI). It polls the
-# daemon's outbox and relays Human <-> Agent messages. It runs as a plain
-# background process (not in tmux).
+# daemon's outbox and relays Human <-> Agent messages. By default it shares the
+# agents tmux session (window telegram-bot); set SKIP_SERVICES_TMUX=1 for nohup.
+
+telegram_bot_pgrep_pid() {
+  # uv runs: "uv run --directory .../telegram-bot python bot.py" and a .venv python child.
+  # Escape dots in the path so pgrep ERE does not treat them as wildcards.
+  local ere_dir p
+  ere_dir="${TELEGRAM_BOT_DIR//./\\.}"
+  p="$(pgrep -f "uv run --directory ${ere_dir} python bot\\.py" 2>/dev/null | head -1 || true)"
+  [[ -n "$p" ]] && echo "$p" && return 0
+  p="$(pgrep -f "${ere_dir}/\\.venv/.*/python[^[:space:]]*[[:space:]]+bot\\.py" 2>/dev/null | head -1 || true)"
+  [[ -n "$p" ]] && echo "$p" && return 0
+  pgrep -f "${ere_dir}/bot\\.py" 2>/dev/null | head -1 || true
+}
 
 telegram_bot_pid() {
   if [[ -f "$TELEGRAM_BOT_PID_FILE" ]]; then
@@ -166,6 +215,12 @@ telegram_bot_pid() {
       echo "$pid"
       return 0
     fi
+  fi
+  local pg
+  pg="$(telegram_bot_pgrep_pid)"
+  if [[ -n "$pg" ]] && kill -0 "$pg" 2>/dev/null; then
+    echo "$pg"
+    return 0
   fi
   return 1
 }
@@ -186,8 +241,19 @@ start_telegram_bot() {
   fi
 
   if telegram_bot_is_running; then
-    echo "  Telegram bot already running (pid: $(telegram_bot_pid))"
-    return 0
+    if services_use_tmux; then
+      ensure_session 2>/dev/null || true
+      if tmux has-session -t "$TMUX_SESSION" 2>/dev/null \
+        && is_service_window_alive "$TMUX_WIN_TELEGRAM"; then
+        echo "  Telegram bot already running (pid: $(telegram_bot_pid), tmux: ${TMUX_SESSION}:${TMUX_WIN_TELEGRAM})"
+        return 0
+      fi
+      echo "  Telegram bot is up but not in tmux; stopping to relaunch in ${TMUX_WIN_TELEGRAM}..."
+      stop_telegram_bot
+    else
+      echo "  Telegram bot already running (pid: $(telegram_bot_pid))"
+      return 0
+    fi
   fi
 
   # Rotate log
@@ -195,24 +261,48 @@ start_telegram_bot() {
     mv "$TELEGRAM_BOT_LOG" "${TELEGRAM_BOT_LOG}.prev"
   fi
 
-  echo "  Starting telegram-bot..."
-  nohup uv run --directory "$TELEGRAM_BOT_DIR" python bot.py \
-    >> "$TELEGRAM_BOT_LOG" 2>&1 &
-  local pid=$!
-  echo "$pid" > "$TELEGRAM_BOT_PID_FILE"
-
-  # Give it a moment to actually start, then verify it didn't immediately die
-  sleep 1
-  if kill -0 "$pid" 2>/dev/null; then
-    echo "  Telegram bot started (pid: $pid)"
+  if services_use_tmux; then
+    ensure_session
+    if is_service_window_alive "$TMUX_WIN_TELEGRAM"; then
+      tmux kill-window -t "$TMUX_SESSION:$TMUX_WIN_TELEGRAM" 2>/dev/null || true
+    fi
+    echo "  Starting telegram-bot (tmux: ${TMUX_SESSION}:${TMUX_WIN_TELEGRAM})..."
+    tmux new-window -t "$TMUX_SESSION" -n "$TMUX_WIN_TELEGRAM"
+    local tcmd="cd \"${ROOT_DIR}\" && uv run --directory \"${TELEGRAM_BOT_DIR}\" python bot.py 2>&1 | tee -a \"${TELEGRAM_BOT_LOG}\""
+    tmux send-keys -t "$TMUX_SESSION:$TMUX_WIN_TELEGRAM" "$tcmd" Enter
   else
-    echo "  ERROR: Telegram bot failed to start. Check ${TELEGRAM_BOT_LOG}"
-    rm -f "$TELEGRAM_BOT_PID_FILE"
-    return 1
+    echo "  Starting telegram-bot (background, log: ${TELEGRAM_BOT_LOG})..."
+    nohup uv run --directory "$TELEGRAM_BOT_DIR" python bot.py \
+      >> "$TELEGRAM_BOT_LOG" 2>&1 &
+    echo "$!" > "$TELEGRAM_BOT_PID_FILE"
   fi
+
+  # uv/python may take a few seconds to appear in the process table
+  local pid="" tries=0
+  while [[ $tries -lt 15 ]]; do
+    sleep 1
+    pid="$(telegram_bot_pgrep_pid)"
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      echo "$pid" > "$TELEGRAM_BOT_PID_FILE"
+      echo "  Telegram bot started (pid: $pid)"
+      return 0
+    fi
+    tries=$((tries + 1))
+  done
+  echo "  ERROR: Telegram bot failed to start. Check ${TELEGRAM_BOT_LOG} or tmux ${TMUX_WIN_TELEGRAM}"
+  rm -f "$TELEGRAM_BOT_PID_FILE"
+  return 1
 }
 
 stop_telegram_bot() {
+  if services_use_tmux && is_service_window_alive "$TMUX_WIN_TELEGRAM"; then
+    echo "  Stopping telegram-bot (tmux window)..."
+    tmux kill-window -t "$TMUX_SESSION:$TMUX_WIN_TELEGRAM" 2>/dev/null || true
+    rm -f "$TELEGRAM_BOT_PID_FILE"
+    echo "  Telegram bot stopped"
+    return 0
+  fi
+
   if ! telegram_bot_is_running; then
     echo "  Telegram bot not running"
     rm -f "$TELEGRAM_BOT_PID_FILE"
@@ -242,6 +332,11 @@ ensure_session() {
     tmux new-session -d -s "$TMUX_SESSION" -n "_init"
     tmux set-option -t "$TMUX_SESSION" remain-on-exit on
   fi
+}
+
+is_service_window_alive() {
+  local win="$1"
+  tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$win"
 }
 
 AGENTS_NEEDING_SESSION=()
@@ -375,6 +470,8 @@ start_agent() {
     cmd="${cmd} --resume ${sid}"
   fi
 
+  # Force-killing the last window in the session exits the tmux server; recreate session before new-window.
+  ensure_session
   tmux new-window -t "$TMUX_SESSION" -n "$agent"
   tmux send-keys -t "$TMUX_SESSION:$agent" "$cmd" Enter
   echo "  Started: $agent"
@@ -435,7 +532,7 @@ session_manager when tasks arrive. This script no longer launches the 18
 persistent v1 agent windows by default.
 
 Commands:
-  (no args)           Ensure daemon + telegram-bot are running (v2 default)
+  (no args)           v2 default: tmux windows mcp-daemon, telegram-bot, admin + services
   --daemon            Restart the MCP daemon only
   --stop-daemon       Stop the MCP daemon
   --telegram          Restart the telegram-bot transport service
@@ -449,6 +546,11 @@ Restart modes (apply to agent restarts, default: --skip-busy):
   --skip-busy         Skip agents with in-progress tickets
   --force             Graceful /exit for all agents (wait, then force kill)
   --request-restart   Ask busy agents to self-restart via MCP
+
+Environment:
+  SKIP_DAEMON=1         Do not start or probe the MCP daemon
+  SKIP_ADMIN_TMUX=1     Default command only: skip creating the admin tmux window
+  SKIP_SERVICES_TMUX=1  Run MCP daemon + telegram-bot as background processes (no tmux panes)
 EOF
 }
 
@@ -497,19 +599,35 @@ case "${1:-__default__}" in
           graceful_stop_agent "$agent" 5
         fi
       done
+      for svc in "$TMUX_WIN_MCP_DAEMON" "$TMUX_WIN_TELEGRAM"; do
+        if is_service_window_alive "$svc"; then
+          tmux kill-window -t "$TMUX_SESSION:$svc" 2>/dev/null || true
+        fi
+      done
     fi
     stop_telegram_bot
     stop_daemon
     ;;
   --default|__default__)
-    # v2 default: only ensure daemon + telegram-bot. No v1 agent windows.
-    echo "=== v2 default: ensure daemon + telegram-bot ==="
-    echo "    (v2 agents are ephemeral — the daemon spawns them per task.)"
-    echo "    (For legacy v1 behavior, use --legacy.)"
+    # v2 default: daemon + telegram-bot + one persistent admin tmux window.
+    # Task-driven dev/ops/assistant sessions are still ephemeral (session_manager).
+    echo "=== v2 default: daemon + telegram-bot + admin (tmux) ==="
+    echo "    (Ephemeral v2 task agents: spawned by the daemon per ticket.)"
+    echo "    (All persistent v1 windows:  ./restart_all_agents.sh --legacy)"
     if [[ "${SKIP_DAEMON:-}" != "1" ]]; then
       ensure_daemon_for_agents
     fi
     start_telegram_bot || true
+    if [[ "${SKIP_ADMIN_TMUX:-}" != "1" ]] && echo "$ALL_AGENTS" | grep -qw admin; then
+      ensure_session
+      start_agent admin
+      cleanup_init_window
+      capture_new_sessions
+      if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+        tmux select-window -t "$TMUX_SESSION:admin" 2>/dev/null \
+          || tmux select-window -t "$TMUX_SESSION:$(tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' | head -1)"
+      fi
+    fi
     ;;
   --legacy|--all)
     # Legacy v1: restart daemon + ALL persistent v1 agent windows.
@@ -540,6 +658,7 @@ case "${1:-__default__}" in
     done
     cleanup_init_window
     capture_new_sessions
+    start_telegram_bot || true
     tmux select-window -t "$TMUX_SESSION:$(tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' | head -1)"
     ;;
   --help|-h)

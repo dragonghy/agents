@@ -299,7 +299,11 @@ def setup_v2_agent_types(cfg, source_dir, output_dir):
             print(f"  v2 {type_name}: SKIP (no prompt template found)")
             continue
         dst = os.path.join(out_agents_defs, f"{type_name}.md")
-        shutil.copy2(src, dst)
+        try:
+            shutil.copy2(src, dst)
+        except shutil.SameFileError:
+            # e.g. .claude/agents/<type>.md is a symlink to templates/v2/<type>.md
+            pass
         synced.append(type_name)
         print(f"  v2 {type_name}: OK")
     return synced
