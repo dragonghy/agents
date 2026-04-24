@@ -51,6 +51,17 @@ Pickup → Plan → Research → Implement (worktree) → Test → PR → CI →
 
 Ticket stays status=4 until PR is merged. Agent comments at each stage.
 
+### Auto-close on PR merge
+
+The daemon runs a `pr_monitor` background loop (see `services/agents-mcp/src/agents_mcp/pr_monitor.py`, ticket #487). Every 10 minutes it polls `gh pr list --state merged` for configured repos (`pr_monitor.repos` in `agents.yaml`) and:
+
+- Parses `#NNN` refs from merged PR title + body (excludes the PR's own number).
+- For each referenced ticket: if status != 0 and no open children → transitions to status=0 with an auto-close comment.
+- If the ticket has open children, posts a "flagged" comment instead (admin must decide).
+- State lives in `.agents-pr-monitor.json` at the repo root; first-boot seeds all existing merged PRs as "already reconciled" so we never retroactively close old tickets.
+
+So when you merge a PR that says "Closes #487", you do NOT need to manually close ticket #487 — the monitor will do it within 10 minutes.
+
 ## Known Pitfalls
 
 1. **Don't kill admin's tmux window** — admin is the running COO session

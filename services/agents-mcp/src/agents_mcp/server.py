@@ -1498,6 +1498,7 @@ _dispatch_task = None
 _v2_dispatch_task = None
 _usage_task = None
 _brief_task = None
+_pr_monitor_task = None
 
 
 async def _usage_collection_loop(root_dir: str, agents: list[str], interval: int = 300):
@@ -1625,6 +1626,38 @@ async def _start_auto_dispatch_async():
                    output_dir=briefs_dir)
     )
     logger.info(f"Morning Brief loop started (daily at 07:00, output: {briefs_dir}/)")
+
+    # PR monitor: auto-close tickets when their linked PR merges (ticket #487).
+    pr_cfg = cfg.get("pr_monitor", {})
+    if pr_cfg.get("enabled", True):
+        from agents_mcp.pr_monitor import pr_monitor_loop
+
+        pr_repos = pr_cfg.get("repos") or []
+        pr_interval = int(pr_cfg.get("interval_seconds", 600))
+        pr_lookback = int(pr_cfg.get("lookback_days", 7))
+        pr_state_path = os.path.join(root_dir, ".agents-pr-monitor.json")
+
+        if pr_repos:
+            global _pr_monitor_task
+            _pr_monitor_task = asyncio.create_task(
+                pr_monitor_loop(
+                    client,
+                    pr_state_path,
+                    pr_repos,
+                    interval_seconds=pr_interval,
+                    lookback_days=pr_lookback,
+                )
+            )
+            logger.info(
+                f"PR monitor started: repos={pr_repos}, interval={pr_interval}s"
+            )
+        else:
+            logger.info(
+                "PR monitor disabled: no repos configured "
+                "(set pr_monitor.repos in agents.yaml)"
+            )
+    else:
+        logger.info("PR monitor disabled (pr_monitor.enabled=false)")
 
 
 # ════════════════════════════════════════
