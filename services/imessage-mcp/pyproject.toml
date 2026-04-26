@@ -1,0 +1,24 @@
+[project]
+name = "imessage-mcp"
+version = "0.1.0"
+description = "iMessage MCP — read & send macOS iMessage via chat.db + osascript (personal-agent only)"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=0.9.0",
+    "fastmcp>=0.9.0",
+]
+
+[project.scripts]
+imessage-mcp = "imessage_mcp.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/imessage_mcp"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]
