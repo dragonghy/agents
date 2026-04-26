@@ -24,8 +24,15 @@ async def generate_brief(
     client: SQLiteTaskClient,
     store: AgentStore,
     config: dict = None,
+    workspace_id: Optional[int] = None,
 ) -> str:
     """Generate the Morning Brief content.
+
+    Args:
+        workspace_id: Optional workspace filter. When None, the brief includes
+            tickets from all workspaces (legacy behavior preserved for callers
+            that don't yet know about workspaces). Daemon-driven daily briefs
+            default to the Work workspace via save_brief().
 
     Returns:
         Markdown-formatted brief string.
@@ -34,8 +41,20 @@ async def generate_brief(
     yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
     today_str = now.strftime("%Y-%m-%d")
 
+    # Resolve workspace label for the title (no failure if lookup fails).
+    workspace_label = ""
+    if workspace_id:
+        try:
+            ws = await client.get_workspace(workspace_id)
+            if ws:
+                workspace_label = f" [{ws.get('name', '')}]"
+        except Exception:
+            pass
+
     sections = []
-    sections.append(f"# Morning Brief — {now.strftime('%Y-%m-%d %A')}\n")
+    sections.append(
+        f"# Morning Brief{workspace_label} — {now.strftime('%Y-%m-%d %A')}\n"
+    )
 
     # ── Section 1: System Health ──
     health_lines = []
@@ -103,7 +122,7 @@ async def generate_brief(
 
     # Tickets completed recently
     try:
-        done_tickets = await client.list_tickets(status="0", limit=20)
+        done_tickets = await client.list_tickets(status="0", limit=20, workspace_id=workspace_id)
         recent_done = [
             t for t in done_tickets.get("tickets", [])
             if t.get("dateToEdit", "") >= yesterday or t.get("date", "") >= yesterday
@@ -119,7 +138,7 @@ async def generate_brief(
 
     # Active in-progress tickets
     try:
-        in_progress = await client.list_tickets(status="4", limit=20)
+        in_progress = await client.list_tickets(status="4", limit=20, workspace_id=workspace_id)
         ip_tickets = in_progress.get("tickets", [])
         if ip_tickets:
             work_lines.append(f"\n### In Progress ({len(ip_tickets)})")
@@ -131,7 +150,7 @@ async def generate_brief(
 
     # New unassigned tickets
     try:
-        new_tickets = await client.list_tickets(status="3", limit=20)
+        new_tickets = await client.list_tickets(status="3", limit=20, workspace_id=workspace_id)
         new_list = new_tickets.get("tickets", [])
         if new_list:
             work_lines.append(f"\n### New / Waiting ({len(new_list)})")
@@ -143,7 +162,7 @@ async def generate_brief(
 
     # Blocked tickets
     try:
-        blocked = await client.list_tickets(status="1", limit=20)
+        blocked = await client.list_tickets(status="1", limit=20, workspace_id=workspace_id)
         blocked_list = blocked.get("tickets", [])
         if blocked_list:
             work_lines.append(f"\n### Blocked ({len(blocked_list)})")
@@ -159,7 +178,9 @@ async def generate_brief(
 
     # Human-assigned tickets (things waiting for Human)
     try:
-        human_tickets = await client.list_tickets(status="3", assignee="human", limit=20)
+        human_tickets = await client.list_tickets(
+            status="3", assignee="human", limit=20, workspace_id=workspace_id,
+        )
         human_list = human_tickets.get("tickets", [])
         if human_list:
             for t in human_list:
@@ -203,7 +224,7 @@ async def generate_brief(
     resource_lines = []
     try:
         # Blocked tickets represent resource needs
-        blocked_tickets = await client.list_tickets(status="1", limit=20)
+        blocked_tickets = await client.list_tickets(status="1", limit=20, workspace_id=workspace_id)
         blocked_list = blocked_tickets.get("tickets", [])
         if blocked_list:
             for t in blocked_list:
@@ -254,7 +275,7 @@ async def generate_brief(
     # ── Section 6: Velocity (7-day trend) ──
     velocity_lines = []
     try:
-        all_done = await client.list_tickets(status="0", limit=100)
+        all_done = await client.list_tickets(status="0", limit=100, workspace_id=workspace_id)
         done_list = all_done.get("tickets", [])
 
         # Count completions by day (last 7 days)
@@ -292,7 +313,9 @@ async def generate_brief(
         project_stats = defaultdict(lambda: {"done": 0, "in_progress": 0, "new": 0, "blocked": 0})
 
         for status_code, status_name in [("0", "done"), ("4", "in_progress"), ("3", "new"), ("1", "blocked")]:
-            tickets_resp = await client.list_tickets(status=status_code, limit=100)
+            tickets_resp = await client.list_tickets(
+                status=status_code, limit=100, workspace_id=workspace_id,
+            )
             for t in tickets_resp.get("tickets", []):
                 proj = _extract_project_tag(t.get("tags", ""))
                 project_stats[proj][status_name] += 1
@@ -348,20 +371,36 @@ async def save_brief(
     store: AgentStore,
     config: dict = None,
     output_dir: str = None,
+    workspace_id: Optional[int] = None,
 ) -> str:
     """Generate and save the Morning Brief to a file.
+
+    Args:
+        workspace_id: Optional workspace filter; passed through to generate_brief.
 
     Returns:
         Path to the saved brief file.
     """
-    brief = await generate_brief(client, store, config)
+    brief = await generate_brief(client, store, config, workspace_id=workspace_id)
 
     if not output_dir:
         output_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "briefs")
     os.makedirs(output_dir, exist_ok=True)
 
     today = datetime.now().strftime("%Y-%m-%d")
-    filepath = os.path.join(output_dir, f"brief-{today}.md")
+    # Suffix file with workspace name when scoped (so personal-brief doesn't
+    # overwrite work-brief). Default (workspace_id=None or Work) keeps legacy
+    # filename `brief-YYYY-MM-DD.md`.
+    suffix = ""
+    if workspace_id:
+        try:
+            ws = await client.get_workspace(workspace_id)
+            ws_name = (ws or {}).get("name", "")
+            if ws_name and ws_name.lower() != "work":
+                suffix = f"-{ws_name.lower().replace(' ', '-')}"
+        except Exception:
+            pass
+    filepath = os.path.join(output_dir, f"brief-{today}{suffix}.md")
     with open(filepath, "w") as f:
         f.write(brief)
 

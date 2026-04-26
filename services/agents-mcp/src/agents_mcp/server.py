@@ -314,6 +314,7 @@ async def list_tickets(
     include_future: bool = False,
     ticket_type: str = None,
     parent_id: int = None,
+    workspace_id: int = None,
 ) -> str:
     """List tickets (summary view). Returns only active tickets by default.
 
@@ -334,6 +335,7 @@ async def list_tickets(
         include_future: If True, include tickets with start_time in the future.
         ticket_type: Filter by type ('task', 'project', 'milestone', 'subtask').
         parent_id: Filter by parent ticket ID (dependingTicketId).
+        workspace_id: Filter by workspace ID (1=Work, 2=Personal). Omit to see all.
     """
     client = get_client()
     result = await client.list_tickets(
@@ -341,6 +343,7 @@ async def list_tickets(
         tags=tags, dateFrom=dateFrom, limit=limit, offset=offset,
         include_future=include_future,
         ticket_type=ticket_type, parent_id=parent_id,
+        workspace_id=workspace_id,
     )
     return _json_dumps(result, indent=2)
 
@@ -353,6 +356,7 @@ async def search_tickets(
     time_range: str = None,
     status: str = None,
     assignee: str = None,
+    workspace_id: int = None,
 ) -> str:
     """Full-text search for tickets by keyword. Matches against headline and description.
 
@@ -366,11 +370,12 @@ async def search_tickets(
         time_range: Only search recent tickets, e.g. "7d" for last 7 days, "30d" for last month.
         status: Filter by status codes (e.g. "3,4" for active only).
         assignee: Filter by agent name (e.g. "dev-alex").
+        workspace_id: Filter by workspace ID (1=Work, 2=Personal). Omit to see all.
     """
     client = get_client()
     result = await client.search_tickets(
         query=query, limit=limit, time_range=time_range,
-        status=status, assignee=assignee,
+        status=status, assignee=assignee, workspace_id=workspace_id,
     )
     return _json_dumps(result, indent=2)
 
@@ -671,6 +676,7 @@ async def create_project(
     headline: str,
     description: str = None,
     tags: str = None,
+    workspace_id: int = None,
 ) -> str:
     """Create a project-level ticket (type='project').
 
@@ -682,15 +688,31 @@ async def create_project(
         headline: Project name (e.g. 'Live Trading Project').
         description: Project context — goals, strategy, decisions, current state.
         tags: Optional tags (e.g. 'project:trading').
+        workspace_id: Workspace this project belongs to (default = Work workspace).
+                      Use list_workspaces() to discover available workspace ids.
     """
+    from agents_mcp.sqlite_task_client import DEFAULT_WORK_WORKSPACE_ID
     client = get_client()
     kwargs = {"type": "project", "status": 4}
     if description is not None:
         kwargs["description"] = description
+    # Default to Work workspace if not provided (backward compatible).
+    effective_ws = workspace_id if workspace_id is not None else DEFAULT_WORK_WORKSPACE_ID
+    # Validate workspace exists; fall back to Work if not.
+    ws = await client.get_workspace(effective_ws)
+    if not ws:
+        logger.warning(
+            "create_project: workspace_id=%s not found, falling back to Work (#%d)",
+            effective_ws, DEFAULT_WORK_WORKSPACE_ID,
+        )
+        effective_ws = DEFAULT_WORK_WORKSPACE_ID
+    kwargs["workspace_id"] = effective_ws
     result = await client.create_ticket(
         headline=headline, tags=tags, **kwargs,
     )
-    return _json_dumps({"id": result, "type": "project"}, indent=2)
+    return _json_dumps(
+        {"id": result, "type": "project", "workspace_id": effective_ws}, indent=2
+    )
 
 
 @app.tool()
@@ -731,6 +753,92 @@ async def create_milestone(
         headline=headline, tags=tags, **kwargs,
     )
     return _json_dumps({"id": result, "type": "milestone", "parent_project": project_id}, indent=2)
+
+
+# ════════════════════════════════════════
+# Workspace Tools (ticket #490)
+# ════════════════════════════════════════
+
+
+@app.tool()
+@_with_timeout
+async def list_workspaces(kind: str = None) -> str:
+    """List all workspaces.
+
+    Workspaces are the top-level container for projects. The seed workspaces
+    are #1='Work' (engineering / business tickets) and #2='Personal' (life /
+    assistant tickets).
+
+    Args:
+        kind: Optional filter ('work' | 'personal' | 'other').
+    """
+    client = get_client()
+    result = await client.list_workspaces(kind=kind)
+    return _json_dumps({"workspaces": result, "total": len(result)}, indent=2)
+
+
+@app.tool()
+@_with_timeout
+async def get_workspace(workspace_id: int) -> str:
+    """Get a workspace by ID."""
+    client = get_client()
+    result = await client.get_workspace(workspace_id)
+    if not result:
+        return _json_dumps({"error": f"Workspace #{workspace_id} not found"})
+    return _json_dumps(result, indent=2)
+
+
+@app.tool()
+@_with_timeout
+async def create_workspace(
+    name: str,
+    kind: str = "work",
+    description: str = None,
+    default_assignee: str = None,
+) -> str:
+    """Create a new workspace.
+
+    Args:
+        name: Unique workspace name (e.g. 'Side Project Alpha').
+        kind: 'work' | 'personal' | 'other' (default 'work').
+        description: Optional description of what this workspace is for.
+        default_assignee: Optional default agent for tickets created in this
+                          workspace (advisory; not enforced).
+    """
+    client = get_client()
+    try:
+        ws_id = await client.create_workspace(
+            name=name, kind=kind,
+            description=description, default_assignee=default_assignee,
+        )
+    except ValueError as e:
+        return _json_dumps({"error": str(e)})
+    return _json_dumps({"id": ws_id, "name": name, "kind": kind}, indent=2)
+
+
+@app.tool()
+@_with_timeout
+async def update_workspace(
+    workspace_id: int,
+    name: str = None,
+    kind: str = None,
+    description: str = None,
+    default_assignee: str = None,
+) -> str:
+    """Update workspace fields. Only the fields you pass are changed."""
+    client = get_client()
+    existing = await client.get_workspace(workspace_id)
+    if not existing:
+        return _json_dumps({"error": f"Workspace #{workspace_id} not found"})
+    try:
+        await client.update_workspace(
+            workspace_id, name=name, kind=kind,
+            description=description, default_assignee=default_assignee,
+        )
+    except ValueError as e:
+        return _json_dumps({"error": str(e)})
+    updated = await client.get_workspace(workspace_id)
+    return _json_dumps(updated, indent=2)
 
 
 # ════════════════════════════════════════
@@ -1368,19 +1476,30 @@ async def list_service_locks() -> str:
 
 @app.tool()
 @_with_timeout
-async def generate_morning_brief() -> str:
+async def generate_morning_brief(workspace_id: int = None) -> str:
     """Generate today's Morning Brief on demand.
 
     Returns a formatted daily digest with system health, work summary,
     decisions needed, and cost report. Also saves to briefs/ directory.
+
+    Args:
+        workspace_id: Optional workspace filter. When omitted, the brief
+                     defaults to the Work workspace (id=1) for backward
+                     compatibility. Pass a different id to scope the brief
+                     to another workspace.
     """
     from agents_mcp.morning_brief import save_brief
+    from agents_mcp.sqlite_task_client import DEFAULT_WORK_WORKSPACE_ID
     client = get_client()
     store = await get_store()
     cfg = get_config()
     root_dir = cfg.get("_root_dir", ".")
     briefs_dir = os.path.join(root_dir, "briefs")
-    filepath = await save_brief(client, store, config=cfg, output_dir=briefs_dir)
+    effective_ws = workspace_id if workspace_id is not None else DEFAULT_WORK_WORKSPACE_ID
+    filepath = await save_brief(
+        client, store, config=cfg, output_dir=briefs_dir,
+        workspace_id=effective_ws,
+    )
     # Read and return the generated brief
     with open(filepath) as f:
         content = f.read()

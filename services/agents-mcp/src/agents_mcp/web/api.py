@@ -146,6 +146,90 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
             limit=int(params["limit"]) if "limit" in params else None,
             offset=int(params.get("offset", 0)),
             include_future=include_future,
+            workspace_id=int(params["workspace_id"]) if "workspace_id" in params else None,
+        )
+        return JSONResponse(result)
+
+    # ── Workspaces (ticket #490) ──
+
+    async def list_workspaces(request: Request) -> JSONResponse:
+        client = get_client()
+        kind = request.query_params.get("kind")
+        result = await client.list_workspaces(kind=kind)
+        return JSONResponse({"workspaces": result, "total": len(result)})
+
+    async def get_workspace(request: Request) -> JSONResponse:
+        ws_id = int(request.path_params["id"])
+        client = get_client()
+        result = await client.get_workspace(ws_id)
+        if not result:
+            return JSONResponse(
+                {"error": f"Workspace {ws_id} not found"}, status_code=404
+            )
+        return JSONResponse(result)
+
+    async def create_workspace(request: Request) -> JSONResponse:
+        client = get_client()
+        body = await request.json()
+        name = body.get("name")
+        if not name:
+            return JSONResponse({"error": "name required"}, status_code=400)
+        try:
+            ws_id = await client.create_workspace(
+                name=name,
+                kind=body.get("kind", "work"),
+                description=body.get("description"),
+                default_assignee=body.get("default_assignee"),
+            )
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return JSONResponse({"id": ws_id, "name": name}, status_code=201)
+
+    async def update_workspace(request: Request) -> JSONResponse:
+        ws_id = int(request.path_params["id"])
+        client = get_client()
+        existing = await client.get_workspace(ws_id)
+        if not existing:
+            return JSONResponse(
+                {"error": f"Workspace {ws_id} not found"}, status_code=404
+            )
+        body = await request.json()
+        try:
+            await client.update_workspace(
+                ws_id,
+                name=body.get("name"),
+                kind=body.get("kind"),
+                description=body.get("description"),
+                default_assignee=body.get("default_assignee"),
+            )
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return JSONResponse(await client.get_workspace(ws_id))
+
+    async def list_workspace_tickets(request: Request) -> JSONResponse:
+        """List tickets that belong to a workspace (any project)."""
+        ws_id = int(request.path_params["id"])
+        client = get_client()
+        params = request.query_params
+        result = await client.list_tickets(
+            workspace_id=ws_id,
+            status=params.get("status"),
+            assignee=params.get("assignee"),
+            limit=int(params["limit"]) if "limit" in params else None,
+            offset=int(params.get("offset", 0)),
+            ticket_type=params.get("ticket_type"),
+        )
+        return JSONResponse(result)
+
+    async def list_workspace_projects(request: Request) -> JSONResponse:
+        """List projects (type='project' tickets) under this workspace."""
+        ws_id = int(request.path_params["id"])
+        client = get_client()
+        result = await client.list_tickets(
+            workspace_id=ws_id,
+            ticket_type="project",
+            status="all",
+            limit=0,
         )
         return JSONResponse(result)
 
@@ -927,6 +1011,13 @@ def create_api_router(get_client, get_store, get_config, resolve_agents):
         Route("/v1/tickets/{id}/reassign", reassign_ticket, methods=["POST"]),
         Route("/v1/tickets/{id}", get_ticket, methods=["GET"]),
         Route("/v1/tickets", list_tickets, methods=["GET"]),
+        # Workspaces (ticket #490)
+        Route("/v1/workspaces", list_workspaces, methods=["GET"]),
+        Route("/v1/workspaces", create_workspace, methods=["POST"]),
+        Route("/v1/workspaces/{id}/projects", list_workspace_projects, methods=["GET"]),
+        Route("/v1/workspaces/{id}/tickets", list_workspace_tickets, methods=["GET"]),
+        Route("/v1/workspaces/{id}", get_workspace, methods=["GET"]),
+        Route("/v1/workspaces/{id}", update_workspace, methods=["PATCH", "POST"]),
         Route("/v1/messages", list_messages, methods=["GET"]),
         Route("/v1/messages/mark-read", mark_messages_read, methods=["POST"]),
         Route("/v1/messages/inbox/{agent_id}", get_inbox),

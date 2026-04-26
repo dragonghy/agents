@@ -15,7 +15,7 @@ SUMMARY_FIELDS = {
     "id", "headline", "status", "tags", "priority",
     "date", "dateToEdit", "type", "dependingTicketId",
     "projectId", "milestoneid", "assignee", "start_time",
-    "phase",
+    "phase", "workspace_id",
 }
 
 DETAIL_FIELDS = SUMMARY_FIELDS | {
@@ -25,6 +25,20 @@ DETAIL_FIELDS = SUMMARY_FIELDS | {
 }
 
 COMMENT_FIELDS = {"id", "text", "userId", "date", "moduleId", "author"}
+
+WORKSPACE_FIELDS = {
+    "id", "name", "kind", "description",
+    "default_assignee", "created_at", "updated_at",
+}
+
+# Default workspace IDs (set by migration seed step).
+# Tickets with no project parent inherit DEFAULT_WORK_WORKSPACE_ID.
+DEFAULT_WORK_WORKSPACE_ID = 1
+DEFAULT_PERSONAL_WORKSPACE_ID = 2
+
+# Allowed workspace kinds. 'work' / 'personal' are reserved seeds; 'other' is
+# for future expansion (e.g., side-project, family).
+WORKSPACE_KINDS = ("work", "personal", "other")
 
 # ── Helpers ──
 
@@ -93,7 +107,8 @@ CREATE TABLE IF NOT EXISTS tickets (
     assignee            TEXT DEFAULT '',
     depends_on          TEXT DEFAULT '',
     start_time          TEXT DEFAULT '',
-    phase               TEXT DEFAULT ''
+    phase               TEXT DEFAULT '',
+    workspace_id        INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS comments (
@@ -106,9 +121,23 @@ CREATE TABLE IF NOT EXISTS comments (
     author      TEXT DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS workspaces (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    name                TEXT NOT NULL UNIQUE,
+    kind                TEXT NOT NULL DEFAULT 'work',
+    description         TEXT DEFAULT '',
+    default_assignee    TEXT DEFAULT '',
+    created_at          TEXT DEFAULT (datetime('now')),
+    updated_at          TEXT DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_comments_module
     ON comments(module, moduleId);
 """
+# NOTE: idx_tickets_workspace and other workspace_id-related indexes are
+# created in _migrate() AFTER the workspace_id column has been ensured via
+# ALTER TABLE — running them inside the schema bootstrap would fail on legacy
+# DBs whose tickets table predates the workspace_id column.
 
 
 class SQLiteTaskClient:
@@ -141,6 +170,7 @@ class SQLiteTaskClient:
             ("comments", "author", "TEXT DEFAULT ''"),
             ("tickets", "start_time", "TEXT DEFAULT ''"),
             ("tickets", "phase", "TEXT DEFAULT ''"),  # v2: plan/implement/test/deliver
+            ("tickets", "workspace_id", "INTEGER DEFAULT 0"),  # ticket #490
         ]
         changed = False
         for table, column, col_type in migrations:
@@ -172,12 +202,125 @@ class SQLiteTaskClient:
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_tickets_assignee ON tickets(assignee)"
         )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tickets_workspace ON tickets(workspace_id)"
+        )
+
+        # Workspace seeding + ticket backfill (ticket #490)
+        ws_changed = await self._migrate_workspaces(db)
+        if ws_changed:
+            changed = True
 
         # FTS5 virtual table for full-text search on headline + description
         await self._migrate_fts(db)
 
         if changed:
             await db.commit()
+
+    async def _migrate_workspaces(self, db: aiosqlite.Connection) -> bool:
+        """Seed default Work + Personal workspaces and backfill workspace_id on tickets.
+
+        Idempotent: only seeds if workspaces are missing, only backfills tickets
+        with workspace_id == 0 / NULL.
+
+        Returns True if any change was committed.
+        """
+        changed = False
+
+        # Ensure 'Work' workspace at the conventional ID.
+        # We use INSERT OR IGNORE on the unique 'name' column, then read back the id.
+        await db.execute(
+            "INSERT OR IGNORE INTO workspaces (id, name, kind, description, default_assignee) "
+            "VALUES (?, 'Work', 'work', 'Default workspace for work / engineering tickets.', '')",
+            (DEFAULT_WORK_WORKSPACE_ID,),
+        )
+        await db.execute(
+            "INSERT OR IGNORE INTO workspaces (id, name, kind, description, default_assignee) "
+            "VALUES (?, 'Personal', 'personal', 'Default workspace for personal / life tickets.', '')",
+            (DEFAULT_PERSONAL_WORKSPACE_ID,),
+        )
+
+        # Read actual IDs assigned (in case AUTOINCREMENT skipped — should not, but be safe)
+        async with db.execute(
+            "SELECT id FROM workspaces WHERE name = 'Work'"
+        ) as cur:
+            row = await cur.fetchone()
+        work_id = row["id"] if row else DEFAULT_WORK_WORKSPACE_ID
+
+        # Backfill tickets with workspace_id = 0 / NULL.
+        # Strategy:
+        #   1. type='project' tickets without workspace_id → Work
+        #   2. all other tickets without workspace_id → derive from project parent if any,
+        #      else default to Work
+        # For simplicity in Phase 1 we set ALL orphan tickets (no project parent) to Work,
+        # and tickets with a project parent inherit that project's workspace_id.
+        async with db.execute(
+            "SELECT COUNT(*) AS cnt FROM tickets WHERE workspace_id IS NULL OR workspace_id = 0"
+        ) as cur:
+            row = await cur.fetchone()
+            unset_count = row["cnt"] if row else 0
+
+        if unset_count == 0:
+            return changed
+
+        # First, set workspace_id on type='project' tickets that are unset.
+        await db.execute(
+            "UPDATE tickets SET workspace_id = ? "
+            "WHERE type = 'project' AND (workspace_id IS NULL OR workspace_id = 0)",
+            (work_id,),
+        )
+
+        # Then, for each unset non-project ticket, walk up dependingTicketId until we
+        # find a project ancestor; copy its workspace_id. If none found → default Work.
+        async with db.execute(
+            "SELECT id, dependingTicketId FROM tickets "
+            "WHERE workspace_id IS NULL OR workspace_id = 0"
+        ) as cur:
+            rows = await cur.fetchall()
+
+        for row in rows:
+            tid = row["id"]
+            ws = await self._derive_workspace_id_unsafe(db, row["dependingTicketId"])
+            if ws == 0:
+                ws = work_id
+            await db.execute(
+                "UPDATE tickets SET workspace_id = ? WHERE id = ?",
+                (ws, tid),
+            )
+
+        logger.info(
+            "Migration: backfilled workspace_id on %d tickets (default Work=%d)",
+            len(rows), work_id,
+        )
+        changed = True
+        return changed
+
+    async def _derive_workspace_id_unsafe(
+        self, db: aiosqlite.Connection, parent_id: int, max_depth: int = 6
+    ) -> int:
+        """Walk up dependingTicketId chain to find the first ancestor's workspace_id.
+
+        Used during migration / ticket creation. Returns 0 if no useful ancestor.
+        Uses the provided db connection (no separate _get_db call → safe inside _migrate).
+        """
+        current = parent_id
+        visited = set()
+        for _ in range(max_depth):
+            if not current or current in visited:
+                break
+            visited.add(current)
+            async with db.execute(
+                "SELECT type, workspace_id, dependingTicketId FROM tickets WHERE id = ?",
+                (current,),
+            ) as cur:
+                row = await cur.fetchone()
+            if not row:
+                break
+            ws = row["workspace_id"] or 0
+            if ws:
+                return ws
+            current = row["dependingTicketId"] or 0
+        return 0
 
     async def _migrate_fts(self, db: aiosqlite.Connection):
         """Create or rebuild FTS5 index for ticket search.
@@ -245,6 +388,7 @@ class SQLiteTaskClient:
         include_future: bool = False,
         ticket_type: Optional[str] = None,
         parent_id: Optional[int] = None,
+        workspace_id: Optional[int] = None,
     ) -> dict:
         """List tickets with summary fields and pagination.
 
@@ -252,6 +396,8 @@ class SQLiteTaskClient:
             ticket_type: Filter by type (e.g. 'task', 'project', 'milestone').
                         Use 'task' to exclude subtasks/projects/milestones.
             parent_id: Filter by dependingTicketId (children of a parent).
+            workspace_id: Filter by workspace_id. None means no workspace filter
+                (returns tickets across all workspaces — backward compatible).
 
         Returns:
             {"tickets": [...], "total": N, "offset": N, "limit": N}
@@ -261,6 +407,13 @@ class SQLiteTaskClient:
 
         conditions = ["projectId = ?"]
         params: list[Any] = [pid]
+
+        # Workspace filter (ticket #490). When None we deliberately don't add a
+        # WHERE clause so existing callers (dispatcher, brief, pr_monitor) that
+        # don't pass workspace_id keep seeing all workspaces.
+        if workspace_id is not None:
+            conditions.append("workspace_id = ?")
+            params.append(int(workspace_id))
 
         # Status filter (default: active only)
         effective_status = status if status is not None else "1,3,4"
@@ -336,6 +489,7 @@ class SQLiteTaskClient:
         time_range: Optional[str] = None,
         status: Optional[str] = None,
         assignee: Optional[str] = None,
+        workspace_id: Optional[int] = None,
     ) -> dict:
         """Full-text search on ticket headline and description using FTS5.
 
@@ -361,6 +515,10 @@ class SQLiteTaskClient:
         # Join FTS results with tickets table for filtering and full data
         conditions = ["t.projectId = ?"]
         params: list[Any] = [self.project_id]
+
+        if workspace_id is not None:
+            conditions.append("t.workspace_id = ?")
+            params.append(int(workspace_id))
 
         if status:
             allowed = [int(s.strip()) for s in status.split(",")]
@@ -420,7 +578,13 @@ class SQLiteTaskClient:
         assignee: Optional[str] = None,
         **kwargs,
     ) -> Any:
-        """Create ticket. Writes assignee to native column AND agent:xxx tag (compat)."""
+        """Create ticket. Writes assignee to native column AND agent:xxx tag (compat).
+
+        Workspace inheritance (ticket #490):
+            - If `workspace_id` is in kwargs and non-zero, use it directly.
+            - Else derive from dependingTicketId parent chain.
+            - Else fall back to DEFAULT_WORK_WORKSPACE_ID.
+        """
         effective_tags = tags
         if assignee:
             effective_tags = tags_with_assignee(tags, assignee)
@@ -438,6 +602,17 @@ class SQLiteTaskClient:
             values["assignee"] = assignee
 
         db = await self._get_db()
+
+        # Resolve workspace_id (only if caller didn't pass one explicitly).
+        if not values.get("workspace_id"):
+            parent_id = values.get("dependingTicketId") or 0
+            ws = 0
+            if parent_id:
+                ws = await self._derive_workspace_id_unsafe(db, parent_id)
+            if not ws:
+                ws = DEFAULT_WORK_WORKSPACE_ID
+            values["workspace_id"] = ws
+
         columns = ", ".join(values.keys())
         placeholders = ", ".join("?" for _ in values)
         async with db.execute(
@@ -712,6 +887,125 @@ class SQLiteTaskClient:
             inject_assignee({k: v for k, v in self._row_to_dict(r).items() if k in SUMMARY_FIELDS})
             for r in rows
         ]
+
+    # ── Workspaces (ticket #490) ──
+
+    async def list_workspaces(self, kind: Optional[str] = None) -> list[dict]:
+        """List all workspaces, optionally filtered by kind ('work' / 'personal' / 'other')."""
+        db = await self._get_db()
+        if kind:
+            async with db.execute(
+                "SELECT * FROM workspaces WHERE kind = ? ORDER BY id", (kind,)
+            ) as cur:
+                rows = await cur.fetchall()
+        else:
+            async with db.execute(
+                "SELECT * FROM workspaces ORDER BY id"
+            ) as cur:
+                rows = await cur.fetchall()
+        return [
+            {k: v for k, v in self._row_to_dict(r).items() if k in WORKSPACE_FIELDS}
+            for r in rows
+        ]
+
+    async def get_workspace(self, workspace_id: int) -> dict:
+        """Get a workspace by id. Returns {} when not found."""
+        db = await self._get_db()
+        async with db.execute(
+            "SELECT * FROM workspaces WHERE id = ?", (workspace_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        if not row:
+            return {}
+        return {k: v for k, v in self._row_to_dict(row).items() if k in WORKSPACE_FIELDS}
+
+    async def create_workspace(
+        self,
+        name: str,
+        kind: str = "work",
+        description: Optional[str] = None,
+        default_assignee: Optional[str] = None,
+    ) -> int:
+        """Create a new workspace. Returns the new workspace id.
+
+        Raises ValueError on invalid kind or duplicate name.
+        """
+        if kind not in WORKSPACE_KINDS:
+            raise ValueError(f"Invalid kind '{kind}'. Allowed: {WORKSPACE_KINDS}")
+        if not name or not name.strip():
+            raise ValueError("Workspace name must be non-empty")
+        db = await self._get_db()
+        try:
+            async with db.execute(
+                "INSERT INTO workspaces (name, kind, description, default_assignee) "
+                "VALUES (?, ?, ?, ?)",
+                (name.strip(), kind, description or "", default_assignee or ""),
+            ) as cur:
+                ws_id = cur.lastrowid
+            await db.commit()
+            return ws_id
+        except Exception as e:
+            # SQLite raises IntegrityError on UNIQUE name conflict
+            if "UNIQUE" in str(e):
+                raise ValueError(f"Workspace name '{name}' already exists") from e
+            raise
+
+    async def update_workspace(
+        self,
+        workspace_id: int,
+        name: Optional[str] = None,
+        kind: Optional[str] = None,
+        description: Optional[str] = None,
+        default_assignee: Optional[str] = None,
+    ) -> bool:
+        """Update workspace fields. Returns True if any field changed."""
+        updates: dict[str, Any] = {}
+        if name is not None:
+            if not name.strip():
+                raise ValueError("Workspace name must be non-empty")
+            updates["name"] = name.strip()
+        if kind is not None:
+            if kind not in WORKSPACE_KINDS:
+                raise ValueError(f"Invalid kind '{kind}'. Allowed: {WORKSPACE_KINDS}")
+            updates["kind"] = kind
+        if description is not None:
+            updates["description"] = description
+        if default_assignee is not None:
+            updates["default_assignee"] = default_assignee
+        if not updates:
+            return False
+        updates["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        db = await self._get_db()
+        set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
+        params = list(updates.values()) + [workspace_id]
+        await db.execute(
+            f"UPDATE workspaces SET {set_clause} WHERE id = ?", params
+        )
+        await db.commit()
+        return True
+
+    async def get_workspace_for_ticket(self, ticket_id: int) -> int:
+        """Resolve a ticket's effective workspace_id.
+
+        Logic:
+            1. If the ticket itself has workspace_id != 0, use it.
+            2. Else walk up dependingTicketId chain looking for a non-zero
+               workspace_id (typically a project ancestor).
+            3. Else fall back to DEFAULT_WORK_WORKSPACE_ID.
+        """
+        db = await self._get_db()
+        async with db.execute(
+            "SELECT workspace_id, dependingTicketId FROM tickets WHERE id = ?",
+            (ticket_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if not row:
+            return DEFAULT_WORK_WORKSPACE_ID
+        ws = row["workspace_id"] or 0
+        if ws:
+            return ws
+        ws = await self._derive_workspace_id_unsafe(db, row["dependingTicketId"] or 0)
+        return ws or DEFAULT_WORK_WORKSPACE_ID
 
     # ── Status labels ──
 
