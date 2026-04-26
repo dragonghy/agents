@@ -259,5 +259,95 @@ class TestFormatBookingResult:
         assert "\u65e0\u53ef\u7528\u65f6\u6bb5" in out
 
 
+class TestClickStrategiesConstant:
+    def test_order(self):
+        # The Python iterator drives the in-page strategy parameter; A1 is the
+        # cheapest and most likely to work post-fix, so it must come first.
+        assert dc._CLICK_STRATEGIES[0] == "A1-reserve-anchor"
+        # Agenda fallback must come last (broad text match — last resort).
+        assert dc._CLICK_STRATEGIES[-1] == "D-agenda-reserve"
+        # Each strategy in JS must have a corresponding name here.
+        for name in ("A1-reserve-anchor", "A2-editEvent", "A3-mouse-sequence",
+                     "B-occurrenceByUid", "C-legacy-row", "D-agenda-reserve"):
+            assert name in dc._CLICK_STRATEGIES
+
+    def test_js_includes_all_strategies(self):
+        # Defensive: if someone adds a name to the constant they must wire it
+        # up in the JS dispatch table. Catch the missing-handler case early.
+        for name in dc._CLICK_STRATEGIES:
+            assert name in dc._CLICK_SLOT_JS, f"strategy {name} not implemented in JS"
+
+
+class TestModalHelpers:
+    def test_modal_selectors_includes_known_classes(self):
+        # CourtReserve uses Bootstrap (.modal.show) and Kendo (.k-window). If
+        # someone trims the list we want to fail loudly.
+        assert ".modal.show" in dc._MODAL_SELECTORS
+        assert ".k-window" in dc._MODAL_SELECTORS
+
+    def test_wait_for_modal_returns_first_visible(self):
+        from unittest.mock import MagicMock
+
+        page = MagicMock()
+        # First selector returns False (not visible), second returns True.
+        loc1 = MagicMock()
+        loc1.first.is_visible.return_value = False
+        loc2 = MagicMock()
+        loc2.first.is_visible.return_value = True
+
+        def locator(sel):
+            if sel == dc._MODAL_SELECTORS[0]:
+                return loc1
+            return loc2
+
+        page.locator.side_effect = locator
+        result = dc._wait_for_modal(page, total_seconds=0.1)
+        assert result == dc._MODAL_SELECTORS[1]
+
+    def test_wait_for_modal_returns_none_when_nothing_visible(self):
+        from unittest.mock import MagicMock
+
+        page = MagicMock()
+        loc = MagicMock()
+        loc.first.is_visible.return_value = False
+        page.locator.return_value = loc
+        result = dc._wait_for_modal(page, total_seconds=0.1)
+        assert result is None
+
+
+class TestDumpDom:
+    def test_dump_dom_writes_html_with_dump_payload(self, tmp_path):
+        from unittest.mock import MagicMock, patch
+
+        page = MagicMock()
+        page.evaluate.return_value = {
+            "viewName": "agenda",
+            "schedulerHtml": "<div class='k-scheduler'>x</div>",
+            "documentHtml": "<html><body>full</body></html>",
+            "url": "https://app.courtreserve.com/x",
+            "title": "Pickleball",
+        }
+        with patch.object(dc, "LOG_DIR", tmp_path):
+            out = dc._dump_dom(page, dt.date(2026, 5, 2), "no-modal")
+        assert out is not None
+        assert out.exists()
+        body = out.read_text()
+        # Must include scheduler subtree, full document, and the view name.
+        assert "k-scheduler" in body
+        assert "full</body>" in body
+        assert "view=agenda" in body
+        assert out.name.startswith("dom-2026-05-02-no-modal-")
+
+    def test_dump_dom_returns_none_on_evaluate_failure(self, tmp_path):
+        from unittest.mock import MagicMock, patch
+
+        page = MagicMock()
+        page.evaluate.side_effect = RuntimeError("page closed")
+        with patch.object(dc, "LOG_DIR", tmp_path):
+            out = dc._dump_dom(page, dt.date(2026, 5, 2), "no-modal")
+        assert out is None
+        assert list(tmp_path.glob("dom-*")) == []
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

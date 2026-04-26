@@ -360,12 +360,17 @@ def _time_label(start_hour: int, start_min: int) -> str:
 
 
 # JS helper: find the matching Kendo scheduler event by target start timestamp
-# and click its DOM element. Returns a diagnostic dict either way so the caller
-# can log exactly what the page looked like.
+# and trigger the booking flow for it. Returns a diagnostic dict either way so
+# the caller can log exactly what the page looked like and which strategy fired.
+#
+# IMPORTANT: in CourtReserve's agenda/list view, clicking the wrapping
+# `.k-event[data-uid]` element is a no-op — the actual booking trigger is the
+# inner "Reserve" anchor/button. We try several entry points so the same code
+# works whether the scheduler is rendered as a grid or as an agenda list.
 _CLICK_SLOT_JS = r"""
 (params) => {
     const { targetMs, targetHour, targetMin } = params;
-    const diag = { success: false };
+    const diag = { success: false, attempted: [] };
 
     const scheduler = document.querySelector("[data-role='scheduler']");
     if (!scheduler) { diag.error = 'no scheduler'; return diag; }
@@ -374,7 +379,47 @@ _CLICK_SLOT_JS = r"""
     const widget = $el ? $el.data('kendoScheduler') : null;
     if (!widget) { diag.error = 'no kendo widget'; return diag; }
 
-    // Strategy A: iterate the dataSource and match by .start timestamp.
+    try { diag.viewName = widget.view() && widget.view().name; } catch (e) {}
+
+    // Helper: dispatch a full mouse-event sequence (mousedown→mouseup→click)
+    // so handlers bound at pointerdown still fire.
+    const fireMouseSequence = (el) => {
+        const rect = el.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        const opts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0, view: window };
+        try { el.dispatchEvent(new MouseEvent('mousedown', opts)); } catch (e) {}
+        try { el.dispatchEvent(new MouseEvent('mouseup', opts)); } catch (e) {}
+        try { el.dispatchEvent(new MouseEvent('click', opts)); } catch (e) {}
+    };
+
+    // Helper: search a root element for an inner Reserve/Book trigger.
+    const findReserveTrigger = (root) => {
+        if (!root) return null;
+        const candidates = root.querySelectorAll('a, button, [role="button"], input[type="button"], input[type="submit"]');
+        for (const c of candidates) {
+            const txt = ((c.textContent || c.value || '') + '').replace(/\s+/g, ' ').trim().toLowerCase();
+            if (!txt) continue;
+            if (txt === 'reserve' || txt === 'book' || txt === 'reserve now' ||
+                txt.startsWith('reserve ') || txt.startsWith('book ')) {
+                return c;
+            }
+        }
+        return null;
+    };
+
+    // Helper: count visible Reserve-like triggers anywhere on the page (for diag).
+    try {
+        const all = document.querySelectorAll('a, button, [role="button"]');
+        let n = 0;
+        for (const c of all) {
+            const txt = ((c.textContent || '') + '').replace(/\s+/g, ' ').trim().toLowerCase();
+            if (txt === 'reserve' || txt === 'book') n++;
+        }
+        diag.reserveTriggerCount = n;
+    } catch (e) {}
+
+    // ---- Match the target slot by Unix-ms start timestamp via dataSource ----
     let items = [];
     try { items = widget.dataSource.data() || []; } catch (e) {}
     diag.dataSourceCount = items.length;
@@ -383,74 +428,260 @@ _CLICK_SLOT_JS = r"""
     for (const it of items) {
         const start = it && it.start ? it.start.getTime() : null;
         if (start === targetMs) {
-            matches.push({ uid: it.uid, id: it.id || it.Id });
+            matches.push({ uid: it.uid, id: it.id || it.Id, model: it });
         }
     }
     diag.strategyAMatches = matches.length;
 
-    for (const m of matches) {
-        if (!m.uid) continue;
-        const el = document.querySelector(`.k-event[data-uid="${m.uid}"]`);
-        if (el) {
-            el.scrollIntoView({ block: 'center' });
-            el.click();
-            diag.success = true;
-            diag.strategy = 'A-dataSource';
-            diag.uid = m.uid;
-            return diag;
-        }
-    }
-
-    // Strategy B: iterate visible .k-event elements, ask the widget for each.
-    const events = Array.from(document.querySelectorAll('.k-event[data-uid]'));
-    diag.domEventCount = events.length;
-    for (const el of events) {
-        const uid = el.getAttribute('data-uid');
-        if (!uid) continue;
-        let occ = null;
-        try { occ = widget.occurrenceByUid(uid); } catch (e) {}
-        const start = occ && occ.start ? occ.start.getTime() : null;
-        if (start === targetMs) {
-            el.scrollIntoView({ block: 'center' });
-            el.click();
-            diag.success = true;
-            diag.strategy = 'B-occurrenceByUid';
-            diag.uid = uid;
-            return diag;
-        }
-    }
-
-    // Strategy C: legacy — match the time label row, click its content cell.
     const ampm = targetHour >= 12 ? 'PM' : 'AM';
     const disp = targetHour % 12 === 0 ? 12 : targetHour % 12;
     const label = `${disp}:${String(targetMin).padStart(2,'0')} ${ampm}`;
-    diag.legacyLabel = label;
+    diag.label = label;
 
-    const timeCells = document.querySelectorAll('.k-scheduler-times td, .k-scheduler-timecolumn td');
-    let rowIdx = -1;
-    for (let i = 0; i < timeCells.length; i++) {
-        const txt = (timeCells[i].textContent || '').replace(/\s+/g, ' ').trim();
-        if (txt.toUpperCase().includes(label.toUpperCase())) { rowIdx = i; break; }
-    }
-    diag.legacyRowIndex = rowIdx;
-    if (rowIdx >= 0) {
-        const rows = document.querySelectorAll('.k-scheduler-content tr');
-        if (rowIdx < rows.length) {
+    // Each strategy is a closure returning {success, detail?, error?}.
+    const strategies = {
+        'A1-reserve-anchor': () => {
+            for (const m of matches) {
+                if (!m.uid) continue;
+                const wrapper = document.querySelector(`.k-event[data-uid="${m.uid}"]`);
+                if (!wrapper) continue;
+                const trigger = findReserveTrigger(wrapper);
+                if (!trigger) continue;
+                wrapper.scrollIntoView({ block: 'center' });
+                trigger.scrollIntoView({ block: 'center' });
+                trigger.click();
+                fireMouseSequence(trigger);
+                return { success: true, detail: { uid: m.uid } };
+            }
+            return { success: false, error: 'no .k-event wrapper with Reserve anchor' };
+        },
+        'A2-editEvent': () => {
+            for (const m of matches) {
+                if (!m.uid) continue;
+                try {
+                    widget.editEvent(m.uid);
+                    return { success: true, detail: { uid: m.uid, via: 'editEvent' } };
+                } catch (e) {}
+                try {
+                    widget.trigger('edit', { event: m.model });
+                    return { success: true, detail: { uid: m.uid, via: 'trigger-edit' } };
+                } catch (e) {}
+            }
+            return { success: false, error: 'editEvent/trigger-edit threw or no matches' };
+        },
+        'A3-mouse-sequence': () => {
+            for (const m of matches) {
+                if (!m.uid) continue;
+                const el = document.querySelector(`.k-event[data-uid="${m.uid}"]`);
+                if (!el) continue;
+                el.scrollIntoView({ block: 'center' });
+                fireMouseSequence(el);
+                el.click();
+                return { success: true, detail: { uid: m.uid } };
+            }
+            return { success: false, error: 'no .k-event wrapper for mouse sequence' };
+        },
+        'B-occurrenceByUid': () => {
+            const events = Array.from(document.querySelectorAll('.k-event[data-uid]'));
+            for (const el of events) {
+                const uid = el.getAttribute('data-uid');
+                if (!uid) continue;
+                let occ = null;
+                try { occ = widget.occurrenceByUid(uid); } catch (e) {}
+                const start = occ && occ.start ? occ.start.getTime() : null;
+                if (start !== targetMs) continue;
+                const trigger = findReserveTrigger(el);
+                if (trigger) {
+                    trigger.scrollIntoView({ block: 'center' });
+                    try { trigger.click(); fireMouseSequence(trigger); } catch (e) {}
+                    return { success: true, detail: { uid, via: 'anchor' } };
+                }
+                el.scrollIntoView({ block: 'center' });
+                fireMouseSequence(el);
+                el.click();
+                return { success: true, detail: { uid, via: 'mouse' } };
+            }
+            return { success: false, error: 'no occurrenceByUid match' };
+        },
+        'C-legacy-row': () => {
+            const timeCells = document.querySelectorAll(
+                '.k-scheduler-times td, .k-scheduler-timecolumn td'
+            );
+            let rowIdx = -1;
+            for (let i = 0; i < timeCells.length; i++) {
+                const txt = (timeCells[i].textContent || '').replace(/\s+/g, ' ').trim();
+                if (txt.toUpperCase().includes(label.toUpperCase())) { rowIdx = i; break; }
+            }
+            if (rowIdx < 0) return { success: false, error: 'no time-column row' };
+            const rows = document.querySelectorAll('.k-scheduler-content tr');
+            if (rowIdx >= rows.length) return { success: false, error: 'rowIdx oob' };
             const cell = rows[rowIdx].querySelector('td');
-            if (cell) {
-                cell.scrollIntoView({ block: 'center' });
-                cell.click();
+            if (!cell) return { success: false, error: 'no content cell' };
+            cell.scrollIntoView({ block: 'center' });
+            fireMouseSequence(cell);
+            cell.click();
+            return { success: true, detail: { rowIdx } };
+        },
+        'D-agenda-reserve': () => {
+            const reserveAnchors = Array.from(
+                document.querySelectorAll('a, button, [role="button"]')
+            ).filter((c) => {
+                const t = ((c.textContent || '') + '').replace(/\s+/g, ' ').trim().toLowerCase();
+                return t === 'reserve' || t === 'book';
+            });
+            for (const a of reserveAnchors) {
+                let row = a;
+                for (let i = 0; i < 6 && row && row !== document.body; i++) {
+                    const txt = (row.textContent || '').replace(/\s+/g, ' ').toUpperCase();
+                    if (txt.includes(label.toUpperCase())) {
+                        a.scrollIntoView({ block: 'center' });
+                        try { a.click(); fireMouseSequence(a); } catch (e) {}
+                        return { success: true, detail: { hop: i } };
+                    }
+                    row = row.parentElement;
+                }
+            }
+            return { success: false, error: 'no agenda Reserve anchor for label' };
+        },
+    };
+
+    const which = (params && params.strategy) || null;
+    if (!which) {
+        // Backwards-compatible mode: try all strategies in order, return on first
+        // that "succeeds" (which is what the old single-shot code did). The
+        // caller's modal-poll will tell us if this actually worked.
+        const order = ['A1-reserve-anchor', 'A2-editEvent', 'A3-mouse-sequence',
+                       'B-occurrenceByUid', 'C-legacy-row', 'D-agenda-reserve'];
+        for (const name of order) {
+            const r = strategies[name]();
+            diag.attempted.push({ strategy: name, ...r });
+            if (r.success) {
                 diag.success = true;
-                diag.strategy = 'C-legacy-row';
+                diag.strategy = name;
+                if (r.detail) Object.assign(diag, r.detail);
                 return diag;
             }
         }
+        diag.error = 'no strategy matched';
+        return diag;
     }
 
-    diag.error = 'no strategy matched';
+    // Targeted mode: caller picks one strategy. This is what enables the
+    // outer Python retry loop where each strategy is verified by checking
+    // whether the booking modal appeared.
+    if (!(which in strategies)) {
+        diag.error = `unknown strategy: ${which}`;
+        return diag;
+    }
+    const r = strategies[which]();
+    diag.attempted.push({ strategy: which, ...r });
+    if (r.success) {
+        diag.success = true;
+        diag.strategy = which;
+        if (r.detail) Object.assign(diag, r.detail);
+    } else {
+        diag.error = r.error || 'strategy returned false';
+    }
     return diag;
 }
 """
+
+# Order of strategies tried by ``book_slot_via_ui``. Each is verified by
+# polling for the booking modal; if the modal doesn't appear, we fall through
+# to the next strategy. See _CLICK_SLOT_JS for what each does.
+_CLICK_STRATEGIES: tuple[str, ...] = (
+    "A1-reserve-anchor",
+    "A2-editEvent",
+    "A3-mouse-sequence",
+    "B-occurrenceByUid",
+    "C-legacy-row",
+    "D-agenda-reserve",
+)
+
+
+# JS helper: dump just enough page state to debug a no-modal failure offline.
+# Returns (a) the kendoScheduler view name, (b) outerHTML of the scheduler
+# subtree, (c) full document.documentElement.outerHTML. Caller writes (b)/(c)
+# to logs and includes (a) in the diagnostic message.
+_DUMP_DOM_JS = r"""
+() => {
+    const scheduler = document.querySelector("[data-role='scheduler']");
+    let viewName = null;
+    let schedulerHtml = null;
+    try {
+        const $el = (typeof jQuery !== 'undefined') ? jQuery(scheduler) : null;
+        const widget = $el ? $el.data('kendoScheduler') : null;
+        if (widget) viewName = widget.view() && widget.view().name;
+        if (scheduler) schedulerHtml = scheduler.outerHTML;
+    } catch (e) {}
+    return {
+        viewName,
+        schedulerHtml,
+        documentHtml: document.documentElement.outerHTML,
+        url: location.href,
+        title: document.title,
+    };
+}
+"""
+
+
+_MODAL_SELECTORS: tuple[str, ...] = (
+    ".modal.show",
+    ".k-window",
+    "#bookingModal",
+    "[class*='booking']",
+    "[class*='reservation']",
+)
+
+
+def _modal_visible(page: Page, timeout_ms: int = 1000) -> str | None:
+    """Return the first matching modal selector that is currently visible."""
+    for sel in _MODAL_SELECTORS:
+        try:
+            if page.locator(sel).first.is_visible(timeout=timeout_ms):
+                return sel
+        except Exception:
+            continue
+    return None
+
+
+def _wait_for_modal(page: Page, total_seconds: float = 5.0) -> str | None:
+    """Poll for a booking modal up to total_seconds; return matching selector or None."""
+    deadline = time.monotonic() + total_seconds
+    while time.monotonic() < deadline:
+        sel = _modal_visible(page, timeout_ms=200)
+        if sel:
+            return sel
+        time.sleep(0.25)
+    return None
+
+
+def _dump_dom(page: Page, target_date: dt.date, reason: str) -> Path | None:
+    """Save the page's full DOM and scheduler subtree for offline analysis.
+
+    Filename mirrors the screenshot convention: ``dom-{YYYY-MM-DD}-{reason}-{HHMMSS}.html``.
+    Returns the path on success, None on failure. Never raises.
+    """
+    ts = dt.datetime.now().strftime("%H%M%S")
+    out = LOG_DIR / f"dom-{target_date.isoformat()}-{_slugify_reason(reason)}-{ts}.html"
+    try:
+        info = page.evaluate(_DUMP_DOM_JS) or {}
+        view = info.get("viewName") or "unknown"
+        html = (
+            f"<!-- dump for {target_date} reason={reason} view={view} -->\n"
+            f"<!-- url: {info.get('url')} -->\n"
+            f"<!-- title: {info.get('title')} -->\n"
+            f"<!-- ===== scheduler subtree ===== -->\n"
+            f"{info.get('schedulerHtml') or '<!-- no scheduler -->'}\n"
+            f"<!-- ===== full document ===== -->\n"
+            f"{info.get('documentHtml') or ''}\n"
+        )
+        out.write_text(html, encoding="utf-8")
+        log(f"dom dump saved [{reason}]: {out} (view={view})")
+        return out
+    except Exception as e:
+        log(f"dom dump failed [{reason}]: {e}")
+        return None
 
 
 def book_slot_via_ui(
@@ -459,10 +690,10 @@ def book_slot_via_ui(
     """Book a 1-hour slot by interacting with the CourtReserve scheduler UI.
 
     Flow:
-    1. Click the target time event in the Kendo scheduler.
-    2. Booking modal appears.
-    3. Set duration to 60 min.
-    4. Confirm the booking.
+    1. Try each click strategy in order; after each, poll for the booking
+       modal. First strategy whose click produces a modal wins.
+    2. If a modal appears, set duration to 60 min and click the book button.
+    3. On total failure, dump screenshots + a DOM snapshot for offline debug.
 
     Returns ``(success, reason, screenshots)``. ``reason`` is a human-readable
     short description of the outcome suitable for Telegram. ``screenshots`` is
@@ -483,77 +714,69 @@ def book_slot_via_ui(
     log(f"looking for time label: {time_label}")
 
     try:
-        # Step 1: click the availability event matching the target start time.
-        clicked = page.evaluate(
-            _CLICK_SLOT_JS,
-            {
-                "targetMs": target_start_ms,
-                "targetHour": start_hour,
-                "targetMin": start_min,
-            },
-        )
-        log(f"slot click result: {clicked}")
+        # Step 1: iterate strategies — each one's click is verified by polling
+        # for the booking modal. PR #13 had the bug that "click returned" was
+        # treated as success; now we require the modal to actually open.
+        modal_sel: str | None = None
+        last_diag: dict = {}
+        per_strategy_wait = float(os.environ.get("CR_CLICK_WAIT_S", "3.0"))
+        for strategy in _CLICK_STRATEGIES:
+            diag = page.evaluate(
+                _CLICK_SLOT_JS,
+                {
+                    "targetMs": target_start_ms,
+                    "targetHour": start_hour,
+                    "targetMin": start_min,
+                    "strategy": strategy,
+                },
+            ) or {}
+            last_diag = diag
+            log(f"slot click [{strategy}]: {diag}")
+            if not diag.get("success"):
+                continue
+            modal_sel = _wait_for_modal(page, total_seconds=per_strategy_wait)
+            if modal_sel:
+                log(f"modal opened via {strategy}: {modal_sel}")
+                break
+            log(f"strategy {strategy} clicked but no modal — trying next")
 
-        # Python-side fallback: if the in-page strategies all failed, try
-        # clicking a Playwright-located .k-event whose bounding text contains
-        # the time label. Last-ditch — kept to match legacy behaviour.
-        if not clicked or not clicked.get("success"):
+        if not modal_sel:
+            # Python-side last-ditch: replicate the legacy text-match click on
+            # any visible .k-event element with the time label embedded.
+            log("all in-page strategies failed, trying Python fallback on .k-event")
             ss = _save_screenshot(page, target_date, "click-fail-primary")
             if ss:
                 screenshots.append(ss)
-
-            log("primary click failed, trying Python fallback on .k-event")
             events = page.locator(".k-event").all()
-            log(f"found {len(events)} event elements")
-            clicked_any = False
+            log(f"found {len(events)} .k-event elements")
             for ev in events:
                 try:
                     text = (ev.text_content() or "").replace(" ", "")
                     if time_label.replace(" ", "") in text:
                         ev.click(timeout=3000)
-                        clicked_any = True
                         log(f"clicked event via text match: {text[:60]}")
-                        break
+                        modal_sel = _wait_for_modal(page, total_seconds=per_strategy_wait)
+                        if modal_sel:
+                            break
                 except Exception:
                     continue
 
-            if not clicked_any:
-                log("all click strategies failed; could not open booking modal")
-                ss = _save_screenshot(page, target_date, "click-fail-all")
-                if ss:
-                    screenshots.append(ss)
-                err = (clicked or {}).get("error") or "no strategy matched"
-                return (
-                    False,
-                    f"未能点击 {time_label} 的预定格子 ({err})",
-                    screenshots,
-                )
-
-        # Step 2: wait for booking modal.
-        time.sleep(2)
-        modal_selectors = [
-            ".modal.show",
-            ".k-window",
-            "#bookingModal",
-            "[class*='booking']",
-            "[class*='reservation']",
-        ]
-        modal_found = False
-        for sel in modal_selectors:
-            try:
-                if page.locator(sel).first.is_visible(timeout=2000):
-                    modal_found = True
-                    log(f"booking modal found: {sel}")
-                    break
-            except Exception:
-                continue
-
-        if not modal_found:
-            log("no booking modal appeared after clicking slot")
+        if not modal_sel:
+            log("all click strategies failed; could not open booking modal")
             ss = _save_screenshot(page, target_date, "no-modal")
             if ss:
                 screenshots.append(ss)
-            return False, "点击后未出现预定弹窗", screenshots
+            dom = _dump_dom(page, target_date, "no-modal")
+            err = last_diag.get("error") or "all strategies tried, no modal"
+            attempts = last_diag.get("attempted") or []
+            view = last_diag.get("viewName") or "?"
+            extra_paths = f" dom={dom}" if dom else ""
+            return (
+                False,
+                f"未弹出预定弹窗 [view={view} attempts={len(attempts)} last={err}]{extra_paths}",
+                screenshots,
+            )
+        log(f"booking modal found: {modal_sel}")
 
         # Step 3: try to set duration to 60 minutes.
         duration_set = _set_duration(page, 60)
@@ -629,7 +852,7 @@ def book_slot_via_ui(
 
             if not error_reason:
                 modal_gone = True
-                for sel in modal_selectors:
+                for sel in _MODAL_SELECTORS:
                     try:
                         if page.locator(sel).first.is_visible(timeout=500):
                             modal_gone = False
