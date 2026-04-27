@@ -52,7 +52,6 @@ mcp_servers:
       - microsoft-mcp
     env:
       MICROSOFT_MCP_CLIENT_ID: ${MICROSOFT_MCP_CLIENT_ID:-441b3624-2687-4a47-adfc-608e94d17f41}
-
 # Daily journal: all agents write a work summary at the configured time.
 # Stagger avoids dispatching all agents simultaneously.
 daily_journal:
