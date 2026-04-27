@@ -4,9 +4,23 @@ MCP server that exposes the macOS Messages app to a personal AI agent.
 
 > **Personal-agent only.** This server is intentionally **not** mounted on any
 > work agent (admin, ops, dev-alex, qa-lucy, …). It's wired up via
-> `agents.yaml` → `mcp_servers.imessage_personal` and only attached to the
-> personal agent type. Work agents that try to call `mcp__imessage_personal__*`
-> will get a "tool not found" error.
+Wiring (registered in #497, **not** in this PR):
+
+```yaml
+# agents.yaml — under agents.<personal-agent-name>.extra_mcp_servers (NOT top-level mcp_servers!)
+agents:
+  assistant-aria:
+    extra_mcp_servers:
+      imessage_personal:
+        command: uv
+        args:
+          - "--directory"
+          - "{ROOT_DIR}/services/imessage-mcp"
+          - run
+          - imessage-mcp
+```
+
+**Critical**: do NOT add `imessage_personal` to the top-level `mcp_servers:` block — that auto-loads to all v1 agents (admin/ops/dev-alex/qa-lucy) per claude.md pitfall #13. The per-agent `extra_mcp_servers` location is the only correct place. Work agents that try to call `mcp__imessage_personal__*` will get a "tool not found" error.
 
 ## Tools
 

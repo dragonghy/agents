@@ -52,17 +52,6 @@ mcp_servers:
       - microsoft-mcp
     env:
       MICROSOFT_MCP_CLIENT_ID: ${MICROSOFT_MCP_CLIENT_ID:-441b3624-2687-4a47-adfc-608e94d17f41}
-  # Personal MCPs (#493 umbrella) — only attached to the personal agent type.
-  # Work agents (admin/ops/dev-alex/qa-lucy) intentionally exclude these.
-  imessage_personal:
-    command: uv
-    args:
-      - "--directory"
-      - "{ROOT_DIR}/services/imessage-mcp"
-      - run
-      - imessage-mcp
-    # Requires Full Disk Access for the host process; see services/imessage-mcp/README.md.
-
 # Daily journal: all agents write a work summary at the configured time.
 # Stagger avoids dispatching all agents simultaneously.
 daily_journal:
