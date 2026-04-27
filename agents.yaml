@@ -191,3 +191,43 @@ agents:
       - .
       - ${WORKSPACE_DIR}/vm-mcp
       - ${WORKSPACE_DIR}/test-projects
+  # Personal agent (#497): handles Personal workspace tickets only.
+  # Personal MCPs are scoped here under extra_mcp_servers — they MUST NOT
+  # be added to the top-level mcp_servers: dict, which would auto-load them
+  # into every v1 work agent (see claude.md pitfall #13).
+  assistant-aria:
+    project: agents
+    work_stream: personal
+    template: assistant
+    role: 生活助理
+    description: Human 的个人事务助理 — 私人邮件 / 日历 / Drive / iMessage / 生活杂事 (Personal workspace only)
+    dispatchable: true
+    add_dirs:
+      - .
+    extra_mcp_servers:
+      google_personal:
+        # Gmail + Calendar + Drive via taylorwilsdon/google_workspace_mcp.
+        # OAuth refresh token cached at ~/.google_workspace_mcp/credentials/<gmail>.json.
+        # See projects/agent-hub/skills/google-personal-mcp/SKILL.md for one-time setup.
+        command: uvx
+        args:
+          - workspace-mcp
+          - --single-user
+          - --permissions
+          - gmail:full
+          - drive:readonly
+          - calendar:full
+        env:
+          GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_PERSONAL_OAUTH_CLIENT_ID}
+          GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_PERSONAL_OAUTH_CLIENT_SECRET}
+          OAUTHLIB_INSECURE_TRANSPORT: "1"
+      imessage_personal:
+        # macOS Messages via services/imessage-mcp (read chat.db + osascript send).
+        # Requires Full Disk Access on the host terminal process.
+        # See services/imessage-mcp/README.md for FDA setup.
+        command: uv
+        args:
+          - "--directory"
+          - "{ROOT_DIR}/services/imessage-mcp"
+          - run
+          - imessage-mcp

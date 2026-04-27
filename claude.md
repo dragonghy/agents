@@ -24,13 +24,12 @@ Communication: Telegram bot ↔ Daemon ↔ Agent sessions
 
 Templates live in `templates/v2/` (development.md, operations.md, assistant.md) but **not every template has a registered instance**. Always check `list_agents` for what's actually dispatchable before assigning a ticket.
 
-Currently registered (as of 2026-04-14):
+Currently registered (as of 2026-04-26):
 - **admin** — COO / global config / restarts (this session)
 - **ops** — infra, domains, servers, cloud
 - **dev-alex** — development lifecycle (plan → PR → CI)
 - **qa-lucy** — E2E + requirement verification
-
-No `assistant` instance is currently registered. If you need a personal-assistant style task, either route to `admin` or register an instance first.
+- **assistant-aria** — Personal workspace assistant (Gmail / Calendar / Drive / iMessage). Handles **only `workspace_id=2`** tickets (soft-isolation via prompt; see `templates/v2/assistant.md` "Workspace Scope" section). Personal MCPs (`google_personal`, `imessage_personal`) are scoped via `agents.assistant-aria.extra_mcp_servers` so work agents never auto-load them (pitfall #13 prevention).
 
 ## Key Directories
 
