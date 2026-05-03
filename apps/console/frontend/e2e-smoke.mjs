@@ -98,6 +98,31 @@ async function driveTestHarness(browser) {
   await page.goto(BASE + '/test-harness', { waitUntil: 'networkidle', timeout: 15000 });
   await page.waitForTimeout(2000);
 
+  // Open an SSE listener inside the page that captures every
+  // session.message_appended event the daemon publishes during this
+  // test. We assert later that we saw at least one for the session we
+  // spawn — that proves the live-streaming loop works end-to-end.
+  await page.evaluate(() => {
+    const w = window;
+    w.__sseEvents = [];
+    try {
+      const es = new EventSource('/api/v1/orchestration/events');
+      ['session.created', 'session.message_appended', 'session.cost_updated', 'session.closed'].forEach((kind) => {
+        es.addEventListener(kind, (ev) => {
+          try {
+            const parsed = JSON.parse(ev.data);
+            w.__sseEvents.push(parsed);
+          } catch (err) {
+            console.warn('bad SSE frame', err);
+          }
+        });
+      });
+      w.__sseEs = es;
+    } catch (err) {
+      console.warn('EventSource construction failed:', err);
+    }
+  });
+
   // Step 1: capture initial state
   await page.screenshot({ path: path.join(OUT_DIR, 'th-1-loaded.png'), fullPage: true });
 
@@ -166,14 +191,39 @@ async function driveTestHarness(browser) {
   // Capture conversation log + final state
   const conversationText = await page.evaluate(() => document.body.innerText);
 
+  // SSE assertion: did the in-page EventSource see a message_appended
+  // event? If yes, the live-streaming loop works end-to-end. We tolerate
+  // up to ~5s of arrival latency past the LLM reply to absorb network
+  // jitter in CI.
+  await page.waitForTimeout(5000);
+  const sseSummary = await page.evaluate(() => {
+    const w = window;
+    const events = w.__sseEvents || [];
+    const kinds = events.map((e) => e.kind || e.event || 'unknown');
+    return {
+      total: events.length,
+      kinds,
+      saw_message_appended: kinds.includes('session.message_appended'),
+      saw_session_created: kinds.includes('session.created'),
+    };
+  });
+  console.log('SSE summary:', JSON.stringify(sseSummary));
+  const sseAssertions = [];
+  if (!sseSummary.saw_message_appended) {
+    sseAssertions.push(
+      'expected at least one session.message_appended SSE event during the test, got 0'
+    );
+  }
+
   findings.push({
     route: '/test-harness (deep flow)',
     label: 'test-harness-deep',
-    page_errors: errors,
+    page_errors: [...errors, ...sseAssertions],
     console_messages: consoleMsgs.filter((m) => m.type === 'error' || m.type === 'warning'),
     failed_requests: failedRequests,
     body_excerpt: conversationText.slice(0, 3000),
     screenshot: path.join(OUT_DIR, 'th-3-replied.png'),
+    sse_summary: sseSummary,
   });
 
   await ctx.close();
