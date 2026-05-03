@@ -54,6 +54,11 @@ class _FakeStore:
             "week": {"tokens_in": 0, "tokens_out": 0, "sessions_count": 0},
             "lifetime": {"tokens_in": 0, "tokens_out": 0, "sessions_count": 0},
         }
+        # Dependency DAG (Task #20).
+        # depends_on_map[parent] = list of children parent depends on (parent → child).
+        # dependents_map[child]  = list of parents that depend on this child.
+        self.depends_on_map: dict[int, list[int]] = {}
+        self.dependents_map: dict[int, list[int]] = {}
 
     async def list_profile_registry(self) -> list[dict]:
         self.list_calls += 1
@@ -95,6 +100,90 @@ class _FakeStore:
 
     async def cost_totals(self):
         return dict(self.totals_response)
+
+    async def get_dependencies(self, ticket_id: int) -> list[int]:
+        return list(self.depends_on_map.get(int(ticket_id), []))
+
+    async def get_dependents(self, ticket_id: int) -> list[int]:
+        return list(self.dependents_map.get(int(ticket_id), []))
+
+    async def get_active_tpm_for_ticket(self, ticket_id: int):
+        # Default: no active TPM. Tests that need one set this attribute.
+        return getattr(self, "_active_tpm", None)
+
+    async def close_session(self, session_id: str) -> bool:
+        # Used by maybe_close_tpm_for_status_change.
+        return True
+
+
+class _FakeTaskClient:
+    """Mirrors the slice of SQLiteTaskClient the ticket endpoints use."""
+
+    def __init__(self):
+        # ticket_id -> dict
+        self.tickets: dict[int, dict] = {}
+        self.workspaces: list[dict] = []
+        # ticket_id -> [comment dict, ...]
+        self.comments: dict[int, list[dict]] = {}
+        self.update_calls: list[dict] = []
+        self.update_error: BaseException | None = None
+        self.list_error: BaseException | None = None
+
+    async def list_workspaces(self, kind: str | None = None) -> list[dict]:
+        if kind is None:
+            return list(self.workspaces)
+        return [w for w in self.workspaces if w.get("kind") == kind]
+
+    async def get_ticket(self, ticket_id: int, prune: bool = True) -> dict:
+        return dict(self.tickets.get(int(ticket_id), {}))
+
+    async def list_tickets(
+        self,
+        project_id: int | None = None,
+        status: str | None = None,
+        workspace_id: int | None = None,
+        limit: int = 200,
+        offset: int = 0,
+        ticket_type: str | None = None,
+        **kwargs,
+    ) -> dict:
+        if self.list_error is not None:
+            raise self.list_error
+        rows = list(self.tickets.values())
+        if workspace_id is not None:
+            rows = [t for t in rows if t.get("workspace_id") == workspace_id]
+        if project_id is not None:
+            rows = [t for t in rows if t.get("projectId") == project_id]
+        if ticket_type is not None:
+            rows = [t for t in rows if t.get("type") == ticket_type]
+        if status and status != "all":
+            allowed = [int(s.strip()) for s in str(status).split(",")]
+            rows = [t for t in rows if int(t.get("status") or 0) in allowed]
+        total = len(rows)
+        if offset:
+            rows = rows[offset:]
+        if limit and limit > 0:
+            rows = rows[:limit]
+        return {"tickets": rows, "total": total, "offset": offset, "limit": limit}
+
+    async def get_comments(
+        self, module: str, module_id: int, limit: int = 10, offset: int = 0
+    ) -> dict:
+        rows = list(self.comments.get(int(module_id), []))
+        total = len(rows)
+        if offset:
+            rows = rows[offset:]
+        if limit and limit > 0:
+            rows = rows[:limit]
+        return {"comments": rows, "total": total, "limit": limit, "offset": offset}
+
+    async def update_ticket(self, ticket_id: int, **kwargs) -> bool:
+        if self.update_error is not None:
+            raise self.update_error
+        self.update_calls.append({"ticket_id": int(ticket_id), **kwargs})
+        if int(ticket_id) in self.tickets:
+            self.tickets[int(ticket_id)].update(kwargs)
+        return True
 
 
 class _FakeSessionManager:
@@ -172,6 +261,18 @@ def harness():
     app = Starlette(routes=[Mount("/api/v1/orchestration", app=Router(routes=routes))])
     client = TestClient(app)
     return client, store, mgr
+
+
+@pytest.fixture
+def ticket_harness():
+    """Harness that includes a task_client for ticket endpoint tests."""
+    store = _FakeStore()
+    mgr = _FakeSessionManager()
+    tc = _FakeTaskClient()
+    routes = create_orchestration_router(store, mgr, task_client=tc)
+    app = Starlette(routes=[Mount("/api/v1/orchestration", app=Router(routes=routes))])
+    client = TestClient(app)
+    return client, store, mgr, tc
 
 
 # ── GET /profiles ──────────────────────────────────────────────────────────
@@ -848,6 +949,370 @@ class TestCostTotals:
         assert body["lifetime"]["usd"] == 33.0
         assert body["pricing"]["input_per_million"] == 3.0
         assert body["pricing"]["output_per_million"] == 15.0
+
+
+# ── Ticket endpoints (Task #20 — UI rework) ─────────────────────────────────
+
+
+def _seed_workspaces(tc: _FakeTaskClient) -> None:
+    tc.workspaces = [
+        {"id": 1, "name": "Work", "kind": "work"},
+        {"id": 2, "name": "Personal", "kind": "personal"},
+    ]
+
+
+def _make_ticket(
+    tid: int,
+    headline: str = "ticket",
+    status: int = 4,
+    workspace_id: int = 1,
+    project_id: int | None = 100,
+    ticket_type: str = "task",
+    priority: str = "medium",
+) -> dict:
+    return {
+        "id": tid,
+        "headline": headline,
+        "status": status,
+        "type": ticket_type,
+        "priority": priority,
+        "workspace_id": workspace_id,
+        "projectId": project_id,
+        "tags": "",
+        "assignee": "",
+        "phase": "",
+        "date": "2026-05-02",
+    }
+
+
+class TestListTickets:
+    def test_no_task_client(self):
+        # Build a router without a task_client to confirm 500.
+        store = _FakeStore()
+        mgr = _FakeSessionManager()
+        routes = create_orchestration_router(store, mgr)  # no task_client
+        app = Starlette(
+            routes=[Mount("/api/v1/orchestration", app=Router(routes=routes))]
+        )
+        client = TestClient(app)
+        r = client.get("/api/v1/orchestration/tickets")
+        assert r.status_code == 500
+        assert "task_client" in r.json()["error"]
+
+    def test_empty(self, ticket_harness):
+        client, _, _, tc = ticket_harness
+        _seed_workspaces(tc)
+        r = client.get("/api/v1/orchestration/tickets")
+        assert r.status_code == 200
+        body = r.json()
+        assert body == {"tickets": [], "total": 0, "limit": 200, "offset": 0}
+
+    def test_populated_with_workspace_resolution(self, ticket_harness):
+        client, store, _, tc = ticket_harness
+        _seed_workspaces(tc)
+        tc.tickets = {
+            1: _make_ticket(1, "first", workspace_id=1),
+            2: _make_ticket(2, "second", workspace_id=2),
+        }
+        # Wire up dependencies for ticket 1 only.
+        store.depends_on_map = {1: [99]}
+        store.dependents_map = {1: [50, 51]}
+        r = client.get("/api/v1/orchestration/tickets")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total"] == 2
+        # Find each ticket and assert workspace resolution.
+        by_id = {t["id"]: t for t in body["tickets"]}
+        assert by_id[1]["workspace_name"] == "Work"
+        assert by_id[2]["workspace_name"] == "Personal"
+        assert by_id[1]["dependencies"] == {
+            "depends_on_count": 1,
+            "dependents_count": 2,
+        }
+        assert by_id[2]["dependencies"] == {
+            "depends_on_count": 0,
+            "dependents_count": 0,
+        }
+
+    def test_workspace_filter(self, ticket_harness):
+        client, _, _, tc = ticket_harness
+        _seed_workspaces(tc)
+        tc.tickets = {
+            1: _make_ticket(1, "first", workspace_id=1),
+            2: _make_ticket(2, "second", workspace_id=2),
+        }
+        r = client.get("/api/v1/orchestration/tickets?workspace=2")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total"] == 1
+        assert body["tickets"][0]["id"] == 2
+
+    def test_status_filter(self, ticket_harness):
+        client, _, _, tc = ticket_harness
+        _seed_workspaces(tc)
+        tc.tickets = {
+            1: _make_ticket(1, "wip", status=4),
+            2: _make_ticket(2, "blocked", status=1),
+            3: _make_ticket(3, "done", status=0),
+        }
+        r = client.get("/api/v1/orchestration/tickets?status=4,1")
+        body = r.json()
+        ids = sorted([t["id"] for t in body["tickets"]])
+        assert ids == [1, 2]
+
+    def test_invalid_workspace(self, ticket_harness):
+        client, *_ = ticket_harness
+        r = client.get("/api/v1/orchestration/tickets?workspace=abc")
+        assert r.status_code == 400
+
+
+class TestGetTicket:
+    def test_404(self, ticket_harness):
+        client, *_ = ticket_harness
+        r = client.get("/api/v1/orchestration/tickets/999")
+        assert r.status_code == 404
+
+    def test_invalid_id(self, ticket_harness):
+        client, *_ = ticket_harness
+        r = client.get("/api/v1/orchestration/tickets/not-a-number")
+        assert r.status_code == 400
+
+    def test_happy_path_with_dependencies(self, ticket_harness):
+        client, store, _, tc = ticket_harness
+        _seed_workspaces(tc)
+        tc.tickets = {
+            10: _make_ticket(10, "main", project_id=100, workspace_id=1),
+            20: _make_ticket(20, "child A", project_id=100),
+            30: _make_ticket(30, "parent", project_id=100),
+            100: _make_ticket(100, "Project Foo", ticket_type="project"),
+        }
+        store.depends_on_map = {10: [20]}  # 10 depends on 20
+        store.dependents_map = {10: [30]}  # 30 depends on 10
+
+        r = client.get("/api/v1/orchestration/tickets/10")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["id"] == 10
+        assert body["workspace_name"] == "Work"
+        assert body["project_name"] == "Project Foo"
+        depends_on = body["dependencies"]["depends_on"]
+        dependents = body["dependencies"]["dependents"]
+        assert [d["id"] for d in depends_on] == [20]
+        assert depends_on[0]["headline"] == "child A"
+        assert [d["id"] for d in dependents] == [30]
+        assert dependents[0]["headline"] == "parent"
+
+
+class TestGetTicketComments:
+    def test_empty(self, ticket_harness):
+        client, *_ = ticket_harness
+        r = client.get("/api/v1/orchestration/tickets/42/comments")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total"] == 0
+        assert body["comments"] == []
+
+    def test_populated(self, ticket_harness):
+        client, _, _, tc = ticket_harness
+        tc.comments = {
+            42: [
+                {"id": 1, "text": "first", "author": "alice", "date": "2026-05-02"},
+                {"id": 2, "text": "second", "author": "bob", "date": "2026-05-02"},
+            ]
+        }
+        r = client.get("/api/v1/orchestration/tickets/42/comments")
+        body = r.json()
+        assert body["total"] == 2
+        assert [c["text"] for c in body["comments"]] == ["first", "second"]
+
+    def test_invalid_id(self, ticket_harness):
+        client, *_ = ticket_harness
+        r = client.get("/api/v1/orchestration/tickets/bad/comments")
+        assert r.status_code == 400
+
+
+class TestGetTicketSessions:
+    def test_uses_paginated_list(self, ticket_harness):
+        client, store, *_ = ticket_harness
+        store.paginated_response = (
+            [{"id": "sess_1", "ticket_id": 7, "profile_name": "tpm"}],
+            1,
+        )
+        r = client.get("/api/v1/orchestration/tickets/7/sessions")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total"] == 1
+        assert body["ticket_id"] == 7
+        assert store.paginated_calls[-1]["ticket_id"] == 7
+
+    def test_invalid_id(self, ticket_harness):
+        client, *_ = ticket_harness
+        r = client.get("/api/v1/orchestration/tickets/bad/sessions")
+        assert r.status_code == 400
+
+
+class TestPatchTicket:
+    def test_empty_body(self, ticket_harness):
+        client, *_ = ticket_harness
+        r = client.request(
+            "PATCH",
+            "/api/v1/orchestration/tickets/1",
+            json={},
+        )
+        assert r.status_code == 400
+        assert "no editable fields" in r.json()["error"]
+
+    def test_status_update_no_change(self, ticket_harness):
+        client, _, mgr, tc = ticket_harness
+        _seed_workspaces(tc)
+        tc.tickets = {1: _make_ticket(1, status=4)}
+        r = client.request(
+            "PATCH",
+            "/api/v1/orchestration/tickets/1",
+            json={"status": 4},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is True
+        # No spawn — status didn't change.
+        assert mgr.spawn_calls == []
+
+    def test_status_3_to_4_fires_tpm_spawn(self, ticket_harness):
+        client, _, mgr, tc = ticket_harness
+        _seed_workspaces(tc)
+        tc.tickets = {1: _make_ticket(1, status=3)}
+        r = client.request(
+            "PATCH",
+            "/api/v1/orchestration/tickets/1",
+            json={"status": 4},
+        )
+        assert r.status_code == 200
+        # The TPM spawn helper looks up active TPM via store; with empty
+        # store it should attempt to spawn.
+        assert any(
+            c["profile_name"] == "tpm" and c["ticket_id"] == 1
+            for c in mgr.spawn_calls
+        )
+
+    def test_priority_only(self, ticket_harness):
+        client, _, mgr, tc = ticket_harness
+        _seed_workspaces(tc)
+        tc.tickets = {1: _make_ticket(1)}
+        r = client.request(
+            "PATCH",
+            "/api/v1/orchestration/tickets/1",
+            json={"priority": "high"},
+        )
+        assert r.status_code == 200
+        assert tc.update_calls[-1]["priority"] == "high"
+        # No status change → no spawn.
+        assert mgr.spawn_calls == []
+
+    def test_invalid_status_type(self, ticket_harness):
+        client, *_ = ticket_harness
+        r = client.request(
+            "PATCH",
+            "/api/v1/orchestration/tickets/1",
+            json={"status": "active"},
+        )
+        assert r.status_code == 400
+
+    def test_invalid_id(self, ticket_harness):
+        client, *_ = ticket_harness
+        r = client.request(
+            "PATCH",
+            "/api/v1/orchestration/tickets/bad",
+            json={"status": 4},
+        )
+        assert r.status_code == 400
+
+    def test_update_failure_500(self, ticket_harness):
+        client, _, _, tc = ticket_harness
+        tc.update_error = RuntimeError("db locked")
+        r = client.request(
+            "PATCH",
+            "/api/v1/orchestration/tickets/1",
+            json={"status": 4},
+        )
+        assert r.status_code == 500
+
+
+class TestGetTicketTree:
+    def test_empty(self, ticket_harness):
+        client, _, _, tc = ticket_harness
+        _seed_workspaces(tc)
+        r = client.get("/api/v1/orchestration/tickets/tree")
+        assert r.status_code == 200
+        body = r.json()
+        # Both seed workspaces appear even with no tickets.
+        assert "workspaces" in body
+        ws_names = [w["workspace"]["name"] for w in body["workspaces"]]
+        assert "Work" in ws_names
+        assert "Personal" in ws_names
+
+    def test_grouping_and_status_sort(self, ticket_harness):
+        client, store, _, tc = ticket_harness
+        _seed_workspaces(tc)
+        tc.tickets = {
+            1: _make_ticket(1, "wip", status=4, project_id=100),
+            2: _make_ticket(2, "new", status=3, project_id=100),
+            3: _make_ticket(3, "blocked", status=1, project_id=100),
+            4: _make_ticket(4, "personal", status=4, project_id=200, workspace_id=2),
+            100: _make_ticket(100, "Project A", ticket_type="project", project_id=None),
+            200: _make_ticket(
+                200, "Project B", ticket_type="project", project_id=None, workspace_id=2
+            ),
+        }
+        r = client.get("/api/v1/orchestration/tickets/tree")
+        body = r.json()
+        work = next(
+            w for w in body["workspaces"] if w["workspace"]["name"] == "Work"
+        )
+        # Project A tickets only.
+        proj = next(p for p in work["projects"] if p["project"]["id"] == 100)
+        # No dependency relationships → all three are top-level.
+        ids = [item["ticket"]["id"] for item in proj["tickets"]]
+        # Sort: 4 (WIP) → 3 (New) → 1 (Blocked); within tie, id desc.
+        assert ids == [1, 2, 3]
+
+    def test_parent_child_nesting(self, ticket_harness):
+        client, store, _, tc = ticket_harness
+        _seed_workspaces(tc)
+        tc.tickets = {
+            10: _make_ticket(10, "umbrella", project_id=100),
+            11: _make_ticket(11, "child a", project_id=100),
+            12: _make_ticket(12, "child b", project_id=100),
+            100: _make_ticket(100, "Project A", ticket_type="project"),
+        }
+        # 10 is parent; 11 and 12 are dependents of 10.
+        store.dependents_map = {10: [11, 12]}
+        # 11 depends on 10; 12 depends on 10.
+        store.depends_on_map = {11: [10], 12: [10]}
+
+        r = client.get("/api/v1/orchestration/tickets/tree")
+        body = r.json()
+        work = next(
+            w for w in body["workspaces"] if w["workspace"]["name"] == "Work"
+        )
+        proj = next(p for p in work["projects"] if p["project"]["id"] == 100)
+        # Top-level should be just ticket 10 (child tickets 11 + 12 are nested).
+        ids = [item["ticket"]["id"] for item in proj["tickets"]]
+        assert ids == [10]
+        children = proj["tickets"][0]["children"]
+        child_ids = sorted([c["id"] for c in children])
+        assert child_ids == [11, 12]
+
+    def test_workspace_filter(self, ticket_harness):
+        client, _, _, tc = ticket_harness
+        _seed_workspaces(tc)
+        tc.tickets = {
+            1: _make_ticket(1, workspace_id=1),
+            2: _make_ticket(2, workspace_id=2),
+        }
+        r = client.get("/api/v1/orchestration/tickets/tree?workspace=2")
+        body = r.json()
+        ws_names = [w["workspace"]["name"] for w in body["workspaces"]]
+        assert ws_names == ["Personal"]
 
 
 # Make pyflakes happy — Any imported for typing comments only.

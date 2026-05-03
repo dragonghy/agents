@@ -2294,7 +2294,10 @@ def main():
                 else None
             )
             orch_routes = create_orchestration_router(
-                get_store, _get_session_manager, _profiles_dir
+                get_store,
+                _get_session_manager,
+                _profiles_dir,
+                task_client=get_client,
             )
             http_app.routes.insert(0, Mount("/api/v1/orchestration", routes=orch_routes))
             logger.info(f"Orchestration API: http://{args.host}:{port}/api/v1/orchestration/*")
