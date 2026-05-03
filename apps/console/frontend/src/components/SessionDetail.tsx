@@ -16,6 +16,7 @@ import {
   getSession,
   getSessionHistory,
 } from '../api';
+import { sseBus } from '../lib/sseBus';
 import type { RenderedHistoryMessage, Session } from '../types';
 
 interface PendingMessage {
@@ -63,9 +64,90 @@ export default function SessionDetail() {
 
   useEffect(() => {
     refresh();
+    // Polling kept as a backstop in case SSE is unavailable / lossy.
     const id = setInterval(refresh, 10_000);
     return () => clearInterval(id);
   }, [refresh]);
+
+  // Live updates via SSE: append new messages + bump cumulative cost as
+  // they happen. Filtered to the current session_id so we don't render
+  // events from sibling sessions.
+  useEffect(() => {
+    if (!sessionId) return;
+    const offMsg = sseBus.subscribe('session.message_appended', (ev) => {
+      const p = ev.payload as {
+        session_id?: string;
+        role?: 'user' | 'assistant';
+        text?: string;
+      };
+      if (p.session_id !== sessionId) return;
+      // Only react to assistant turns the server confirms — the user
+      // turn was added optimistically in onSend below and would
+      // otherwise show up twice. The user-role event is still useful
+      // to clients that didn't trigger the message (e.g. another tab).
+      if (p.role === 'assistant') {
+        // Replace any pending placeholder, otherwise append.
+        setPending((prev) => {
+          const ph = prev.findIndex(
+            (m) => m.role === 'assistant' && m.pending
+          );
+          const next: PendingMessage = {
+            role: 'assistant',
+            text: p.text || '',
+            ts: Date.now(),
+          };
+          if (ph >= 0) {
+            const copy = [...prev];
+            copy[ph] = next;
+            return copy;
+          }
+          return [...prev, next];
+        });
+      } else if (p.role === 'user') {
+        // Only show if we don't already have an optimistic copy with
+        // identical text in our pending buffer (avoid double-render in
+        // the tab that sent the message). Use trimmed-equality for the
+        // same reason.
+        setPending((prev) => {
+          const seen = prev.some(
+            (m) => m.role === 'user' && m.text.trim() === (p.text || '').trim()
+          );
+          if (seen) return prev;
+          return [
+            ...prev,
+            { role: 'user', text: p.text || '', ts: Date.now() },
+          ];
+        });
+      }
+    });
+    const offCost = sseBus.subscribe('session.cost_updated', (ev) => {
+      const p = ev.payload as {
+        session_id?: string;
+        cost_tokens_in?: number;
+        cost_tokens_out?: number;
+      };
+      if (p.session_id !== sessionId) return;
+      setSession((prev) =>
+        prev
+          ? {
+              ...prev,
+              cost_tokens_in: p.cost_tokens_in ?? prev.cost_tokens_in,
+              cost_tokens_out: p.cost_tokens_out ?? prev.cost_tokens_out,
+            }
+          : prev
+      );
+    });
+    const offClosed = sseBus.subscribe('session.closed', (ev) => {
+      const p = ev.payload as { session_id?: string };
+      if (p.session_id !== sessionId) return;
+      setSession((prev) => (prev ? { ...prev, status: 'closed' } : prev));
+    });
+    return () => {
+      offMsg();
+      offCost();
+      offClosed();
+    };
+  }, [sessionId]);
 
   async function onSend() {
     const text = draft.trim();

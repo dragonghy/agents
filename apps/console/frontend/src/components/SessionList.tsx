@@ -7,6 +7,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { listProfiles, listSessions } from '../api';
+import { sseBus } from '../lib/sseBus';
 import type { Profile, Session } from '../types';
 
 const REFRESH_MS = 15000;
@@ -59,10 +60,63 @@ export default function SessionList() {
       }
     };
     load();
+    // Polling kept as a backstop. SSE handlers below merge new rows in
+    // immediately so the user sees lifecycle events without waiting.
     const id = setInterval(load, REFRESH_MS);
+
+    const offCreated = sseBus.subscribe('session.created', (ev) => {
+      const row = ev.payload as unknown as Session;
+      if (!row || !row.id) return;
+      // Respect active filters: only insert rows that match.
+      if (statusFilter !== 'all' && row.status !== statusFilter) return;
+      if (profileFilter !== 'all' && row.profile_name !== profileFilter)
+        return;
+      if (
+        Number.isFinite(ticketNum as number) &&
+        row.ticket_id !== ticketNum
+      )
+        return;
+      setSessions((prev) => {
+        if (prev.some((s) => s.id === row.id)) return prev;
+        return [row, ...prev].slice(0, PAGE_SIZE);
+      });
+      setTotal((t) => t + 1);
+    });
+    const offClosed = sseBus.subscribe('session.closed', (ev) => {
+      const p = ev.payload as { session_id?: string };
+      if (!p.session_id) return;
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === p.session_id ? { ...s, status: 'closed' as const } : s
+        )
+      );
+    });
+    const offCost = sseBus.subscribe('session.cost_updated', (ev) => {
+      const p = ev.payload as {
+        session_id?: string;
+        cost_tokens_in?: number;
+        cost_tokens_out?: number;
+      };
+      if (!p.session_id) return;
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === p.session_id
+            ? {
+                ...s,
+                cost_tokens_in: p.cost_tokens_in ?? s.cost_tokens_in,
+                cost_tokens_out: p.cost_tokens_out ?? s.cost_tokens_out,
+              }
+            : s
+        )
+      );
+    });
+
     return () => {
       cancelled = true;
       clearInterval(id);
+      offCreated();
+      offClosed();
+      offCost();
     };
   }, [statusFilter, profileFilter, ticketFilter, offset]);
 
