@@ -2270,54 +2270,30 @@ def main():
 
         http_app = app.http_app(transport="sse")
 
-        # Mount REST API for Display UI
-        from agents_mcp.web.api import create_api_router
-        from agents_mcp.web.events import websocket_endpoint
-        from starlette.routing import WebSocketRoute
+        # Mount REST API surfaces:
+        # - /api          → Telegram bridge (5 routes preserved from old web/api.py)
+        # - /api/v1/orchestration → orchestration session/profile endpoints (MVTH + future)
+        # The predecessor SPA + websocket bus + static-mount were retired in
+        # cleanup pass ae6dc8b — apps/console is the live Web UI now.
+        from agents_mcp.web.bridge import create_bridge_router
+        from agents_mcp.web.orchestration_api import create_orchestration_router
+        from starlette.routing import Mount
 
-        api_router = create_api_router(get_client, get_store, get_config, resolve_agents)
-        http_app.mount("/api", api_router)
+        bridge_routes = create_bridge_router(get_client, get_store, get_config, resolve_agents)
+        http_app.routes.insert(0, Mount("/api", routes=bridge_routes))
 
-        # Mount WebSocket for real-time events
-        http_app.routes.insert(0, WebSocketRoute("/ws", websocket_endpoint))
-
-        # Mount static files with SPA fallback
-        static_dir = os.path.join(os.path.dirname(__file__), "web", "static")
-        web_ui_available = False
-        if os.path.isdir(static_dir) and os.path.isfile(
-            os.path.join(static_dir, "index.html")
-        ):
-            from starlette.staticfiles import StaticFiles
-            from starlette.responses import FileResponse
-
-            index_path = os.path.join(static_dir, "index.html")
-
-            class SPAStaticFiles(StaticFiles):
-                """StaticFiles with SPA fallback: serves index.html for 404 GETs."""
-
-                async def __call__(self, scope, receive, send):
-                    if scope["type"] == "http" and scope.get("method") == "GET":
-                        try:
-                            return await super().__call__(scope, receive, send)
-                        except Exception:
-                            if os.path.isfile(index_path):
-                                resp = FileResponse(index_path)
-                                return await resp(scope, receive, send)
-                            raise
-                    return await super().__call__(scope, receive, send)
-
-            http_app.mount("/", SPAStaticFiles(directory=static_dir, html=True))
-            web_ui_available = True
+        # Orchestration endpoints. The router accepts callables (lazy resolve)
+        # so we don't need the asyncio loop to be running yet.
+        try:
+            orch_routes = create_orchestration_router(get_store, _get_session_manager)
+            http_app.routes.insert(0, Mount("/api/v1/orchestration", routes=orch_routes))
+            logger.info(f"Orchestration API: http://{args.host}:{port}/api/v1/orchestration/*")
+        except Exception:
+            logger.exception("Failed to mount orchestration API (non-fatal — bridge still works)")
 
         # Print startup summary
         logger.info(f"MCP SSE:  http://{args.host}:{port}/sse")
-        if web_ui_available:
-            logger.info(f"Web UI:   http://{args.host}:{port}/")
-        else:
-            logger.warning(
-                "Web UI:   not available "
-                "(run 'cd services/agents-mcp/web && npm install && npm run build' to enable)"
-            )
+        logger.info(f"Bridge:   http://{args.host}:{port}/api/v1/{{health,brief,human/*}}")
 
         config = uvicorn.Config(
             http_app, host=args.host, port=port, log_level="info"
