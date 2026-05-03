@@ -231,3 +231,16 @@ agents:
           - "{ROOT_DIR}/services/imessage-mcp"
           - run
           - imessage-mcp
+      wechat_personal:
+        # WeChat for Mac via services/wechat-mcp (pure osascript UI automation).
+        # Per Human 4/26 decision (#502): pure AppleScript — no DB read, no
+        # protocol implementation — to keep account-ban risk near zero on
+        # Human's main account. Requires Accessibility + Automation
+        # permissions on the host terminal process.
+        # See services/wechat-mcp/README.md for permission setup.
+        command: uv
+        args:
+          - "--directory"
+          - "{ROOT_DIR}/services/wechat-mcp"
+          - run
+          - wechat-mcp
