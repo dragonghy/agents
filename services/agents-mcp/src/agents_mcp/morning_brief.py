@@ -12,7 +12,7 @@ import logging
 import os
 import time
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Any, Optional
 
 from agents_mcp.sqlite_task_client import SQLiteTaskClient
 from agents_mcp.store import AgentStore
@@ -448,6 +448,86 @@ async def _send_brief_email(filepath: str, date_str: str):
         logger.warning(f"Morning Brief delivery failed: {e}")
 
 
+async def deliver_brief_via_secretary(
+    session_manager: Any,  # SessionManager (avoid hard import here)
+    chat_id: str,
+    *,
+    profile_name: str = "secretary",
+    prompt: Optional[str] = None,
+) -> Optional[str]:
+    """Spawn a secretary session bound to the Human's Telegram channel and
+    ask it to compose + send today's Executive Brief.
+
+    Implements path (b) of the Phase 4 morning brief design: instead of the
+    daemon writing a raw-data brief and notifying admin, we let the
+    secretary Profile compose the final brief through the orchestration
+    plumbing, and the bot's normal SSE listener relays the assistant turn
+    to the chat.
+
+    Args:
+        session_manager: An ``orchestration_session_manager.SessionManager``
+            instance. We import it dynamically so this module doesn't need
+            the SDK on import.
+        chat_id: Numeric Telegram chat id for the Human (the channel binding
+            becomes ``telegram:<chat_id>``).
+        profile_name: Profile to spawn. ``secretary`` by default.
+        prompt: Override the default brief-composition prompt.
+
+    Returns:
+        The new session id on success, ``None`` on any failure (logged).
+    """
+    if not chat_id:
+        logger.warning(
+            "deliver_brief_via_secretary: chat_id is empty; skipping (set "
+            "HUMAN_TELEGRAM_CHAT_ID to enable secretary-driven morning briefs)"
+        )
+        return None
+    if session_manager is None:
+        logger.warning(
+            "deliver_brief_via_secretary: session_manager is None; "
+            "orchestration not booted, falling back to admin-notify path"
+        )
+        return None
+
+    channel_id = f"telegram:{chat_id}"
+    default_prompt = (
+        "Compose Huayang's morning brief for today using the executive-brief "
+        "skill. Pull live data, read STATUS.md and the most recent daily log, "
+        "summarize with judgment, and send it. Your reply will be relayed to "
+        "him directly via Telegram, so write the brief as the body of your "
+        "next message."
+    )
+    body = prompt or default_prompt
+    try:
+        row = await session_manager.spawn(
+            profile_name=profile_name,
+            binding_kind="human-channel",
+            channel_id=channel_id,
+        )
+        session_id = row.get("id") if isinstance(row, dict) else None
+        if not session_id:
+            logger.error(
+                "deliver_brief_via_secretary: spawn returned row without id: %r",
+                row,
+            )
+            return None
+        # Fire the LLM turn. The assistant response will publish a
+        # session.message_appended event; the Telegram bot's SSE listener
+        # picks it up and sends the text to the chat.
+        await session_manager.append_message(session_id, body)
+        logger.info(
+            "Morning brief: spawned %s session %s on channel %s",
+            profile_name, session_id, channel_id,
+        )
+        return session_id
+    except Exception:
+        logger.exception(
+            "deliver_brief_via_secretary failed (profile=%s channel=%s)",
+            profile_name, channel_id,
+        )
+        return None
+
+
 async def brief_loop(
     client: SQLiteTaskClient,
     store: AgentStore,
@@ -455,6 +535,7 @@ async def brief_loop(
     target_hour: int = 7,
     target_minute: int = 0,
     output_dir: str = None,
+    session_manager: Any = None,  # SessionManager
 ):
     """Background loop that generates the Morning Brief daily at the target time.
 
@@ -462,6 +543,15 @@ async def brief_loop(
         target_hour: Hour in local time to generate (default 7 AM).
         target_minute: Minute (default 0).
         output_dir: Directory to save briefs.
+        session_manager: Optional ``SessionManager``. When set together with
+            the ``HUMAN_TELEGRAM_CHAT_ID`` env var, the loop uses the
+            secretary-driven delivery path (option b in the Phase 4 design):
+            spawns a ``secretary`` session bound to the Human's Telegram
+            channel and prompts it to compose + send the brief. The
+            bot's normal SSE listener then relays the assistant turn back
+            to Telegram. When either is absent, falls back to the legacy
+            admin-notify path so the daemon stays useful through the
+            transition.
     """
     logger.info(f"Morning Brief loop started, target time: {target_hour:02d}:{target_minute:02d}")
 
@@ -474,6 +564,10 @@ async def brief_loop(
     if os.path.isfile(today_file):
         last_generated_date = today_check
         logger.info(f"Morning Brief already exists for {today_check}, skipping on startup")
+
+    human_chat_id = os.environ.get("HUMAN_TELEGRAM_CHAT_ID") or os.environ.get(
+        "TELEGRAM_HUMAN_CHAT_ID", ""
+    )
 
     while True:
         try:
@@ -489,25 +583,39 @@ async def brief_loop(
                 last_generated_date = today
                 logger.info(f"Morning Brief data saved: {filepath}")
 
-                # Don't auto-send the raw data brief to Human.
-                # Instead, wake up admin to write a proper Executive Brief.
-                # Admin reads STATUS.md + logs + this data file, then composes
-                # a judgment-driven brief and sends it via Telegram.
-                try:
-                    await store.insert_message(
-                        from_agent="system",
-                        to_agent="admin",
-                        body=(
-                            f"[Morning Brief] 7 AM — time to write today's Executive Brief.\n\n"
-                            f"Data file: {filepath}\n"
-                            f"Read: templates/shared/skills/executive-brief/memory/STATUS.md\n"
-                            f"Read: templates/shared/skills/executive-brief/log/\n"
-                            f"Then write a proper brief and send via send_human_message()."
-                        ),
+                # Phase 4 delivery path (b): spawn a secretary session bound
+                # to the Human's Telegram channel and let the bot's SSE
+                # listener relay its reply. Falls back to the legacy
+                # admin-notify path if either side is missing.
+                delivered_via_secretary = False
+                if session_manager is not None and human_chat_id:
+                    sid = await deliver_brief_via_secretary(
+                        session_manager, human_chat_id
                     )
-                    logger.info("Admin notified to write Executive Brief")
-                except Exception as e:
-                    logger.warning(f"Failed to notify admin: {e}")
+                    if sid:
+                        delivered_via_secretary = True
+
+                if not delivered_via_secretary:
+                    if not human_chat_id:
+                        logger.info(
+                            "Morning Brief: HUMAN_TELEGRAM_CHAT_ID not set; "
+                            "skipping secretary delivery (using legacy admin-notify path)"
+                        )
+                    try:
+                        await store.insert_message(
+                            from_agent="system",
+                            to_agent="admin",
+                            body=(
+                                f"[Morning Brief] 7 AM — time to write today's Executive Brief.\n\n"
+                                f"Data file: {filepath}\n"
+                                f"Read: templates/shared/skills/executive-brief/memory/STATUS.md\n"
+                                f"Read: templates/shared/skills/executive-brief/log/\n"
+                                f"Then write a proper brief and send via send_human_message()."
+                            ),
+                        )
+                        logger.info("Admin notified to write Executive Brief")
+                    except Exception as e:
+                        logger.warning(f"Failed to notify admin: {e}")
 
         except Exception as e:
             logger.error(f"Morning Brief generation failed: {e}")
