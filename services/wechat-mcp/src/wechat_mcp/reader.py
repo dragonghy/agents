@@ -110,19 +110,26 @@ _ROW_SEP = "\x1e"    # Record Separator
 
 
 def build_list_chats_script(limit: int) -> str:
-    """AppleScript that reads the sidebar rows and emits ``name<US>preview<RS>...``.
+    """AppleScript that reads the sidebar rows and emits one row per chat.
 
-    Implementation notes:
+    Implementation notes — verified live against WeChat for Mac 4.x on
+    2026-05-02 (admin):
 
-    - We walk the *first* AXTable / AXOutline inside the WeChat process's
-      front window. WeChat 3.8.x exposes the sidebar as ``table 1 of
-      scroll area 1`` of the leftmost split group; we let System Events
-      resolve via ``every row`` to be tolerant of minor hierarchy shifts.
-    - Each row's value text is the concatenation of its child static-text
-      values — typically ``name``, ``timestamp``, ``preview`` (and possibly
-      a draft prefix). We emit the full joined string and let Python parse
-      it best-effort. This is more robust than guessing which child is the
-      name.
+    - WeChat 4.x stores each sidebar row's full descriptor in the AXName of
+      the row's grandchild cell, NOT in any AXValue. The descriptor is a
+      single comma-separated string, e.g.::
+
+          老婆,携程这是精准推送吗,15:23,Sticky on Top
+
+      The original v1 implementation walked ``entire contents`` looking for
+      ``value of anElem`` — every probe returned ``missing value`` because
+      WeChat doesn't populate AXValue on these elements. That's why the
+      first run of this MCP returned 0 chats despite the sidebar being
+      visibly populated.
+    - We extract the row's ``name of (UI element 1 of UI element 1 of
+      theRow)`` and let the Python parser split on comma. First field is
+      reliably the chat name; remaining fields are preview / time / status
+      markers.
     """
     return (
         'tell application "WeChat" to activate\n'
@@ -136,20 +143,12 @@ def build_list_chats_script(limit: int) -> str:
         '    if (count of rowList) < maxRows then set maxRows to (count of rowList)\n'
         '    repeat with i from 1 to maxRows\n'
         '      set theRow to item i of rowList\n'
-        '      set rowTexts to {}\n'
+        '      set rowName to ""\n'
         '      try\n'
-        '        repeat with anElem in (entire contents of theRow)\n'
-        '          try\n'
-        '            set v to value of anElem\n'
-        '            if v is not missing value and (class of v is text) then\n'
-        '              set end of rowTexts to v\n'
-        '            end if\n'
-        '          end try\n'
-        '        end repeat\n'
+        '        set rowName to name of (item 1 of (UI elements of (item 1 of (UI elements of theRow))))\n'
         '      end try\n'
-        f'      set AppleScript\'s text item delimiters to "{_FIELD_SEP}"\n'
-        '      set joined to rowTexts as text\n'
-        '      set end of chatLines to joined\n'
+        '      if rowName is missing value then set rowName to ""\n'
+        '      set end of chatLines to (rowName as text)\n'
         '    end repeat\n'
         f'    set AppleScript\'s text item delimiters to "{_ROW_SEP}"\n'
         '    return chatLines as text\n'
@@ -235,17 +234,21 @@ def build_read_messages_script(limit: int) -> str:
 # ---------------------------------------------------------------------------
 
 def parse_chat_rows(raw: str) -> list[ChatSummary]:
-    """Parse the row-separated, field-separated output from list-chats.
+    """Parse the row-separated descriptors from list-chats.
 
-    Each row is the concatenation of static-text values from a sidebar
-    row. WeChat orders them as ``name``, optional ``time``, ``preview``,
-    sometimes ``draft prefix``. We treat the *first* non-empty field as the
-    name and the *last* non-empty field as the preview; everything between
-    is dropped (timestamps mostly).
+    WeChat 4.x emits each row as a single comma-joined string built by the
+    OS accessibility layer, e.g.::
 
-    This is intentionally heuristic. The chat name is what callers want to
-    pass back into ``wechat_get_chat`` / ``wechat_send``, so getting that
-    right is the priority.
+        老婆,携程这是精准推送吗,15:23,Sticky on Top
+
+    The first comma-delimited field is the chat name (what callers will
+    pass back to ``wechat_get_chat`` / ``wechat_send`` — getting that right
+    is the priority). The second field is the most recent preview text; the
+    third is the timestamp; remaining fields are sticky/mute markers.
+
+    This is intentionally heuristic. Chat names containing literal commas
+    will be slightly truncated on the preview side, but the name field
+    stays intact.
     """
     if not raw:
         return []
@@ -254,15 +257,25 @@ def parse_chat_rows(raw: str) -> list[ChatSummary]:
         row = row.strip()
         if not row:
             continue
-        fields = [f.strip() for f in row.split(_FIELD_SEP) if f.strip()]
-        if not fields:
-            continue
-        name = fields[0]
-        preview = fields[-1] if len(fields) > 1 else ""
-        # Common case: name and preview are identical when the row only had
-        # one static-text element (e.g. a "system" row with no message).
-        if preview == name:
-            preview = ""
+        # WeChat 4.x format: "<name>,<preview>,<time>[,<status>]" — we keep
+        # only the first two fields. The legacy unit-separator path is kept
+        # as a fall-back so that older WeChat versions (where the v1 code
+        # path produced \x1f-joined static-text values) still work without
+        # a re-release.
+        if _FIELD_SEP in row:
+            fields = [f.strip() for f in row.split(_FIELD_SEP) if f.strip()]
+            if not fields:
+                continue
+            name = fields[0]
+            preview = fields[-1] if len(fields) > 1 else ""
+            if preview == name:
+                preview = ""
+        else:
+            parts = [p.strip() for p in row.split(",")]
+            if not parts:
+                continue
+            name = parts[0]
+            preview = parts[1] if len(parts) > 1 else ""
         out.append(ChatSummary(name=name, preview=preview))
     return out
 

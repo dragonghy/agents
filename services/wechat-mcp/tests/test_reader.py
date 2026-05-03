@@ -21,10 +21,16 @@ def test_build_list_chats_script_respects_limit():
     assert "set maxRows to 7" in s
 
 
-def test_build_list_chats_script_uses_sentinels():
+def test_build_list_chats_script_uses_row_separator():
     s = build_list_chats_script(5)
-    assert US in s
+    # WeChat 4.x emits each row's content as a single comma-joined string
+    # in the cell's AXName, so we no longer need a per-field unit separator
+    # inside a row — only the row separator that joins rows together.
     assert RS in s
+    # Must read the cell's name (4.x location for chat-row data); the v1
+    # path read AXValue, which is always missing on 4.x and produced empty
+    # rows.
+    assert "name of (item 1 of (UI elements of (item 1 of (UI elements of theRow))))" in s
 
 
 def test_build_open_chat_script_escapes_name():
