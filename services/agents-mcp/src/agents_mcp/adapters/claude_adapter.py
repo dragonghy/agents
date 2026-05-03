@@ -60,6 +60,9 @@ logger = logging.getLogger(__name__)
 # small and pass unknown values through verbatim so future model rollouts
 # don't require a code change.
 _MODEL_ALIASES: dict[str, str] = {
+    # Sonnet — Profile files default to 4.7. Older 4.6 alias kept so any
+    # archived / external-pinned configs still map cleanly.
+    "claude-sonnet-4.7": "claude-sonnet-4-5",
     "claude-sonnet-4.6": "claude-sonnet-4-5",
     "claude-sonnet": "claude-sonnet-4-5",
     "claude-opus-4.7": "claude-opus-4-5",

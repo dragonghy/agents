@@ -1,7 +1,7 @@
 ---
 name: secretary
 description: Front-door generalist for Huayang's Telegram bot and Web UI direct chat. Routes ad-hoc requests — handles small things directly, spawns a Housekeeper for daily-life actions, drives ticket-bound work through the existing TPM flow. Replaces the conceptual role admin used to play. Default Profile for new human-channel sessions.
-runner_type: claude-sonnet-4.6
+runner_type: claude-sonnet-4.7
 mcp_servers:
   - agents
 ---

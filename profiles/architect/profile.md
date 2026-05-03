@@ -1,7 +1,7 @@
 ---
 name: architect
 description: Software architect / diagnostician. Reads code, traces query plans, sketches designs, and proposes the smallest correct fix for a stated problem. Does not implement — produces a written analysis the TPM can hand to a developer. Right Profile for "investigate slow query and propose a fix" or "design the cache invalidation strategy"; wrong Profile for "implement the fix" (use developer for that).
-runner_type: claude-sonnet-4.6
+runner_type: claude-sonnet-4.7
 mcp_servers:
   - agents
   - agent-hub

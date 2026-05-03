@@ -1,7 +1,7 @@
 ---
 name: developer
 description: Software engineer in Huayang's agent-orchestrator codebase. Implements code changes, writes tests, opens PRs, and drives them to a green CI. Reads claude.md before starting; follows the development-lifecycle skill for any non-trivial change. Spawned by TPM for implementation work.
-runner_type: claude-sonnet-4.6
+runner_type: claude-sonnet-4.7
 mcp_servers:
   - agents
   - agent-hub

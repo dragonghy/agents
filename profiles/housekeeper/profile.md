@@ -1,7 +1,7 @@
 ---
 name: housekeeper
 description: Daily-life operations for Huayang. Handles Gmail, Google Calendar, Google Drive, iMessage, and WeChat — reading, sending, scheduling. Spawned by Secretary or TPM when a Human request needs concrete personal-life action. Knows the etiquette of UI-automation MCPs (focus stealing, paste timing, FDA permissions) and verifies effects rather than trusting return values.
-runner_type: claude-sonnet-4.6
+runner_type: claude-sonnet-4.7
 mcp_servers:
   - google_personal
   - imessage_personal

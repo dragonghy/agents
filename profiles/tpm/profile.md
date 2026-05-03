@@ -1,7 +1,7 @@
 ---
 name: tpm
 description: Per-ticket coordinator. Reads ticket comments, decides whether to spawn a subagent, push a follow-up message, post a status comment, or close the ticket. Wakes on every comment_created event for its ticket. Has access to ticket data only — never sees subagent private session content.
-runner_type: claude-sonnet-4.6
+runner_type: claude-sonnet-4.7
 mcp_servers:
   - agents
 skills:
