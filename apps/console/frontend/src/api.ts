@@ -16,6 +16,8 @@ import type {
   CostTotalsResponse,
   ListSessionsResponse,
   Profile,
+  ProfileDetailResponse,
+  ProfileSessionsResponse,
   Session,
   SessionHistoryResponse,
   SpawnSessionBody,
@@ -171,5 +173,19 @@ export async function listSessions(opts: {
 export async function getSessionHistory(sessionId: string) {
   return get<SessionHistoryResponse>(
     `/api/v1/orchestration/sessions/${encodeURIComponent(sessionId)}/history`
+  );
+}
+
+// ── Profile detail (Task #18 Part C) ──
+
+export async function getProfile(name: string) {
+  return get<ProfileDetailResponse>(
+    `/api/v1/orchestration/profiles/${encodeURIComponent(name)}`
+  );
+}
+
+export async function getProfileSessions(name: string, limit = 10) {
+  return get<ProfileSessionsResponse>(
+    `/api/v1/orchestration/profiles/${encodeURIComponent(name)}/sessions?limit=${limit}`
   );
 }

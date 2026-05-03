@@ -8,6 +8,8 @@ import CostDashboard from './components/CostDashboard';
 import SessionList from './components/SessionList';
 import SessionDetail from './components/SessionDetail';
 import SessionTester from './components/SessionTester';
+import ProfileList from './components/ProfileList';
+import ProfileDetail from './components/ProfileDetail';
 
 export default function App() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -35,6 +37,9 @@ export default function App() {
           </NavLink>
           <NavLink to="/sessions" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
             Sessions
+          </NavLink>
+          <NavLink to="/profiles" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
+            Profiles
           </NavLink>
           <NavLink to="/briefs" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
             Briefs
@@ -81,6 +86,8 @@ export default function App() {
           <Route path="/board" element={<TicketBoard workspaceId={activeWorkspace} />} />
           <Route path="/sessions" element={<SessionList />} />
           <Route path="/sessions/:id" element={<SessionDetail />} />
+          <Route path="/profiles" element={<ProfileList />} />
+          <Route path="/profiles/:name" element={<ProfileDetail />} />
           <Route path="/briefs" element={<BriefHistory />} />
           <Route path="/cost" element={<CostDashboard />} />
           <Route path="/test-harness" element={<SessionTester />} />

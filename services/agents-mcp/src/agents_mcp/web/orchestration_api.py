@@ -93,7 +93,11 @@ async def _resolve(value: Any) -> Any:
     return value
 
 
-def create_orchestration_router(store: Any, session_manager: Any) -> list[Route]:
+def create_orchestration_router(
+    store: Any,
+    session_manager: Any,
+    profiles_dir: Any = None,
+) -> list[Route]:
     """Build the orchestration v1 routes.
 
     Args:
@@ -104,6 +108,10 @@ def create_orchestration_router(store: Any, session_manager: Any) -> list[Route]
         session_manager: Either a
             :class:`agents_mcp.orchestration_session_manager.SessionManager`
             instance or a zero-arg callable / async callable returning one.
+        profiles_dir: Optional path (or zero-arg callable returning a path)
+            to the ``profiles/`` directory. Used by GET /profiles/{name}
+            to read the system prompt body. If omitted, the route falls
+            back to the registry's ``file_path`` column.
 
     Returns:
         A list of :class:`Route` objects suitable for
@@ -121,6 +129,88 @@ def create_orchestration_router(store: Any, session_manager: Any) -> list[Route]
         s = await _resolve(store)
         rows = await s.list_profile_registry()
         return JSONResponse({"profiles": list(rows), "total": len(rows)})
+
+    async def get_profile(request: Request) -> JSONResponse:
+        """``GET /profiles/{name}`` — registry row + parsed Profile body.
+
+        Returns:
+            ``{registry: <row>, profile: {name, description, runner_type,
+            mcp_servers, skills, system_prompt, orchestration_tools}}``.
+            ``profile`` is ``null`` if the file is missing/malformed; the
+            registry row is still returned for diagnosis.
+        """
+        name = request.path_params["name"]
+        s = await _resolve(store)
+        registry_row = await s.get_profile_registry(name)
+        if registry_row is None:
+            return JSONResponse(
+                {"error": f"profile not found: {name}"}, status_code=404
+            )
+
+        # Resolve the Profile body. Try profiles_dir first; fall back to
+        # the registry's file_path (use its parent's parent as the dir).
+        from pathlib import Path as _Path
+
+        profile_dict: Optional[dict[str, Any]] = None
+        try:
+            from ..profile_loader import load_profile
+
+            pd = await _resolve(profiles_dir)
+            if pd is None:
+                # Derive from registry row: file_path = .../profiles/<name>/profile.md
+                fp = _Path(registry_row.get("file_path") or "")
+                pd = fp.parent.parent if fp.name == "profile.md" else None
+            if pd is not None:
+                p = load_profile(name, _Path(pd))
+                profile_dict = {
+                    "name": p.name,
+                    "description": p.description,
+                    "runner_type": p.runner_type,
+                    "system_prompt": p.system_prompt,
+                    "mcp_servers": list(p.mcp_servers),
+                    "skills": list(p.skills),
+                    "orchestration_tools": p.orchestration_tools,
+                    "file_path": p.file_path,
+                    "file_hash": p.file_hash,
+                }
+        except FileNotFoundError as e:
+            logger.warning("get_profile: file missing for %s: %s", name, e)
+        except Exception as e:
+            logger.exception("get_profile: failed to load %s", name)
+            profile_dict = None
+            return JSONResponse(
+                {
+                    "registry": registry_row,
+                    "profile": None,
+                    "error": f"failed to parse profile: {e}",
+                },
+                status_code=200,
+            )
+
+        return JSONResponse({"registry": registry_row, "profile": profile_dict})
+
+    async def get_profile_sessions(request: Request) -> JSONResponse:
+        """``GET /profiles/{name}/sessions`` — recent sessions of this Profile.
+
+        Query params: ``limit`` (default 10, max 100).
+        Sorted newest first via :meth:`AgentStore.list_sessions_paginated`.
+        """
+        name = request.path_params["name"]
+        try:
+            limit = min(int(request.query_params.get("limit", 10)), 100)
+        except (TypeError, ValueError):
+            return JSONResponse(
+                {"error": "limit must be an integer"}, status_code=400
+            )
+        s = await _resolve(store)
+        rows, total = await s.list_sessions_paginated(
+            profile_name=name,
+            limit=limit,
+            offset=0,
+        )
+        return JSONResponse(
+            {"sessions": rows, "total": total, "profile_name": name}
+        )
 
     async def spawn_session(request: Request) -> JSONResponse:
         """``POST /sessions`` — spawn a session and return its row.
@@ -476,6 +566,12 @@ def create_orchestration_router(store: Any, session_manager: Any) -> list[Route]
 
     routes = [
         Route("/profiles", list_profiles, methods=["GET"]),
+        Route("/profiles/{name}", get_profile, methods=["GET"]),
+        Route(
+            "/profiles/{name}/sessions",
+            get_profile_sessions,
+            methods=["GET"],
+        ),
         Route("/sessions", spawn_session, methods=["POST"]),
         Route("/sessions", list_sessions, methods=["GET"]),
         Route("/sessions/{id}/messages", append_message, methods=["POST"]),

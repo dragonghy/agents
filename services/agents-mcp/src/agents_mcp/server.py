@@ -2285,7 +2285,17 @@ def main():
         # Orchestration endpoints. The router accepts callables (lazy resolve)
         # so we don't need the asyncio loop to be running yet.
         try:
-            orch_routes = create_orchestration_router(get_store, _get_session_manager)
+            from pathlib import Path as _Path
+
+            _config_path = os.environ.get("AGENTS_CONFIG_PATH") or ""
+            _profiles_dir = (
+                _Path(os.path.dirname(os.path.abspath(_config_path))) / "profiles"
+                if _config_path
+                else None
+            )
+            orch_routes = create_orchestration_router(
+                get_store, _get_session_manager, _profiles_dir
+            )
             http_app.routes.insert(0, Mount("/api/v1/orchestration", routes=orch_routes))
             logger.info(f"Orchestration API: http://{args.host}:{port}/api/v1/orchestration/*")
         except Exception:

@@ -41,6 +41,7 @@ class _FakeStore:
 
     def __init__(self):
         self.profiles: list[dict] = []
+        self.profile_lookup: dict[str, dict] = {}
         self.sessions: dict[str, dict] = {}
         self.list_calls = 0
         self.get_calls: list[str] = []
@@ -57,6 +58,9 @@ class _FakeStore:
     async def list_profile_registry(self) -> list[dict]:
         self.list_calls += 1
         return list(self.profiles)
+
+    async def get_profile_registry(self, name: str):
+        return self.profile_lookup.get(name)
 
     async def get_session(self, session_id: str):
         self.get_calls.append(session_id)
@@ -481,6 +485,110 @@ class TestCallableInjection:
         r = client.get("/api/v1/orchestration/profiles")
         assert r.status_code == 200
         assert r.json()["total"] == 1
+
+
+# ── GET /profiles/{name} + /profiles/{name}/sessions (Task #18 Part C) ────
+
+
+class TestProfileDetail:
+    def test_unknown_404(self, harness):
+        client, _, _ = harness
+        r = client.get("/api/v1/orchestration/profiles/bogus")
+        assert r.status_code == 404
+
+    def test_returns_registry_only_when_dir_unknown(self, harness):
+        client, store, _ = harness
+        store.profile_lookup["secretary"] = {
+            "name": "secretary",
+            "description": "front door",
+            "runner_type": "claude-sonnet-4.7",
+            "file_path": "/no/such/path/profile.md",
+            "file_hash": "abc",
+            "loaded_at": "t",
+            "last_used_at": None,
+        }
+        r = client.get("/api/v1/orchestration/profiles/secretary")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["registry"]["name"] == "secretary"
+        # File doesn't exist on disk → profile is null but registry is preserved.
+        assert body["profile"] is None
+
+    def test_returns_full_profile_with_real_dir(self, harness, tmp_path):
+        client, store, _ = harness
+        # Build a synthetic profile.md
+        pdir = tmp_path / "profiles" / "test_profile"
+        pdir.mkdir(parents=True)
+        (pdir / "profile.md").write_text(
+            "---\n"
+            "name: test_profile\n"
+            "description: A test profile\n"
+            "runner_type: claude-sonnet-4.7\n"
+            "---\n"
+            "You are a test agent.\n"
+        )
+        # Re-mount the router with profiles_dir argument.
+        from agents_mcp.web.orchestration_api import create_orchestration_router
+
+        store.profile_lookup["test_profile"] = {
+            "name": "test_profile",
+            "description": "A test profile",
+            "runner_type": "claude-sonnet-4.7",
+            "file_path": str(pdir / "profile.md"),
+            "file_hash": "irrelevant",
+            "loaded_at": "t",
+            "last_used_at": None,
+        }
+        routes = create_orchestration_router(store, _FakeSessionManager(), tmp_path / "profiles")
+        from starlette.applications import Starlette
+        from starlette.routing import Mount, Router
+        from starlette.testclient import TestClient as _TC
+
+        app = Starlette(routes=[Mount("/api/v1/orchestration", app=Router(routes=routes))])
+        c = _TC(app)
+        r = c.get("/api/v1/orchestration/profiles/test_profile")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["registry"]["name"] == "test_profile"
+        assert body["profile"] is not None
+        assert body["profile"]["name"] == "test_profile"
+        assert body["profile"]["runner_type"] == "claude-sonnet-4.7"
+        assert "You are a test agent" in body["profile"]["system_prompt"]
+
+
+class TestProfileSessions:
+    def test_default_limit(self, harness):
+        client, store, _ = harness
+        store.paginated_response = (
+            [
+                {"id": "s1", "profile_name": "secretary"},
+                {"id": "s2", "profile_name": "secretary"},
+            ],
+            2,
+        )
+        r = client.get("/api/v1/orchestration/profiles/secretary/sessions")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["profile_name"] == "secretary"
+        assert body["total"] == 2
+        # Verify the store call passed profile_name=secretary, limit=10.
+        assert store.paginated_calls[0]["profile_name"] == "secretary"
+        assert store.paginated_calls[0]["limit"] == 10
+
+    def test_custom_limit(self, harness):
+        client, store, _ = harness
+        client.get("/api/v1/orchestration/profiles/tpm/sessions?limit=5")
+        assert store.paginated_calls[0]["limit"] == 5
+
+    def test_limit_capped(self, harness):
+        client, store, _ = harness
+        client.get("/api/v1/orchestration/profiles/tpm/sessions?limit=9999")
+        assert store.paginated_calls[0]["limit"] == 100
+
+    def test_invalid_limit_400(self, harness):
+        client, _, _ = harness
+        r = client.get("/api/v1/orchestration/profiles/tpm/sessions?limit=abc")
+        assert r.status_code == 400
 
 
 # ── GET /sessions (list) + /sessions/{id}/history (Task #18 Part B) ───────

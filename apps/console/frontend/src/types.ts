@@ -180,3 +180,29 @@ export interface ListSessionsResponse {
   limit: number;
   offset: number;
 }
+
+// ── Profile detail (Task #18 Part C) ──
+
+export interface ProfileBody {
+  name: string;
+  description: string;
+  runner_type: string;
+  system_prompt: string;
+  mcp_servers: string[];
+  skills: string[];
+  orchestration_tools: boolean;
+  file_path: string;
+  file_hash: string;
+}
+
+export interface ProfileDetailResponse {
+  registry: Profile;
+  profile: ProfileBody | null;
+  error?: string;
+}
+
+export interface ProfileSessionsResponse {
+  sessions: Session[];
+  total: number;
+  profile_name: string;
+}

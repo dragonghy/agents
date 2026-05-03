@@ -25,6 +25,7 @@ const PAGES = [
   { path: '/', label: 'overview' },
   { path: '/board', label: 'board' },
   { path: '/sessions', label: 'sessions' },
+  { path: '/profiles', label: 'profiles' },
   { path: '/briefs', label: 'briefs' },
   { path: '/cost', label: 'cost' },
   { path: '/test-harness', label: 'test-harness' },
@@ -178,6 +179,48 @@ async function driveTestHarness(browser) {
   await ctx.close();
 }
 
+async function driveProfileDetail(browser) {
+  console.log('\n=== Profile detail walk ===');
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  const errors = [];
+  const failedRequests = [];
+  const consoleMsgs = [];
+
+  page.on('console', (msg) => {
+    if (msg.type() === 'error' || msg.type() === 'warning') {
+      consoleMsgs.push({ type: msg.type(), text: msg.text() });
+    }
+  });
+  page.on('pageerror', (err) => errors.push(String(err)));
+  page.on('response', (resp) => {
+    if (resp.status() >= 400) {
+      failedRequests.push({ status: resp.status(), url: resp.url() });
+    }
+  });
+
+  await page.goto(BASE + '/profiles', { waitUntil: 'networkidle', timeout: 15000 });
+  await page.waitForTimeout(1500);
+  const link = await page.$('a[href^="/profiles/"]');
+  if (link) {
+    await link.click();
+    await page.waitForTimeout(2000);
+    await page.screenshot({ path: path.join(OUT_DIR, 'profile-detail.png'), fullPage: true });
+  } else {
+    console.log('No profile cards to drill into.');
+  }
+
+  findings.push({
+    route: '/profiles/:name (drill-in)',
+    label: 'profiles-drill',
+    page_errors: errors,
+    console_messages: consoleMsgs,
+    failed_requests: failedRequests,
+    screenshot: path.join(OUT_DIR, 'profile-detail.png'),
+  });
+  await ctx.close();
+}
+
 async function driveSessionDetail(browser) {
   console.log('\n=== Sessions detail walk ===');
   const ctx = await browser.newContext();
@@ -228,6 +271,7 @@ async function driveSessionDetail(browser) {
     await visit(browser, route);
   }
   await driveSessionDetail(browser);
+  await driveProfileDetail(browser);
   await driveTestHarness(browser);
   await browser.close();
 
