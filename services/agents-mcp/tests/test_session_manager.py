@@ -105,13 +105,16 @@ class _FakeAdapter:
         self.tokens_in = tokens_in
         self.tokens_out = tokens_out
 
-    async def run(self, profile, session_metadata, new_message_text, store):
+    async def run(
+        self, profile, session_metadata, new_message_text, store, **kwargs
+    ):
         self.calls.append(
             {
                 "profile": profile,
                 "session_metadata": session_metadata,
                 "new_message_text": new_message_text,
                 "store": store,
+                "kwargs": kwargs,
             }
         )
         # Mirror the real Adapter contract: persist native_handle on first
@@ -534,6 +537,173 @@ class TestClose:
             store = await _make_store(db_path)
             mgr = SessionManager(store, profiles_dir)
             assert await mgr.close("sess_nope") is False
+            await store.close()
+
+        run(_t())
+
+
+# ── orchestration_tools wiring ─────────────────────────────────────────────
+
+
+def _write_tpm_profile(profiles_dir: Path):
+    """Write a profile.md with ``orchestration_tools: true``."""
+    d = profiles_dir / "tpm"
+    d.mkdir(parents=True, exist_ok=True)
+    md = d / "profile.md"
+    md.write_text(
+        "---\n"
+        "name: tpm\n"
+        "description: TPM under test.\n"
+        "runner_type: claude-sonnet-4.6\n"
+        "orchestration_tools: true\n"
+        "---\n\n"
+        "You are a TPM.\n",
+        encoding="utf-8",
+    )
+    return md
+
+
+class TestOrchestrationToolsWiring:
+    """When a Profile declares orchestration_tools: true, the SessionManager
+    must build an in-process MCP tool server and pass it to the adapter."""
+
+    def test_tpm_session_passes_mcp_server_to_adapter(
+        self, db_path, profiles_dir
+    ):
+        async def _t():
+            store = await _make_store(db_path)
+            _write_tpm_profile(profiles_dir)
+
+            class _DummyTaskClient:
+                pass
+
+            mgr = SessionManager(
+                store, profiles_dir, task_client=_DummyTaskClient()
+            )
+
+            # spawn the TPM with a real ticket binding (required for
+            # orchestration tools).
+            row = await mgr.spawn(
+                profile_name="tpm",
+                binding_kind="ticket-subagent",
+                ticket_id=999100,
+            )
+
+            fake = _FakeAdapter(native_handle="claude-tpm-1")
+            with patch(
+                "agents_mcp.orchestration_session_manager.get_adapter",
+                return_value=fake,
+            ):
+                await mgr.append_message(row["id"], "hello tpm")
+
+            # Adapter saw mcp_servers + allowed_tools kwargs.
+            assert len(fake.calls) == 1
+            kwargs = fake.calls[0]["kwargs"]
+            assert "mcp_servers" in kwargs
+            mcp = kwargs["mcp_servers"]
+            assert len(mcp) == 1
+            server_name = next(iter(mcp.keys()))
+            assert server_name == "orchestration_tpm_999100"
+            assert mcp[server_name]["type"] == "sdk"
+
+            assert "allowed_tools" in kwargs
+            allowed = kwargs["allowed_tools"]
+            assert sorted(allowed) == sorted(
+                [
+                    f"mcp__{server_name}__{name}"
+                    for name in (
+                        "spawn_subagent",
+                        "push_message",
+                        "post_comment",
+                        "mark_ticket_status",
+                    )
+                ]
+            )
+
+            await store.close()
+
+        run(_t())
+
+    def test_non_tpm_session_does_not_pass_mcp_server(
+        self, db_path, profiles_dir
+    ):
+        async def _t():
+            store = await _make_store(db_path)
+            _write_profile(profiles_dir, "developer")
+            mgr = SessionManager(store, profiles_dir)
+
+            row = await mgr.spawn(
+                profile_name="developer",
+                binding_kind="standalone",
+            )
+
+            fake = _FakeAdapter(native_handle="claude-dev-1")
+            with patch(
+                "agents_mcp.orchestration_session_manager.get_adapter",
+                return_value=fake,
+            ):
+                await mgr.append_message(row["id"], "hello developer")
+
+            assert len(fake.calls) == 1
+            kwargs = fake.calls[0]["kwargs"]
+            assert "mcp_servers" not in kwargs
+            assert "allowed_tools" not in kwargs
+
+            await store.close()
+
+        run(_t())
+
+    def test_tpm_without_task_client_raises(self, db_path, profiles_dir):
+        async def _t():
+            store = await _make_store(db_path)
+            _write_tpm_profile(profiles_dir)
+            # Construct WITHOUT task_client.
+            mgr = SessionManager(store, profiles_dir)
+            row = await mgr.spawn(
+                profile_name="tpm",
+                binding_kind="ticket-subagent",
+                ticket_id=42,
+            )
+
+            fake = _FakeAdapter()
+            with patch(
+                "agents_mcp.orchestration_session_manager.get_adapter",
+                return_value=fake,
+            ):
+                with pytest.raises(RuntimeError, match="task_client"):
+                    await mgr.append_message(row["id"], "x")
+
+            await store.close()
+
+        run(_t())
+
+    def test_tpm_without_ticket_id_raises(self, db_path, profiles_dir):
+        async def _t():
+            store = await _make_store(db_path)
+            _write_tpm_profile(profiles_dir)
+
+            class _DummyTaskClient:
+                pass
+
+            mgr = SessionManager(
+                store, profiles_dir, task_client=_DummyTaskClient()
+            )
+            # Spawn TPM with no ticket binding (standalone). This is an
+            # unusual but possible misconfiguration; we want a clear error,
+            # not a silent crash inside the tool server build.
+            row = await mgr.spawn(
+                profile_name="tpm",
+                binding_kind="standalone",
+            )
+
+            fake = _FakeAdapter()
+            with patch(
+                "agents_mcp.orchestration_session_manager.get_adapter",
+                return_value=fake,
+            ):
+                with pytest.raises(RuntimeError, match="ticket_id"):
+                    await mgr.append_message(row["id"], "x")
+
             await store.close()
 
         run(_t())

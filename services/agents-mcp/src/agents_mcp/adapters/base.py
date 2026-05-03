@@ -55,6 +55,13 @@ class Profile:
             test/synthetic profiles.
         file_hash: sha256 of the file content. Optional for test/synthetic
             profiles.
+        orchestration_tools: When ``True``, the SessionManager wires an
+            in-process MCP server exposing the four orchestration tools
+            (``spawn_subagent``, ``push_message``, ``post_comment``,
+            ``mark_ticket_status``) into this Profile's adapter run. Used by
+            the TPM Profile to materialize coordination decisions; defaults
+            to ``False`` for every other Profile (Developer, Architect, etc.)
+            which only respond to plain text turns.
     """
 
     name: str
@@ -65,6 +72,7 @@ class Profile:
     file_hash: str = ""
     mcp_servers: tuple[str, ...] = field(default_factory=tuple)
     skills: tuple[str, ...] = field(default_factory=tuple)
+    orchestration_tools: bool = False
 
 
 class ProfileParseError(ValueError):

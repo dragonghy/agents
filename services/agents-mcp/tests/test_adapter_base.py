@@ -140,12 +140,16 @@ class TestAdapterProtocol:
     def test_claude_adapter_implements_protocol_structurally(self):
         # Protocols rely on structural typing; we don't subclass Adapter.
         # We assert that ClaudeAdapter has a `run` async method with the
-        # expected param names.
+        # required positional param names. Optional keyword-only params
+        # (e.g. ``mcp_servers``, ``allowed_tools`` for orchestration tool
+        # wiring — see Phase 2.5) are additive and not enforced here.
         adapter = ClaudeAdapter()
         assert hasattr(adapter, "run")
         assert inspect.iscoroutinefunction(adapter.run)
         sig = inspect.signature(adapter.run)
-        assert list(sig.parameters.keys()) == [
+        params = list(sig.parameters.keys())
+        # Required positional params come first, in this order.
+        assert params[:4] == [
             "profile",
             "session_metadata",
             "new_message_text",

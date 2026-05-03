@@ -195,6 +195,43 @@ class TestLoadProfile:
             load_profile("broken", profiles_dir)
         assert "mcp_servers" in str(exc.value)
 
+    def test_orchestration_tools_defaults_to_false(self, profiles_dir):
+        # Profile with no orchestration_tools field → False.
+        _write_profile(profiles_dir, "developer")
+        p = load_profile("developer", profiles_dir)
+        assert p.orchestration_tools is False
+
+    def test_orchestration_tools_true_parses(self, profiles_dir):
+        d = profiles_dir / "tpm"
+        d.mkdir()
+        (d / "profile.md").write_text(
+            "---\n"
+            "description: TPM\n"
+            "runner_type: claude\n"
+            "orchestration_tools: true\n"
+            "---\n\n"
+            "body\n",
+            encoding="utf-8",
+        )
+        p = load_profile("tpm", profiles_dir)
+        assert p.orchestration_tools is True
+
+    def test_orchestration_tools_non_bool_rejected(self, profiles_dir):
+        d = profiles_dir / "broken"
+        d.mkdir()
+        (d / "profile.md").write_text(
+            "---\n"
+            "description: x\n"
+            "runner_type: y\n"
+            "orchestration_tools: yes-string\n"
+            "---\n\n"
+            "body\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(ProfileParseError) as exc:
+            load_profile("broken", profiles_dir)
+        assert "orchestration_tools" in str(exc.value)
+
     def test_hash_is_stable_for_same_content(self, profiles_dir):
         _write_profile(profiles_dir, "twin")
         h1 = load_profile("twin", profiles_dir).file_hash

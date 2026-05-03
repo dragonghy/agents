@@ -110,6 +110,9 @@ class ClaudeAdapter:
         session_metadata: SessionMetadata,
         new_message_text: str,
         store: "AgentStore",
+        *,
+        mcp_servers: dict[str, Any] | None = None,
+        allowed_tools: list[str] | None = None,
     ) -> RunResult:
         """Execute one Claude turn for the given session.
 
@@ -140,12 +143,21 @@ class ClaudeAdapter:
                 list(profile.mcp_servers),
             )
 
-        opts = ClaudeAgentOptions(
+        opts_kwargs: dict[str, Any] = dict(
             system_prompt=profile.system_prompt,
             model=_resolve_model(profile.runner_type),
             resume=session_metadata.native_handle,
             permission_mode="bypassPermissions",
         )
+        if mcp_servers:
+            opts_kwargs["mcp_servers"] = mcp_servers
+        if allowed_tools:
+            # ClaudeAgentOptions.allowed_tools defaults to []; passing an
+            # empty list is meaningless (it's the same as omitting it),
+            # so we only set the field when there's something to allow.
+            opts_kwargs["allowed_tools"] = list(allowed_tools)
+
+        opts = ClaudeAgentOptions(**opts_kwargs)
 
         assistant_chunks: list[str] = []
         captured_session_id: str | None = None

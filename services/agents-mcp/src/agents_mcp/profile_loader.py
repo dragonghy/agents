@@ -43,6 +43,7 @@ class _ParsedFile:
     system_prompt: str
     mcp_servers: tuple[str, ...]
     skills: tuple[str, ...]
+    orchestration_tools: bool
 
 
 def _parse_profile_text(text: str, source_path: str) -> _ParsedFile:
@@ -119,6 +120,14 @@ def _parse_profile_text(text: str, source_path: str) -> _ParsedFile:
     mcp_servers = _coerce_str_list(fm.get("mcp_servers"), source_path, "mcp_servers")
     skills = _coerce_str_list(fm.get("skills"), source_path, "skills")
 
+    orchestration_tools_raw = fm.get("orchestration_tools", False)
+    if not isinstance(orchestration_tools_raw, bool):
+        raise ProfileParseError(
+            source_path,
+            f"frontmatter field 'orchestration_tools' must be a boolean, "
+            f"got {type(orchestration_tools_raw).__name__}",
+        )
+
     if not body.strip():
         # An empty system prompt is almost certainly a mistake.
         raise ProfileParseError(
@@ -131,6 +140,7 @@ def _parse_profile_text(text: str, source_path: str) -> _ParsedFile:
         system_prompt=body,
         mcp_servers=mcp_servers,
         skills=skills,
+        orchestration_tools=orchestration_tools_raw,
     )
 
 
@@ -187,6 +197,7 @@ def load_profile(name: str, profiles_dir: Path) -> Profile:
         file_hash=file_hash,
         mcp_servers=parsed.mcp_servers,
         skills=parsed.skills,
+        orchestration_tools=parsed.orchestration_tools,
     )
 
 

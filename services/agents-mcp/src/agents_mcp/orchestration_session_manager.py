@@ -49,7 +49,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from .adapters import get_adapter
 from .adapters.base import RunResult, SessionMetadata
@@ -93,9 +93,28 @@ class SessionManager:
     to the async Adapter.
     """
 
-    def __init__(self, store: AgentStore, profiles_dir: Path):
+    def __init__(
+        self,
+        store: AgentStore,
+        profiles_dir: Path,
+        *,
+        task_client: Any = None,
+    ):
+        """Construct a SessionManager.
+
+        Args:
+            store: AgentStore for session row CRUD.
+            profiles_dir: Path to the ``profiles/`` directory containing
+                ``<name>/profile.md`` files.
+            task_client: Optional Leantime/SQLite task client. Required
+                only when orchestration tools (``post_comment`` /
+                ``mark_ticket_status``) are wired in for a TPM session.
+                Other Profile types don't need it; passing ``None`` is fine
+                until you spawn something with ``orchestration_tools=True``.
+        """
         self._store = store
         self._profiles_dir = Path(profiles_dir)
+        self._task_client = task_client
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -238,15 +257,63 @@ class SessionManager:
             runner_type=session_row["runner_type"],
         )
 
+        # If this Profile asks for the orchestration tool surface (TPM),
+        # build an in-process MCP server bound to this session + ticket
+        # and pass it to the Adapter. Other Profiles get plain text-only
+        # turns. The tool server is rebuilt every turn — cheap (no IPC,
+        # no subprocess) and means TPM-ticket binding is always fresh.
+        adapter_kwargs: dict[str, Any] = {}
+        if profile.orchestration_tools:
+            ticket_id = session_row["ticket_id"]
+            if ticket_id is None:
+                raise RuntimeError(
+                    f"profile {profile.name!r} declares orchestration_tools=True "
+                    f"but session {session_id!r} has no ticket_id; "
+                    f"orchestration tools require a ticket binding"
+                )
+            if self._task_client is None:
+                raise RuntimeError(
+                    f"profile {profile.name!r} declares orchestration_tools=True "
+                    f"but SessionManager was constructed without a task_client; "
+                    f"pass task_client=... to enable orchestration tools"
+                )
+            # Local import — keeps the SDK + tools module out of the
+            # import path for non-orchestration callers.
+            from .orchestration_tools import (
+                TPM_TOOL_NAMES,
+                build_tpm_tool_server,
+            )
+
+            mcp_server = build_tpm_tool_server(
+                session_manager=self,
+                store=self._store,
+                task_client=self._task_client,
+                parent_session_id=session_id,
+                bound_ticket_id=int(ticket_id),
+            )
+            server_name = f"orchestration_tpm_{ticket_id}"
+            adapter_kwargs["mcp_servers"] = {server_name: mcp_server}
+            # Claude Code addresses MCP tools as
+            # ``mcp__<server_name>__<tool_name>``. Pre-allow them so the
+            # session can call them without an interactive permission
+            # prompt (which never resolves in headless daemon mode even
+            # with bypassPermissions for some SDK versions).
+            adapter_kwargs["allowed_tools"] = [
+                f"mcp__{server_name}__{tn}" for tn in TPM_TOOL_NAMES
+            ]
+
         logger.debug(
             "SessionManager: appending to %s (profile=%s runner=%s "
-            "native_handle=%s)",
+            "native_handle=%s tools=%s)",
             session_id,
             profile.name,
             session_row["runner_type"],
             session_row["native_handle"],
+            "orchestration" if profile.orchestration_tools else "none",
         )
-        return await adapter.run(profile, snapshot, message_text, self._store)
+        return await adapter.run(
+            profile, snapshot, message_text, self._store, **adapter_kwargs
+        )
 
     async def close(self, session_id: str) -> bool:
         """Mark a session closed. Idempotent.
