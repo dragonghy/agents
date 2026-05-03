@@ -192,35 +192,55 @@ def build_read_messages_script(limit: int) -> str:
 
     For most chats the rendered tail is 30–80 messages, which comfortably
     covers the ``limit <= 50`` documented ceiling.
+
+    Implementation notes — verified live against WeChat for Mac 4.x on
+    2026-05-02 (admin):
+
+    - The right pane in WeChat 4.x is wrapped in **two** nested splitter
+      groups, not one. The 3.x path
+      ``scroll area 2 of splitter group 1 of front window`` errors out with
+      ``Can't get scroll area 2 ... Invalid index. (-1719)`` because there
+      simply isn't a sibling scroll area at that depth anymore. The 4.x
+      path is::
+
+          table 1 of scroll area 1 of splitter group 1 of splitter group 1
+              of front window
+
+    - Same v3→v4 attribute drift the sidebar already hit (see
+      :func:`build_list_chats_script`): WeChat 4.x stores the row's text
+      content in the AXName of the inner cell, not in any AXValue on
+      descendants. The 3.x ``value of anElem`` walk returned ``missing
+      value`` for everything, which is why the read returned empty bodies
+      even when the AppleScript path *did* match.
+
+    - Each row's ``AXName`` is a single string of the form
+      ``<sender>Said:<body>`` (e.g. ``MeSaid:[呲牙]``, ``AaronSaid:新家！``).
+      Date dividers are their own rows with content like
+      ``Apr 15, 2026 20:57``. Parsing happens in
+      :func:`parse_message_rows`.
     """
     return (
         'tell application "System Events"\n'
         '  tell process "WeChat"\n'
         '    set msgs to {}\n'
-        # The right-pane message scroll area is splitter group 1 -> split group 2 -> scroll area 1
-        # in WeChat 3.8.x. We resolve via "first scroll area whose ..." to tolerate minor shifts.
-        '    set rowList to (rows of table 1 of scroll area 2 of '
-        '      splitter group 1 of front window)\n'
+        # WeChat 4.x: messages live two splitter groups deep.
+        '    set rowList to (rows of table 1 of scroll area 1 of '
+        '      splitter group 1 of splitter group 1 of front window)\n'
         f'    set maxRows to {int(limit)}\n'
         '    set rowCount to (count of rowList)\n'
         '    set startIdx to rowCount - maxRows + 1\n'
         '    if startIdx < 1 then set startIdx to 1\n'
         '    repeat with i from startIdx to rowCount\n'
         '      set theRow to item i of rowList\n'
-        '      set rowTexts to {}\n'
+        '      set rowName to ""\n'
         '      try\n'
-        '        repeat with anElem in (entire contents of theRow)\n'
-        '          try\n'
-        '            set v to value of anElem\n'
-        '            if v is not missing value and (class of v is text) then\n'
-        '              set end of rowTexts to v\n'
-        '            end if\n'
-        '          end try\n'
-        '        end repeat\n'
+        # Read the cell's AXName (the 4.x location for row content). Same
+        # nesting depth the sidebar fix uses: cell -> first UI element ->
+        # first UI element.
+        '        set rowName to name of (item 1 of (UI elements of (item 1 of (UI elements of theRow))))\n'
         '      end try\n'
-        f'      set AppleScript\'s text item delimiters to "{_FIELD_SEP}"\n'
-        '      set joined to rowTexts as text\n'
-        '      set end of msgs to joined\n'
+        '      if rowName is missing value then set rowName to ""\n'
+        '      set end of msgs to (rowName as text)\n'
         '    end repeat\n'
         f'    set AppleScript\'s text item delimiters to "{_ROW_SEP}"\n'
         '    return msgs as text\n'
@@ -281,30 +301,39 @@ def parse_chat_rows(raw: str) -> list[ChatSummary]:
 
 
 _TIMESTAMP_PATTERN = re.compile(
+    # CJK + 24h (3.x): "11:23", "昨天", "今天", "星期三", "2026-04-25 ..."
     r"^(?:\d{1,2}[:：]\d{2}|昨天|今天|星期[一二三四五六日天]|"
-    r"\d{4}[-/]\d{1,2}[-/]\d{1,2}.*)$"
+    r"\d{4}[-/]\d{1,2}[-/]\d{1,2}.*|"
+    # English-month divider (4.x): "Apr 15, 2026 20:57", "April 15, 2026"
+    r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{1,2},\s*\d{4}.*)$"
 )
+
+# WeChat 4.x packs each message row's AXName as "<sender>Said:<body>".
+# Splitting on the first occurrence of ``Said:`` is how we recover sender +
+# body. We deliberately use a literal "Said:" rather than a regex with word
+# boundaries — sender names can be single CJK characters or contain non-word
+# punctuation, and a body starting with whitespace or punctuation is fine.
+_WECHAT_4X_SAID_DELIM = "Said:"
 
 
 def parse_message_rows(raw: str) -> list[Message]:
-    """Parse the row-separated, field-separated output from read-messages.
+    """Parse the row-separated output from :func:`build_read_messages_script`.
 
-    Heuristics (verified loose-fit against WeChat 3.8.x screenshots):
+    WeChat 4.x format (one row per message, no per-field unit separator)::
 
-    - Rows whose entire content matches a timestamp pattern (``11:23``,
-      ``昨天``, ``星期三``, etc.) are date dividers, not messages — skipped.
-    - For multi-field rows, if the first field looks like a sender name
-      (no spaces, < 30 chars, not a timestamp), we treat it as ``sender``
-      and the rest as ``body``. Otherwise we leave ``sender`` empty and
-      take the whole joined value as ``body``.
-    - We can't reliably detect outgoing vs incoming from the AX tree alone
-      (WeChat draws orientation as positional layout, not as a label). We
-      mark ``is_outgoing=False`` by default; agents that need to distinguish
-      can compare ``sender`` against the user's own display name.
+        AaronSaid:新家！\\x1eApr 15, 2026 20:57\\x1eMeSaid:[呲牙]\\x1e
 
-    Tradeoff: this may misattribute some messages on edge cases (e.g. a
-    contact whose name happens to match the timestamp regex). Callers see
-    ``raw`` so they can disambiguate when it matters.
+    Each non-divider row is a single string of the form
+    ``<sender>Said:<body>``. The sender ``Me`` is the user's own messages —
+    those flip ``is_outgoing=True``. Date / time divider rows (matching
+    :data:`_TIMESTAMP_PATTERN`, e.g. ``Apr 15, 2026 20:57``, ``11:23``,
+    ``昨天``) are skipped.
+
+    A v3 fall-back path is preserved for the legacy AppleScript output
+    (rows containing :data:`_FIELD_SEP`). Older WeChat installs that
+    haven't upgraded to 4.x still produce the unit-separator-joined static
+    text values that the v1 parser was designed for, so we keep the
+    multi-field heuristic alive.
     """
     if not raw:
         return []
@@ -313,26 +342,68 @@ def parse_message_rows(raw: str) -> list[Message]:
         row = row.strip()
         if not row:
             continue
-        fields = [f.strip() for f in row.split(_FIELD_SEP) if f.strip()]
-        if not fields:
+
+        # v3 legacy fall-back: if the row carries the legacy field separator,
+        # parse it with the multi-field heuristic preserved from v1.
+        if _FIELD_SEP in row:
+            parsed = _parse_v3_row(row)
+            if parsed is not None:
+                out.append(parsed)
             continue
-        joined = " ".join(fields)
-        # Skip pure timestamp dividers.
-        if len(fields) == 1 and _TIMESTAMP_PATTERN.match(fields[0]):
+
+        # WeChat 4.x: skip pure timestamp / date dividers.
+        if _TIMESTAMP_PATTERN.match(row):
             continue
+
         sender = ""
-        body = joined
-        if len(fields) >= 2:
-            head = fields[0]
-            if (
-                len(head) <= 30
-                and " " not in head
-                and not _TIMESTAMP_PATTERN.match(head)
-            ):
-                sender = head
-                body = " ".join(fields[1:])
-        out.append(Message(sender=sender, body=body, raw=joined))
+        body = row
+        is_outgoing = False
+        if _WECHAT_4X_SAID_DELIM in row:
+            head, _, tail = row.partition(_WECHAT_4X_SAID_DELIM)
+            sender_candidate = head.strip()
+            # Only accept the prefix as a sender if it's plausibly a name
+            # (non-empty, doesn't itself look like a divider). This guards
+            # against pathological bodies like "I Said:hi" being mis-split.
+            if sender_candidate and not _TIMESTAMP_PATTERN.match(sender_candidate):
+                sender = sender_candidate
+                body = tail
+                # WeChat tags the user's own messages with the literal
+                # sender "Me" (English UI). This is the only AX-tree signal
+                # we get for outgoing vs incoming; older v1 code couldn't
+                # distinguish at all.
+                if sender == "Me":
+                    is_outgoing = True
+
+        out.append(Message(sender=sender, body=body, is_outgoing=is_outgoing, raw=row))
     return out
+
+
+def _parse_v3_row(row: str) -> Message | None:
+    """v3 multi-field row parser, preserved for backwards compatibility.
+
+    Mirrors the original v1 heuristic: split on :data:`_FIELD_SEP`, drop
+    pure-timestamp single-field rows, treat a short whitespace-free first
+    field as a sender prefix.
+    """
+    fields = [f.strip() for f in row.split(_FIELD_SEP) if f.strip()]
+    if not fields:
+        return None
+    joined = " ".join(fields)
+    if len(fields) == 1 and _TIMESTAMP_PATTERN.match(fields[0]):
+        return None
+    sender = ""
+    body = joined
+    if len(fields) >= 2:
+        head = fields[0]
+        if (
+            len(head) <= 30
+            and " " not in head
+            and not _TIMESTAMP_PATTERN.match(head)
+        ):
+            sender = head
+            body = " ".join(fields[1:])
+    is_outgoing = sender == "Me"
+    return Message(sender=sender, body=body, is_outgoing=is_outgoing, raw=joined)
 
 
 # ---------------------------------------------------------------------------
