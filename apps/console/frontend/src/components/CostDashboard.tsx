@@ -21,6 +21,7 @@ import {
   getCostByTicket,
   getCostTotals,
 } from '../api';
+import { sseBus } from '../lib/sseBus';
 import type {
   CostBySessionRow,
   CostByProfileRow,
@@ -83,9 +84,22 @@ export default function CostDashboard() {
     };
     load();
     const id = setInterval(load, REFRESH_MS);
+    // Live totals tile: refresh on every cost_updated. Other tabs
+    // (by-session / by-profile / by-ticket pivots) keep polling — those
+    // include rollups + USD math that's cheaper to compute server-side
+    // than to reproduce in the listener.
+    const offCost = sseBus.subscribe('session.cost_updated', async () => {
+      try {
+        const t = await getCostTotals();
+        if (!cancelled) setTotals(t);
+      } catch {
+        // ignore — polling will catch up
+      }
+    });
     return () => {
       cancelled = true;
       clearInterval(id);
+      offCost();
     };
   }, [offset]);
 

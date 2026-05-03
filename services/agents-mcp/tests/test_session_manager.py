@@ -707,3 +707,173 @@ class TestOrchestrationToolsWiring:
             await store.close()
 
         run(_t())
+
+
+# ── event bus publishing (Phase 3 Part E) ───────────────────────────────────
+
+
+class _FakeEventBus:
+    """Records every publish call. Used to verify the SessionManager
+    surfaces lifecycle events to the SSE bus.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict]] = []
+
+    def publish(self, kind: str, payload: dict) -> dict:
+        self.events.append((kind, payload))
+        return {"id": len(self.events), "kind": kind, "payload": payload}
+
+
+class TestEventBusPublishing:
+    def test_spawn_publishes_session_created(self, db_path, profiles_dir):
+        async def _t():
+            store = await _make_store(db_path)
+            _write_profile(profiles_dir, "tpm")
+            bus = _FakeEventBus()
+            mgr = SessionManager(store, profiles_dir, event_bus=bus)
+            row = await mgr.spawn(
+                profile_name="tpm", binding_kind="standalone"
+            )
+            kinds = [k for k, _ in bus.events]
+            assert "session.created" in kinds
+            payload = next(p for k, p in bus.events if k == "session.created")
+            assert payload["id"] == row["id"]
+            assert payload["profile_name"] == "tpm"
+            await store.close()
+
+        run(_t())
+
+    def test_append_publishes_user_then_assistant_then_cost(
+        self, db_path, profiles_dir
+    ):
+        async def _t():
+            store = await _make_store(db_path)
+            _write_profile(profiles_dir, "tpm")
+            bus = _FakeEventBus()
+            mgr = SessionManager(store, profiles_dir, event_bus=bus)
+            row = await mgr.spawn(
+                profile_name="tpm", binding_kind="standalone"
+            )
+            bus.events.clear()  # ignore the spawn event for this test
+
+            fake = _FakeAdapter(tokens_in=11, tokens_out=7)
+            with patch(
+                "agents_mcp.orchestration_session_manager.get_adapter",
+                return_value=fake,
+            ):
+                await mgr.append_message(row["id"], "hello")
+
+            # Expect ordering: user message → assistant message → cost.
+            kinds = [k for k, _ in bus.events]
+            assert kinds == [
+                "session.message_appended",
+                "session.message_appended",
+                "session.cost_updated",
+            ]
+            user_payload = bus.events[0][1]
+            assert user_payload["role"] == "user"
+            assert user_payload["text"] == "hello"
+            assert user_payload["session_id"] == row["id"]
+
+            assistant_payload = bus.events[1][1]
+            assert assistant_payload["role"] == "assistant"
+            assert assistant_payload["text"] == "ok"
+            assert assistant_payload["tokens_in"] == 11
+            assert assistant_payload["tokens_out"] == 7
+
+            cost_payload = bus.events[2][1]
+            assert cost_payload["session_id"] == row["id"]
+            # Cumulative — first turn => same as just-added.
+            assert cost_payload["cost_tokens_in"] == 11
+            assert cost_payload["cost_tokens_out"] == 7
+
+            await store.close()
+
+        run(_t())
+
+    def test_close_publishes_session_closed_when_transitioned(
+        self, db_path, profiles_dir
+    ):
+        async def _t():
+            store = await _make_store(db_path)
+            _write_profile(profiles_dir, "tpm")
+            bus = _FakeEventBus()
+            mgr = SessionManager(store, profiles_dir, event_bus=bus)
+            row = await mgr.spawn(
+                profile_name="tpm", binding_kind="standalone"
+            )
+            bus.events.clear()
+
+            ok = await mgr.close(row["id"])
+            assert ok is True
+            assert bus.events == [
+                ("session.closed", {"session_id": row["id"]})
+            ]
+
+            # Idempotent close → no duplicate event.
+            bus.events.clear()
+            ok2 = await mgr.close(row["id"])
+            assert ok2 is False
+            assert bus.events == []
+
+            await store.close()
+
+        run(_t())
+
+    def test_publish_failure_does_not_break_primary_flow(
+        self, db_path, profiles_dir
+    ):
+        """A bus that raises must not propagate the exception — the
+        primary spawn / append / close path must still succeed.
+        """
+
+        async def _t():
+            class _BrokenBus:
+                def publish(self, kind, payload):
+                    raise RuntimeError("bus exploded")
+
+            store = await _make_store(db_path)
+            _write_profile(profiles_dir, "tpm")
+            mgr = SessionManager(store, profiles_dir, event_bus=_BrokenBus())
+
+            # spawn should still succeed despite the bus blowing up.
+            row = await mgr.spawn(
+                profile_name="tpm", binding_kind="standalone"
+            )
+            assert row["status"] == "active"
+
+            # Same for append + close.
+            fake = _FakeAdapter()
+            with patch(
+                "agents_mcp.orchestration_session_manager.get_adapter",
+                return_value=fake,
+            ):
+                result = await mgr.append_message(row["id"], "yo")
+            assert result.assistant_text == "ok"
+            ok = await mgr.close(row["id"])
+            assert ok is True
+            await store.close()
+
+        run(_t())
+
+    def test_no_bus_provided_is_silent_noop(self, db_path, profiles_dir):
+        async def _t():
+            store = await _make_store(db_path)
+            _write_profile(profiles_dir, "tpm")
+            # No event_bus= kwarg.
+            mgr = SessionManager(store, profiles_dir)
+            row = await mgr.spawn(
+                profile_name="tpm", binding_kind="standalone"
+            )
+            fake = _FakeAdapter()
+            with patch(
+                "agents_mcp.orchestration_session_manager.get_adapter",
+                return_value=fake,
+            ):
+                await mgr.append_message(row["id"], "hi")
+            await mgr.close(row["id"])
+            # No exceptions = pass.
+            await store.close()
+
+        run(_t())

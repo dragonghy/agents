@@ -7,6 +7,7 @@ import {
   getTicketBoard,
   listSessions,
 } from './api';
+import { sseBus } from './lib/sseBus';
 import type {
   CostByProfileRow,
   CostBySessionRow,
@@ -129,9 +130,29 @@ function Overview() {
     };
     load();
     const id = setInterval(load, 30000);
+
+    // SSE: bump active sessions count + refresh totals on each event.
+    // The component-level load() pulls fresh aggregates; we just trigger
+    // it eagerly when something interesting happens. This keeps the
+    // dashboard reactive without re-implementing aggregation here.
+    const offCreated = sseBus.subscribe('session.created', () => {
+      setActiveSessionsCount((c) => c + 1);
+      load();
+    });
+    const offClosed = sseBus.subscribe('session.closed', () => {
+      setActiveSessionsCount((c) => Math.max(0, c - 1));
+      load();
+    });
+    const offCost = sseBus.subscribe('session.cost_updated', () => {
+      load();
+    });
+
     return () => {
       cancelled = true;
       clearInterval(id);
+      offCreated();
+      offClosed();
+      offCost();
     };
   }, []);
 

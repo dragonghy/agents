@@ -185,8 +185,10 @@ async def get_store() -> AgentStore:
 
 
 # Orchestration v1 singletons — populated by _ensure_orchestration_ready,
-# consumed by the dispatch hooks wired into update_ticket / add_comment.
+# consumed by the dispatch hooks wired into update_ticket / add_comment
+# and the SSE event stream at /api/v1/orchestration/events.
 _session_manager = None  # type: ignore[var-annotated]
+_event_bus = None  # type: ignore[var-annotated]
 _orchestration_ready = False
 
 
@@ -194,7 +196,9 @@ async def _ensure_orchestration_ready(root_dir: str) -> None:
     """Best-effort orchestration v1 boot.
 
     Builds a module-level :class:`SessionManager` bound to ``profiles/``
-    under ``root_dir`` and runs :class:`ProfileLoader.scan` once so
+    under ``root_dir``, wires it to the process-wide
+    :class:`OrchestrationEventBus` so session lifecycle events flow to
+    SSE subscribers, and runs :class:`ProfileLoader.scan` once so
     ``profile_registry`` reflects what's on disk. Called from
     :func:`get_store` right after ``store.initialize()``.
 
@@ -202,7 +206,7 @@ async def _ensure_orchestration_ready(root_dir: str) -> None:
     overlay; if profiles/ doesn't exist (e.g. legacy install) the daemon
     must still serve the rest of its MCP surface.
     """
-    global _session_manager, _orchestration_ready
+    global _session_manager, _event_bus, _orchestration_ready
     if _orchestration_ready:
         return
     try:
@@ -210,10 +214,15 @@ async def _ensure_orchestration_ready(root_dir: str) -> None:
 
         from .orchestration_session_manager import SessionManager
         from .profile_loader import ProfileLoader
+        from .web.orchestration_events import get_event_bus
 
         profiles_dir = Path(root_dir) / "profiles"
+        _event_bus = get_event_bus()
         _session_manager = SessionManager(
-            _store, profiles_dir, task_client=get_client()
+            _store,
+            profiles_dir,
+            task_client=get_client(),
+            event_bus=_event_bus,
         )
         if profiles_dir.exists():
             try:
@@ -240,6 +249,7 @@ async def _ensure_orchestration_ready(root_dir: str) -> None:
             exc_info=True,
         )
         _session_manager = None
+        _event_bus = None
     _orchestration_ready = True
 
 
@@ -250,6 +260,16 @@ def _get_session_manager():
     Returning ``None`` is a documented "skip orchestration this call" signal.
     """
     return _session_manager
+
+
+def _get_event_bus():
+    """Return the orchestration v1 OrchestrationEventBus, or None if unavailable.
+
+    Used by the SSE endpoint at ``/api/v1/orchestration/events`` so it can
+    fan events out to connected Web UI clients. Returning ``None`` means
+    "orchestration didn't boot; SSE is a no-op".
+    """
+    return _event_bus
 
 
 # ════════════════════════════════════════
@@ -2277,7 +2297,11 @@ def main():
         # cleanup pass ae6dc8b — apps/console is the live Web UI now.
         from agents_mcp.web.bridge import create_bridge_router
         from agents_mcp.web.orchestration_api import create_orchestration_router
-        from starlette.routing import Mount
+        from agents_mcp.web.orchestration_events import (
+            create_sse_endpoint,
+            get_event_bus as _get_module_event_bus,
+        )
+        from starlette.routing import Mount, Route
 
         bridge_routes = create_bridge_router(get_client, get_store, get_config, resolve_agents)
         http_app.routes.insert(0, Mount("/api", routes=bridge_routes))
@@ -2299,8 +2323,25 @@ def main():
                 _profiles_dir,
                 task_client=get_client,
             )
+            # SSE live-event stream. The endpoint resolves the singleton
+            # bus lazily on first request — by then ``get_store()`` has run
+            # ``_ensure_orchestration_ready`` which wires the bus into
+            # ``SessionManager``. Sharing the *module-level* singleton
+            # (via :func:`get_event_bus`) means publishes from the manager
+            # and subscriptions from the SSE endpoint hit the same object.
+            orch_routes.append(
+                Route(
+                    "/events",
+                    create_sse_endpoint(),  # uses get_event_bus() internally
+                    methods=["GET"],
+                )
+            )
             http_app.routes.insert(0, Mount("/api/v1/orchestration", routes=orch_routes))
+            # Touch the module-level bus so the singleton is created at
+            # mount time even if no one publishes before a client connects.
+            _get_module_event_bus()
             logger.info(f"Orchestration API: http://{args.host}:{port}/api/v1/orchestration/*")
+            logger.info(f"Orchestration SSE: http://{args.host}:{port}/api/v1/orchestration/events")
         except Exception:
             logger.exception("Failed to mount orchestration API (non-fatal — bridge still works)")
 
