@@ -1564,6 +1564,7 @@ class AgentStore:
         status: Optional[str] = None,
         profile_name: Optional[str] = None,
         ticket_id: Optional[int] = None,
+        channel_id: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[dict], int]:
@@ -1571,6 +1572,11 @@ class AgentStore:
 
         Returns (rows, total_count). Ordered by created_at DESC.
         Filters are AND-combined; all optional.
+
+        ``channel_id`` is the channel-adapter binding (e.g. ``telegram:123``);
+        the Phase 4 bot uses this to find the active human-channel session
+        for an incoming Telegram message before deciding whether to spawn a
+        new one.
         """
         clauses: list[str] = []
         params: list[Any] = []
@@ -1585,6 +1591,9 @@ class AgentStore:
         if ticket_id is not None:
             clauses.append("ticket_id = ?")
             params.append(ticket_id)
+        if channel_id is not None:
+            clauses.append("channel_id = ?")
+            params.append(channel_id)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
 
         async with self._db.execute(
