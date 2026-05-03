@@ -69,3 +69,31 @@
 - Profile registry is a discovery cache; `file_hash` lets us detect file changes and re-load, but Profile content itself stays in the .md file as source of truth.
 
 **Next**: Task #8 — Adapter interface + Claude adapter (`claude-agent-sdk-python`). Need to install the SDK package and design the protocol so future adapters can drop in cleanly.
+
+---
+
+### 2026-05-02 — Phase 1 part 2: Profile loader + 4 starting Profiles (Tasks #9 + #10 complete)
+
+**What**:
+- New module `services/agents-mcp/src/agents_mcp/profile_loader.py` — `ProfileLoader` class that walks `profiles/<name>/profile.md`, parses frontmatter (YAML) + body, and reconciles against the `profile_registry` table. Hash-aware: unchanged files yield `"unchanged"` so `loaded_at` only ticks on real changes. Bad files are logged and surfaced as `"errored"` results without clobbering an existing registry row. Standalone `load_profile(name, profiles_dir)` function returns a `Profile` dataclass for session-creation-time reads.
+- Imports `Profile` / `ProfileParseError` from `agents_mcp.adapters.base` (Task #8's interface). The dataclass picked the all-keyword construction path so Task #8's later refinement to default-value `description`/`file_path`/`file_hash` was non-breaking.
+- 19 new tests in `tests/test_profile_loader.py` covering parse success, every malformed-frontmatter case (missing delimiters, missing required fields, malformed YAML, bad list types, empty body), hash determinism, and the four `scan()` outcomes (`loaded` / `updated` / `unchanged` / `errored`) plus the "preserve existing row when new file is malformed" guarantee. Hermetic — synthetic profile files in tmp_path, fresh AgentStore on tmp sqlite.
+- Four starting Profiles under `profiles/<name>/profile.md`:
+  - `tpm` — per-ticket coordinator (1 page); knows the four ticket statuses, the comments-only event source, and that subagent private content is invisible.
+  - `developer` — code work in this codebase (1.5 pages); reads `claude.md` first, follows the development-lifecycle skill, calls out pitfalls #10 / #13 / #14 by number.
+  - `housekeeper` — daily-life ops (1.5 pages); covers WeChat focus etiquette, FDA-on-terminal pitfall #15, attributedBody decode-failure pitfall #16, and the ok=True ≠ delivered verification rule.
+  - `secretary` — front-door generalist for Telegram + Web UI (1 page); the four-shapes routing model (small thing / daily-life / ticket-driven / bigger-than-chat) and the explicit "you replace what admin used to do" framing.
+- Each profile has a "References" section pointing back to the relevant skills + claude.md pitfalls.
+- Tests passing: 19/19 new + 81/81 across the four nearby suites I exercised (profile_loader, orchestration_session, ticket_dependencies, workspaces). No regressions.
+
+**Why**: Profile registry is the discovery layer everything else in Phase 1 reads. Without `scan()` populating `profile_registry`, the session manager (Task #11) has nothing to look up; without the four starting Profile bodies, there's nothing to actually run. The hand-written prompts establish the conventions for future Profiles (terse, references-section-at-end, claude.md pitfalls cited by number).
+
+**Decisions made along the way**:
+- Used PyYAML for frontmatter parsing — already a dep (`pyproject.toml`), keeps the loader compact (~80 lines of parse logic vs. a hand-rolled parser).
+- `_parse_profile_text()` is strict about both delimiters and required fields rather than recovering silently. Silent acceptance hides typos; loud failure is surfaced via `ProfileParseError` and the loader's `"errored"` result code.
+- When a re-scan finds a malformed file replacing a previously-good one, the old registry row is preserved untouched. Rationale: a bad edit shouldn't blow away the daemon's working view; a separate test pins this behavior.
+- `scan()` returns a list (not a dict) so the caller can see order and detect the rare case where the same name appears twice on disk (would manifest as two consecutive entries; the upsert just clobbers, which is correct).
+- `Profile` is a frozen dataclass with `tuple[str, ...]` for the list fields so it stays hashable / comparable for tests.
+- Coordinated against Task #8's parallel work: the `Profile` dataclass now lives in `agents_mcp.adapters.base` (their commit landed locally between my schema reads and the loader implementation). My loader uses keyword-only construction so the field-default reorder Task #8 made was non-breaking.
+
+**Next**: Task #11 — session manager. With Profile in place, the manager can load a Profile by name and hand it (plus session metadata) to the Adapter for the first turn.
