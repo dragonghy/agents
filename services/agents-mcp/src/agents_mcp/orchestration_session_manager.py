@@ -55,6 +55,12 @@ from .adapters import get_adapter
 from .adapters.base import RunResult, SessionMetadata
 from .profile_loader import load_profile
 from .store import AgentStore
+from .web.orchestration_events import (
+    EVENT_SESSION_CLOSED,
+    EVENT_SESSION_COST_UPDATED,
+    EVENT_SESSION_CREATED,
+    EVENT_SESSION_MESSAGE_APPENDED,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +105,7 @@ class SessionManager:
         profiles_dir: Path,
         *,
         task_client: Any = None,
+        event_bus: Any = None,
     ):
         """Construct a SessionManager.
 
@@ -111,10 +118,34 @@ class SessionManager:
                 ``mark_ticket_status``) are wired in for a TPM session.
                 Other Profile types don't need it; passing ``None`` is fine
                 until you spawn something with ``orchestration_tools=True``.
+            event_bus: Optional :class:`OrchestrationEventBus`. When
+                provided, lifecycle events (``session.created``,
+                ``session.message_appended``, ``session.cost_updated``,
+                ``session.closed``) are published so the Web UI's SSE
+                stream can show live updates without polling. Bus failures
+                are caught and logged; they never break the primary
+                operation.
         """
         self._store = store
         self._profiles_dir = Path(profiles_dir)
         self._task_client = task_client
+        self._event_bus = event_bus
+
+    def _publish(self, kind: str, payload: dict) -> None:
+        """Best-effort publish to the event bus.
+
+        Wraps every publish in try/except so a bus failure can never kill
+        the primary operation (spawn / append_message / close). When the
+        bus is None this is a no-op.
+        """
+        if self._event_bus is None:
+            return
+        try:
+            self._event_bus.publish(kind, payload)
+        except Exception:  # pragma: no cover — defensive
+            logger.exception(
+                "SessionManager: event publish failed (kind=%s); continuing", kind
+            )
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -196,6 +227,9 @@ class SessionManager:
             channel_id,
             parent_session_id,
         )
+        # Notify SSE subscribers that a new session exists. The full row
+        # is the natural payload — UI wants to insert it into lists.
+        self._publish(EVENT_SESSION_CREATED, dict(row))
         return row
 
     async def append_message(
@@ -311,9 +345,52 @@ class SessionManager:
             session_row["native_handle"],
             "orchestration" if profile.orchestration_tools else "none",
         )
-        return await adapter.run(
+        # Publish the user turn BEFORE the LLM call returns so the UI can
+        # show the user's message immediately while Claude takes 5-30s.
+        # No tokens / native_handle yet — those land on the assistant turn.
+        self._publish(
+            EVENT_SESSION_MESSAGE_APPENDED,
+            {
+                "session_id": session_id,
+                "role": "user",
+                "text": message_text,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "native_handle": session_row["native_handle"],
+            },
+        )
+
+        result = await adapter.run(
             profile, snapshot, message_text, self._store, **adapter_kwargs
         )
+
+        # Adapter has just persisted native_handle (first turn) and
+        # incremented cost via the store. Re-read the session row so
+        # we publish the *cumulative* cost the UI cares about.
+        post_row = await self._store.get_session(session_id)
+        cumulative_in = (post_row or {}).get("cost_tokens_in") or 0
+        cumulative_out = (post_row or {}).get("cost_tokens_out") or 0
+
+        self._publish(
+            EVENT_SESSION_MESSAGE_APPENDED,
+            {
+                "session_id": session_id,
+                "role": "assistant",
+                "text": result.assistant_text,
+                "tokens_in": result.tokens_in,
+                "tokens_out": result.tokens_out,
+                "native_handle": result.native_handle,
+            },
+        )
+        self._publish(
+            EVENT_SESSION_COST_UPDATED,
+            {
+                "session_id": session_id,
+                "cost_tokens_in": cumulative_in,
+                "cost_tokens_out": cumulative_out,
+            },
+        )
+        return result
 
     async def close(self, session_id: str) -> bool:
         """Mark a session closed. Idempotent.
@@ -323,7 +400,10 @@ class SessionManager:
         closed; returns ``False`` if it was already closed or doesn't
         exist (the store can't tell us which, and callers don't need to).
         """
-        return await self._store.close_session(session_id)
+        ok = await self._store.close_session(session_id)
+        if ok:
+            self._publish(EVENT_SESSION_CLOSED, {"session_id": session_id})
+        return ok
 
 
 __all__ = ["SessionManager"]
