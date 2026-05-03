@@ -14,6 +14,8 @@ import type {
   CostByTicketRow,
   CostTotalsResponse,
   ListSessionsResponse,
+  ListTicketsResponse,
+  PatchTicketBody,
   Profile,
   ProfileDetailResponse,
   ProfileSessionsResponse,
@@ -21,6 +23,10 @@ import type {
   SessionHistoryResponse,
   SpawnSessionBody,
   Ticket,
+  TicketCommentsResponse,
+  TicketDetail,
+  TicketSessionsResponse,
+  TicketTreeResponse,
   Workspace,
 } from './types';
 
@@ -35,6 +41,25 @@ async function get<T>(path: string): Promise<T> {
 async function post<T>(path: string, body: unknown): Promise<T> {
   const r = await fetch(path, {
     method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    let detail = '';
+    try {
+      const err = await r.json();
+      detail = err.error || err.detail || '';
+    } catch {
+      // ignore
+    }
+    throw new Error(`${r.status} ${r.statusText} on ${path}${detail ? `: ${detail}` : ''}`);
+  }
+  return (await r.json()) as T;
+}
+
+async function patch<T>(path: string, body: unknown): Promise<T> {
+  const r = await fetch(path, {
+    method: 'PATCH',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
@@ -182,5 +207,48 @@ export async function getProfile(name: string) {
 export async function getProfileSessions(name: string, limit = 10) {
   return get<ProfileSessionsResponse>(
     `/api/v1/orchestration/profiles/${encodeURIComponent(name)}/sessions?limit=${limit}`
+  );
+}
+
+// ── Ticket detail + tree (Task #20) ──
+
+export async function listTickets(opts: {
+  workspace?: number | null;
+  project?: number | null;
+  status?: string;
+  limit?: number;
+  offset?: number;
+}) {
+  const qp = new URLSearchParams();
+  if (opts.workspace != null) qp.set('workspace', String(opts.workspace));
+  if (opts.project != null) qp.set('project', String(opts.project));
+  if (opts.status) qp.set('status', opts.status);
+  if (opts.limit !== undefined) qp.set('limit', String(opts.limit));
+  if (opts.offset !== undefined) qp.set('offset', String(opts.offset));
+  const qs = qp.toString() ? `?${qp.toString()}` : '';
+  return get<ListTicketsResponse>(`/api/v1/orchestration/tickets${qs}`);
+}
+
+export async function getTicketTree(workspace?: number | null) {
+  const qs = workspace != null ? `?workspace=${workspace}` : '';
+  return get<TicketTreeResponse>(`/api/v1/orchestration/tickets/tree${qs}`);
+}
+
+export async function getTicketDetail(id: number) {
+  return get<TicketDetail>(`/api/v1/orchestration/tickets/${id}`);
+}
+
+export async function getTicketComments(id: number) {
+  return get<TicketCommentsResponse>(`/api/v1/orchestration/tickets/${id}/comments`);
+}
+
+export async function getTicketSessions(id: number) {
+  return get<TicketSessionsResponse>(`/api/v1/orchestration/tickets/${id}/sessions`);
+}
+
+export async function patchTicket(id: number, body: PatchTicketBody) {
+  return patch<{ ok: boolean; ticket: TicketDetail | null }>(
+    `/api/v1/orchestration/tickets/${id}`,
+    body,
   );
 }

@@ -15,6 +15,7 @@ import type {
   Workspace,
 } from './types';
 import TicketBoard from './components/TicketBoard';
+import TicketDetail from './components/TicketDetail';
 import BriefHistory from './components/BriefHistory';
 import CostDashboard from './components/CostDashboard';
 import SessionList from './components/SessionList';
@@ -95,7 +96,8 @@ export default function App() {
       <main className="main">
         <Routes>
           <Route path="/" element={<Overview workspaceId={activeWorkspace} />} />
-          <Route path="/board" element={<TicketBoard workspaceId={activeWorkspace} />} />
+          <Route path="/board" element={<TicketBoard />} />
+          <Route path="/tickets/:id" element={<TicketDetail />} />
           <Route path="/sessions" element={<SessionList />} />
           <Route path="/sessions/:id" element={<SessionDetail />} />
           <Route path="/profiles" element={<ProfileList />} />
