@@ -6,38 +6,40 @@ Self-running multi-agent platform. Admin (COO) manages execution, Human (Chairma
 
 Long-term vision: Productize into a platform enabling anyone to build a one-person company through AI-guided decision-making.
 
-## Architecture (v2)
+## Architecture (orchestration v1)
 
-```
-Human (Telegram / direct session)
-  → Daemon (port 8765)
-    → v2 Dispatcher (task-selection, 30s cycle)
-      → Session Manager (spawn/monitor/release ephemeral agents)
-        → tmux windows: ticket-{id}-{type}
-          → Claude Code --agent {development|operations|assistant}
+The v2 ephemeral-tmux-window dispatch model (named tmux windows per agent,
+external `dispatcher_v2` polling loop, `session_manager` spawning Claude
+Code processes via `tmux send-keys`) was retired on 2026-05-03. Sessions
+now live inside the daemon process via the orchestration v1 runtime —
+see `projects/agent-hub/design/agent-orchestration-v1-2026-05-02.md`
+(Phase 1 / 2 / 2.5 / 3) and `projects/agent-hub/orchestration-v1-progress.md`.
 
-Data: SQLite (.agents-mcp.db, .agents-tasks.db)
-Communication: Telegram bot ↔ Daemon ↔ Agent sessions
-```
+In one sentence: a TPM (orchestrator) Profile session reads a ticket, calls
+in-process MCP tools (`spawn_subagent`, `push_message`, `post_comment`,
+`mark_ticket_status`) to drive the work. Subagents are stateless Profiles
+(`profiles/<name>/profile.md`) loaded by `agents_mcp.profile_loader` on
+boot and run via `agents_mcp.adapters.claude_adapter.ClaudeAdapter`.
 
 ## Agent Types
 
-Templates live in `templates/v2/` (development.md, operations.md, assistant.md) but **not every template has a registered instance**. Always check `list_agents` for what's actually dispatchable before assigning a ticket.
+Profiles live in `profiles/<name>/profile.md` and are loaded by
+`agents_mcp.profile_loader.ProfileLoader.scan()` on daemon boot. Instances
+are stateless sessions spawned per request — there are no long-running
+named tmux agents.
 
-Currently registered (as of 2026-04-26):
-- **admin** — COO / global config / restarts (this session)
-- **ops** — infra, domains, servers, cloud
-- **dev-alex** — development lifecycle (plan → PR → CI)
-- **qa-lucy** — E2E + requirement verification
-- **assistant-aria** — Personal workspace assistant (Gmail / Calendar / Drive / iMessage). Handles **only `workspace_id=2`** tickets (soft-isolation via prompt; see `templates/v2/assistant.md` "Workspace Scope" section). Personal MCPs (`google_personal`, `imessage_personal`) are scoped via `agents.assistant-aria.extra_mcp_servers` so work agents never auto-load them (pitfall #13 prevention).
+Profiles in tree (as of 2026-05-03): `tpm`, `architect`, `developer`,
+`secretary`. Run `GET /api/v1/orchestration/profiles` (or the `/profiles`
+page in the Web Console) to see the live registry.
 
 ## Key Directories
 
-- `services/agents-mcp/` — Daemon source (server.py, dispatcher_v2.py, session_manager.py)
+- `services/agents-mcp/` — Daemon source (server.py, orchestration_session_manager.py, orchestration_tpm_dispatch.py, orchestration_comment_dispatch.py, orchestration_tools.py, profile_loader.py, adapters/)
 - `services/telegram-bot/` — Telegram transport bridge
-- `templates/v2/` — Agent type system prompts
+- `profiles/` — Per-Profile system prompts (`profiles/<name>/profile.md`)
 - `templates/shared/skills/` — Global skills (executive-brief, development-lifecycle, etc.)
-- `.claude/agents/` — Agent definitions loaded by Claude Code
+- `apps/console/` — Web Console (frontend + backend) for orchestration observability
+- `.claude/agents/` — Agent definitions loaded by Claude Code (admin only)
 
 ## Ticket Status Codes
 
