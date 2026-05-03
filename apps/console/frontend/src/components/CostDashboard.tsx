@@ -13,9 +13,6 @@
  * Per Finding #3 (ui-findings-2026-05-03.md): the by-Agent pivot is gone
  * because Agent isn't a thing anymore — Profile and Session are the new
  * dimensions and they are independent.
- *
- * The ``compact`` prop is kept for the Overview embed transition; once
- * Overview is rebuilt (Part D) it stops calling us with that prop.
  */
 import { useEffect, useMemo, useState } from 'react';
 import {
@@ -30,10 +27,6 @@ import type {
   CostByTicketRow,
   CostTotalsResponse,
 } from '../types';
-
-interface Props {
-  compact?: boolean;
-}
 
 const REFRESH_MS = 30000;
 type Tab = 'session' | 'profile' | 'ticket';
@@ -55,7 +48,7 @@ function shortDate(s: string | null | undefined): string {
   return s.slice(0, 16);
 }
 
-export default function CostDashboard({ compact = false }: Props) {
+export default function CostDashboard() {
   const [totals, setTotals] = useState<CostTotalsResponse | null>(null);
   const [sessionRows, setSessionRows] = useState<CostBySessionRow[]>([]);
   const [sessionTotal, setSessionTotal] = useState<number>(0);
@@ -107,14 +100,12 @@ export default function CostDashboard({ compact = false }: Props) {
 
   return (
     <div>
-      {!compact && (
-        <div className="page-header">
-          <h2>Cost</h2>
-          <span className="subtitle">
-            sourced from session.cost_tokens_in/out · refreshes every 30s
-          </span>
-        </div>
-      )}
+      <div className="page-header">
+        <h2>Cost</h2>
+        <span className="subtitle">
+          sourced from session.cost_tokens_in/out · refreshes every 30s
+        </span>
+      </div>
 
       {/* ── Top-of-page totals ── */}
       <div className="grid grid-3">
@@ -144,46 +135,42 @@ export default function CostDashboard({ compact = false }: Props) {
         </div>
       </div>
 
-      {compact ? null : (
-        <>
-          {/* ── Tabs ── */}
-          <div
-            style={{
-              marginTop: 24,
-              marginBottom: 8,
-              display: 'flex',
-              gap: 4,
-              borderBottom: '1px solid var(--border)',
-            }}
-          >
-            <TabBtn current={tab} value="session" label="By Session" set={setTab} />
-            <TabBtn current={tab} value="profile" label="By Profile" set={setTab} />
-            <TabBtn current={tab} value="ticket" label="By Ticket" set={setTab} />
-          </div>
+      {/* ── Tabs ── */}
+      <div
+        style={{
+          marginTop: 24,
+          marginBottom: 8,
+          display: 'flex',
+          gap: 4,
+          borderBottom: '1px solid var(--border)',
+        }}
+      >
+        <TabBtn current={tab} value="session" label="By Session" set={setTab} />
+        <TabBtn current={tab} value="profile" label="By Profile" set={setTab} />
+        <TabBtn current={tab} value="ticket" label="By Ticket" set={setTab} />
+      </div>
 
-          {tab === 'session' && (
-            <SessionTable
-              rows={sessionRows}
-              total={sessionTotal}
-              currentPage={currentPage}
-              totalPages={totalPages}
-              onPrev={() => setOffset(Math.max(0, offset - limit))}
-              onNext={() =>
-                setOffset(
-                  Math.min(Math.max(0, sessionTotal - limit), offset + limit)
-                )
-              }
-            />
-          )}
-          {tab === 'profile' && <ProfileTable rows={profileRows} />}
-          {tab === 'ticket' && <TicketTable rows={ticketRows} />}
-
-          <div className="refresh-note" style={{ marginTop: 12 }}>
-            {totals.pricing.note} Input ${totals.pricing.input_per_million}/M,
-            Output ${totals.pricing.output_per_million}/M.
-          </div>
-        </>
+      {tab === 'session' && (
+        <SessionTable
+          rows={sessionRows}
+          total={sessionTotal}
+          currentPage={currentPage}
+          totalPages={totalPages}
+          onPrev={() => setOffset(Math.max(0, offset - limit))}
+          onNext={() =>
+            setOffset(
+              Math.min(Math.max(0, sessionTotal - limit), offset + limit)
+            )
+          }
+        />
       )}
+      {tab === 'profile' && <ProfileTable rows={profileRows} />}
+      {tab === 'ticket' && <TicketTable rows={ticketRows} />}
+
+      <div className="refresh-note" style={{ marginTop: 12 }}>
+        {totals.pricing.note} Input ${totals.pricing.input_per_million}/M,
+        Output ${totals.pricing.output_per_million}/M.
+      </div>
     </div>
   );
 }

@@ -12,7 +12,6 @@ import type {
   CostBySessionRow,
   CostByProfileRow,
   CostByTicketRow,
-  CostSummary,
   CostTotalsResponse,
   ListSessionsResponse,
   Profile,
@@ -77,10 +76,6 @@ export async function listBriefs() {
 
 export async function getBrief(date: string) {
   return get<{ date: string; markdown: string }>(`/api/briefs/${date}`);
-}
-
-export async function getCostSummary() {
-  return get<CostSummary>('/api/cost/summary');
 }
 
 // ── Orchestration v1 (test harness, Task #17) ──

@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import repo
-from app.routes import briefs, cost, tickets, workspaces
+from app.routes import briefs, tickets, workspaces
 
 app = FastAPI(
     title="Agent Harness Console",
@@ -52,12 +52,14 @@ async def health():
     return out
 
 
-# Mount all API routers under /api
+# Mount all API routers under /api.
+# Cost endpoints moved to the daemon's /api/v1/orchestration/cost/* surface
+# (Task #18 Part A); the legacy /api/cost/* token_usage_daily-driven path
+# was deleted along with this comment.
 api_routers = [
     workspaces.router,
     tickets.router,
     briefs.router,
-    cost.router,
 ]
 for r in api_routers:
     app.include_router(r, prefix="/api")

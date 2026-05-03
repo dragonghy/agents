@@ -7,11 +7,11 @@
 ## State summary (kept current at the top)
 
 - **Branch**: `feat/orchestration-v1` (off `main` post-DAG-merge)
-- **Current Phase**: ✅ Phase 1 + Phase 2 + Phase 2.5 (TPM tool-use) complete. Live multi-agent demo executed.
-- **Tasks**: 14 / 14 done (#5–#14) plus Phase 2.5 (TPM tool bindings + live demo).
-- **Open blockers**: none. Daemon-event-listener wiring (status-changed → `maybe_spawn_tpm_for_status_change`, comment_created → `dispatch_comment_to_tpm`) and Phase 3 (Web UI) remain as follow-up work.
-- **End-to-end verification**: live multi-agent demo executed — see `projects/agent-hub/research/orchestration-v1-multi-agent-demo-2026-05-02.md`. TPM coordinated 3 turns, spawned 2 subagents (Architect + Developer), posted 2 comments, transitioned the ticket Blocked → Done. Total cost ≈ $1.34.
-- **apps/console/ decision**: partial rewrite (keep tickets/cost/briefs/workspaces + Vite+FastAPI scaffold; replace agent-named pages with Profile/Session/TPM views; reconcile against `services/agents-mcp/src/agents_mcp/web/api.py`). Recorded in `apps-console-survey-2026-05-02.md`.
+- **Current Phase**: ✅ Phase 1 + Phase 2 + Phase 2.5 + MVTH + Phase 3 (Web UI rewrite) complete. Phase 4 (channel adapters) and Phase 5 (multi-SDK) remain.
+- **Tasks**: through #18 done — Phase 3 Full UI Rewrite shipped in 4 commits on this branch (Cost rebuild, Sessions list/drill, Profile pages, Overview redesign).
+- **Open blockers**: none.
+- **End-to-end verification**: live multi-agent demo (Phase 2.5) + Playwright smoke 10/10 clean across all 7 routes + 3 drill-ins.
+- **apps/console/ decision**: partial rewrite executed. Cost dashboard fully replaced (Profile / Session / Ticket pivots). Session + Profile drill-in pages added. Overview rebuilt as a true dashboard (no more TicketBoard/CostDashboard duplication). Legacy `apps/console/backend/app/routes/cost.py` + `pricing.py` deleted; ticket-board / workspaces / briefs routes still proxied through the FastAPI backend (will migrate to daemon in Phase 4 cleanup).
 
 ## Entry log (oldest → newest)
 
@@ -326,3 +326,69 @@ Final ticket state: status=0, 2 comments posted by TPM (both correctly attribute
 - `uv run python services/agents-mcp/scripts/orchestration_demo.py --max-turns 6` → ran end-to-end, transcript at `projects/agent-hub/research/orchestration-v1-multi-agent-demo-2026-05-02.md`.
 
 **Next**: With Phase 2.5 wiring + tools + live demo all in, the orchestration v1 model is functionally complete. Remaining work is Phase 3 (Web UI) and Phase 4 (channel adapters that replace bridge.py).
+
+---
+
+### 2026-05-03 — Phase 3 Full UI Rewrite (Task #18) — 4 commits, A through D
+
+**What**: Per `projects/agent-hub/research/ui-findings-2026-05-03.md` (Human's review on 2026-05-03), four part rewrite of the Web Console to match the orchestration v1 model.
+
+**Part A — Cost dashboard rebuild** (`9ec0ddd`):
+- Backend: 4 new endpoints under `/api/v1/orchestration/cost/*` (by-session paginated, by-profile rollup, by-ticket rollup, totals today/week/lifetime). Sourced from `session.cost_tokens_in/out`, NOT legacy `token_usage_daily`.
+- Store: `list_sessions_paginated`, `cost_by_profile`, `cost_by_ticket`, `cost_totals` methods.
+- Frontend: full rewrite of `CostDashboard.tsx` — three-tab pivot (By Session / By Profile / By Ticket) with totals cards on top. Pagination (50/page) on the session table.
+- Tests: +16 (11 API tests + 5 store tests).
+- Per Finding #3 — by-Agent pivot eliminated.
+
+**Part B — Sessions list page + drill-in** (`f490ef2`):
+- Adapter Protocol: new `RenderedMessage` dataclass + `Adapter.render_history(session_id, store)` method.
+- ClaudeAdapter: `render_history` walks `~/.claude/projects/*/<native_handle>.jsonl`, filters thinking/tool_use blocks, returns chronologically-ordered rendered turns. Edge cases: missing native_handle → []; missing JSONL → []; assistant turns with only tool calls → placeholder text.
+- Backend: `GET /api/v1/orchestration/sessions` (paginated list w/ filters) + `GET /sessions/:id/history` (Adapter render).
+- Frontend: new `SessionList.tsx` (filter by status / profile / ticket; pagination; click-to-drill) + `SessionDetail.tsx` (metadata header, transcript from render_history, send-message form for active sessions reusing MVTH's append_message). Optimistic UI: placeholder "… thinking …" assistant bubble while LLM call runs.
+- Routes `/sessions` and `/sessions/:id` wired in `App.tsx`; sidebar "Sessions" link added.
+- Tests: +22 (3 protocol tests, 11 adapter unit tests for `_extract_visible_text` + `_render_jsonl_record`, 3 end-to-end render_history tests using a tmp HOME symlink, 5 API tests).
+
+**Part C — Profile registry page** (`90fa706`):
+- Backend: extended `GET /profiles/:name` to include parsed Profile body (system_prompt, mcp_servers, skills, orchestration_tools, file_path, file_hash). Falls back gracefully when the .md file is missing/malformed (registry row preserved, profile=null). New `GET /profiles/:name/sessions?limit=N` for recent sessions (default 10, capped 100).
+- Server.py: passes `profiles_dir` derived from `AGENTS_CONFIG_PATH` to the orchestration router so profile bodies can be loaded fresh on each request.
+- Frontend: new `ProfileList.tsx` (grid of cards with runner_type prominent — surfaces Finding #4 issues at a glance) + `ProfileDetail.tsx` (frontmatter card / system prompt body in scrollable `<pre>` / recent sessions table linking to /sessions/:id).
+- Routes `/profiles` and `/profiles/:name` wired; sidebar "Profiles" link.
+- Tests: +8 (4 detail + 4 sessions).
+
+**Part D — Overview redesign** (`<this-commit>`):
+- Per Finding #1 — Overview no longer embeds the full TicketBoard. Rebuilt as a true dashboard:
+  - Header tile row: Active sessions, Today's cost, Open tickets (with new/wip/blocked split), Active TPMs, Lifetime cost, Most active Profile.
+  - Ticket-board summary card: counts only (New / WIP / Blocked) with link to /board.
+  - Recent sessions table (last 5).
+- Removed `compact` prop from `CostDashboard` and `embedded` from `TicketBoard` — both were Overview-only and are now dead.
+- Deleted `apps/console/backend/app/routes/cost.py` (replaced by daemon endpoints) + unused `pricing.py`. Removed `getCostSummary`, `CostSummary`, `CostByAgent` from frontend api/types.
+- `apps/console/backend/app/main.py` no longer imports `cost.router`.
+
+**Verification across all 4 parts**:
+- 235 passed, 1 deselected (full orchestration test suite).
+- `npm run typecheck` + `npm run build` green at every commit.
+- Playwright smoke walks every page (`/`, `/board`, `/sessions`, `/profiles`, `/briefs`, `/cost`, `/test-harness`) plus drill-ins (`/sessions/:id`, `/profiles/:name`, test-harness deep flow). 10/10 clean — no console errors, no failed requests, no page errors.
+- Live curl against every new endpoint returns shaped data.
+
+**LOC delta** (rough, across 4 commits):
+- Backend Python: +~600 LOC (orchestration_api endpoints + store methods + render_history).
+- Frontend TypeScript: +~1,400 LOC (4 new components + Overview rewrite + types/api helpers).
+- Tests: +~600 LOC (50+ new tests).
+- Deleted: ~200 LOC (legacy cost.py + pricing.py + the embedded-Overview embedding code).
+
+**Decisions made**:
+- **`render_history` glob across all project dirs** rather than tracking session cwd: avoids needing a schema change. Glob is cheap (a handful of dirs); first match wins. If we ever need correctness in the presence of cwd collisions, we add a `cwd` column on `session`.
+- **Optimistic UI on send** in SessionDetail: shows the user message immediately + a "… thinking …" placeholder while the API call runs. On response, replaces the placeholder. Keeps perceived latency low without committing to streaming.
+- **Tool-only assistant turns get a placeholder string** ("(tool calls / thinking only — no visible text)") rather than being silently dropped — operator inspecting a TPM session needs to see that the turn happened. Future "raw view" toggle can show the underlying tool_use blocks.
+- **profiles_dir resolution falls back to registry's file_path** when the constructor arg isn't passed. Tests can pass an explicit dir; daemon passes one from AGENTS_CONFIG_PATH; legacy callers (none today) get the fallback.
+- **Kept `tickets.py` + `workspaces.py` + `briefs.py` in console backend.** TicketBoard.tsx (still used at `/board`) and the workspace switcher both call them; full migration to the daemon's surface is Phase 4 cleanup territory. Only `cost.py` was orphaned by this rewrite.
+- **WebSocket / live streaming (Part E)** deferred. Polling at 10–30s is fine for current observability; WebSocket bus + replay buffer is a separate worthwhile project but not on the critical path for #18 acceptance.
+
+**Out of scope per Human (kept out)**:
+- Brief page redesign (Finding #2 — defer post-Phase 4).
+- Big visual / UX redesign — current design language preserved; only content/structure rewritten.
+- Auth, Slack, OpenAI/Gemini adapters.
+
+**Next**: Phase 4 — channel adapters (replace `bridge.py` with proper `human-channel` session adapters for Telegram). Phase 5 — multi-SDK (OpenAI / Gemini adapters). Phase 6 — observability + cleanup.
+
+---

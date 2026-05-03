@@ -35,33 +35,6 @@ export interface BriefSummary {
   size_bytes: number;
 }
 
-export interface CostByAgent {
-  agent_id: string;
-  today_usd: number;
-  week_usd: number;
-  lifetime_usd: number;
-  lifetime_messages: number;
-}
-
-export interface CostSummary {
-  today_usd: number;
-  week_usd: number;
-  lifetime_usd: number;
-  today_input_tokens: number;
-  today_output_tokens: number;
-  lifetime_input_tokens: number;
-  lifetime_output_tokens: number;
-  top_today: CostByAgent[];
-  by_agent: CostByAgent[];
-  pricing: {
-    input_per_million: number;
-    output_per_million: number;
-    cache_read_per_million: number;
-    cache_write_per_million: number;
-    note: string;
-  };
-}
-
 // ── Orchestration v1 (Phase 1+2 test harness, Task #17) ──
 
 export interface Profile {
