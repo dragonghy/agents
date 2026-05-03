@@ -54,7 +54,7 @@ async function visit(browser, route) {
 
   let navError = null;
   try {
-    await page.goto(BASE + route.path, { waitUntil: 'networkidle', timeout: 15000 });
+    await page.goto(BASE + route.path, { waitUntil: 'domcontentloaded', timeout: 15000 });
   } catch (e) {
     navError = String(e);
   }
@@ -95,7 +95,7 @@ async function driveTestHarness(browser) {
     }
   });
 
-  await page.goto(BASE + '/test-harness', { waitUntil: 'networkidle', timeout: 15000 });
+  await page.goto(BASE + '/test-harness', { waitUntil: 'domcontentloaded', timeout: 15000 });
   await page.waitForTimeout(2000);
 
   // Open an SSE listener inside the page that captures every
@@ -249,7 +249,7 @@ async function driveProfileDetail(browser) {
     }
   });
 
-  await page.goto(BASE + '/profiles', { waitUntil: 'networkidle', timeout: 15000 });
+  await page.goto(BASE + '/profiles', { waitUntil: 'domcontentloaded', timeout: 15000 });
   await page.waitForTimeout(1500);
   const link = await page.$('a[href^="/profiles/"]');
   if (link) {
@@ -336,7 +336,7 @@ async function driveTicketDetail(browser) {
 
   console.log(`navigating to /tickets/${ticketId}`);
   await page.goto(`${BASE}/tickets/${ticketId}`, {
-    waitUntil: 'networkidle',
+    waitUntil: 'domcontentloaded',
     timeout: 15000,
   });
   await page.waitForTimeout(1500);
@@ -391,7 +391,7 @@ async function driveBoardListToggle(browser) {
     }
   });
 
-  await page.goto(`${BASE}/board`, { waitUntil: 'networkidle', timeout: 15000 });
+  await page.goto(`${BASE}/board`, { waitUntil: 'domcontentloaded', timeout: 15000 });
   await page.waitForTimeout(1500);
   await page.screenshot({
     path: path.join(OUT_DIR, 'board-mode.png'),
@@ -458,7 +458,7 @@ async function driveSessionDetail(browser) {
     }
   });
 
-  await page.goto(BASE + '/sessions', { waitUntil: 'networkidle', timeout: 15000 });
+  await page.goto(BASE + '/sessions', { waitUntil: 'domcontentloaded', timeout: 15000 });
   await page.waitForTimeout(1500);
   // Click the first session row link (an <a> wrapping a <code>).
   const firstLink = await page.$('a[href^="/sessions/"]');

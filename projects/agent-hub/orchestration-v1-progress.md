@@ -392,3 +392,28 @@ Final ticket state: status=0, 2 comments posted by TPM (both correctly attribute
 **Next**: Phase 4 — channel adapters (replace `bridge.py` with proper `human-channel` session adapters for Telegram). Phase 5 — multi-SDK (OpenAI / Gemini adapters). Phase 6 — observability + cleanup.
 
 ---
+
+---
+
+### 2026-05-03 — supervisor / watchdog removal
+
+**What happened**:
+- `com.agents.mcp.daemon.watchdog` (launchd) — admin unloaded earlier today (~08:50 PDT) because it was racing the daemon during MVTH testing (killing our freshly-started daemon when it didn't pass watchdog's health check fast enough).
+- `com.agents.admin.supervisor` (launchd) — Human ran `install-admin-supervisor.sh --uninstall` at ~10:30 PDT. It was repeatedly invoking `restart_all_agents.sh admin --force` whenever the admin tmux window stalled, which had the side-effect of spawning v1 agent tmux windows (dev-alex / qa-lucy / ops / etc.) that are dead code in the new orchestration model.
+
+**Why this needed to happen**:
+Both watchdogs were artifacts of the v2 ephemeral-agent + per-agent-tmux-window architecture. The new model (Profile + Session + TPM, sessions running inside the daemon via SessionManager + ClaudeAdapter) doesn't need named tmux windows for individual agents. The watchdogs kept resurrecting infrastructure we're trying to retire.
+
+**Current state**:
+- Daemon: no auto-restart. If it dies during dev, restart manually via `pkill -f 'agents-mcp.*--daemon' && nohup uv run --directory services/agents-mcp agents-mcp --daemon --host 127.0.0.1 --port 8765 >> .daemon.log 2>&1 &`. Acceptable through transition.
+- Admin tmux session: still running (this is where Human's conversation lives), but no longer auto-managed.
+- Old v1 agent tmux windows: should NOT be spawned anymore. Anyone touching `restart_all_agents.sh` should use only the `--daemon` subcommand (which doesn't trigger setup-agents.py side-effects), or better: avoid the script entirely and use direct `pkill` + `nohup` like above.
+
+**Cleanup work for Phase 4-5 final-cleanup branch**:
+- Delete `daemon-watchdog.sh` + `admin-supervisor.sh` + `install-admin-supervisor.sh` outright — no longer used.
+- Delete the launchd plists from the repo (they shouldn't be committed, but if any are, kill them).
+- Strip all v1-agent-spawning code paths from `restart_all_agents.sh` — leave only `--daemon` and `--telegram-bot`.
+- Retire `dispatcher_v2.py` + `templates/v2/*` + the legacy `services/agents-mcp/src/agents_mcp/session_manager.py` (the v2 one — not orchestration_session_manager.py).
+- Update `claude.md` pitfall #11 (admin supervisor) — mark as obsolete or remove.
+
+**Lesson recorded**: when retiring infrastructure, sweep launchd / cron / systemd / scheduled jobs FIRST. Code-level deletion isn't enough if a scheduler is repeatedly bringing the corpse back to life.
