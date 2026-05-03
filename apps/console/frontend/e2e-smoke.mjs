@@ -24,6 +24,7 @@ await fs.mkdir(OUT_DIR, { recursive: true });
 const PAGES = [
   { path: '/', label: 'overview' },
   { path: '/board', label: 'board' },
+  { path: '/sessions', label: 'sessions' },
   { path: '/briefs', label: 'briefs' },
   { path: '/cost', label: 'cost' },
   { path: '/test-harness', label: 'test-harness' },
@@ -177,12 +178,56 @@ async function driveTestHarness(browser) {
   await ctx.close();
 }
 
+async function driveSessionDetail(browser) {
+  console.log('\n=== Sessions detail walk ===');
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  const errors = [];
+  const failedRequests = [];
+  const consoleMsgs = [];
+
+  page.on('console', (msg) => {
+    if (msg.type() === 'error' || msg.type() === 'warning') {
+      consoleMsgs.push({ type: msg.type(), text: msg.text() });
+    }
+  });
+  page.on('pageerror', (err) => errors.push(String(err)));
+  page.on('response', (resp) => {
+    if (resp.status() >= 400) {
+      failedRequests.push({ status: resp.status(), url: resp.url() });
+    }
+  });
+
+  await page.goto(BASE + '/sessions', { waitUntil: 'networkidle', timeout: 15000 });
+  await page.waitForTimeout(1500);
+  // Click the first session row link (an <a> wrapping a <code>).
+  const firstLink = await page.$('a[href^="/sessions/"]');
+  if (firstLink) {
+    await firstLink.click();
+    await page.waitForTimeout(2000);
+    await page.screenshot({ path: path.join(OUT_DIR, 'session-detail.png'), fullPage: true });
+  } else {
+    console.log('No session rows to drill into (empty list).');
+  }
+
+  findings.push({
+    route: '/sessions/:id (drill-in)',
+    label: 'sessions-drill',
+    page_errors: errors,
+    console_messages: consoleMsgs,
+    failed_requests: failedRequests,
+    screenshot: path.join(OUT_DIR, 'session-detail.png'),
+  });
+  await ctx.close();
+}
+
 (async () => {
   const browser = await chromium.launch({ headless: true });
   for (const route of PAGES) {
     console.log(`\n=== visiting ${route.path} ===`);
     await visit(browser, route);
   }
+  await driveSessionDetail(browser);
   await driveTestHarness(browser);
   await browser.close();
 

@@ -13,6 +13,7 @@ import pytest
 from agents_mcp.adapters import (
     Adapter,
     Profile,
+    RenderedMessage,
     RunResult,
     SessionMetadata,
     get_adapter,
@@ -155,6 +156,37 @@ class TestAdapterProtocol:
             "new_message_text",
             "store",
         ]
+
+    def test_render_history_signature(self):
+        sig = inspect.signature(Adapter.render_history)
+        params = [p.name for p in sig.parameters.values()]
+        assert params == ["self", "session_id", "store"]
+        assert inspect.iscoroutinefunction(Adapter.render_history)
+
+    def test_claude_adapter_implements_render_history(self):
+        adapter = ClaudeAdapter()
+        assert hasattr(adapter, "render_history")
+        assert inspect.iscoroutinefunction(adapter.render_history)
+
+
+# ─── RenderedMessage dataclass ─────────────────────────────────────────────
+
+
+class TestRenderedMessage:
+    def test_construction(self):
+        m = RenderedMessage(role="user", text="hi")
+        assert m.role == "user"
+        assert m.text == "hi"
+        assert m.timestamp == ""
+
+    def test_with_timestamp(self):
+        m = RenderedMessage(role="assistant", text="yo", timestamp="t0")
+        assert m.timestamp == "t0"
+
+    def test_is_frozen(self):
+        m = RenderedMessage(role="user", text="hi")
+        with pytest.raises(Exception):
+            m.text = "edit"  # type: ignore[misc]
 
 
 # ─── get_adapter factory ───────────────────────────────────────────────────

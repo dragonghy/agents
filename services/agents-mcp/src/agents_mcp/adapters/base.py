@@ -112,6 +112,30 @@ class SessionMetadata:
     runner_type: str
 
 
+@dataclass(frozen=True)
+class RenderedMessage:
+    """A single rendered conversation turn for UI display.
+
+    Adapters expose conversation history through
+    :meth:`Adapter.render_history`; each emitted item is one of these.
+    Tool calls / tool results / thinking blocks are intentionally NOT
+    surfaced as separate roles — they're either folded into the assistant
+    text (when meaningful) or skipped (thinking blocks).
+
+    Attributes:
+        role: ``"user"`` or ``"assistant"``. Other roles (system, tool)
+            are filtered out before rendering.
+        text: Concatenated visible text for this turn. May be empty for
+            assistant turns that contained only tool calls.
+        timestamp: ISO 8601 timestamp from the adapter's native store, or
+            empty string if the adapter can't recover it.
+    """
+
+    role: str
+    text: str
+    timestamp: str = ""
+
+
 @dataclass
 class RunResult:
     """Outcome of one Adapter ``run()`` call (one LLM round-trip).
@@ -185,11 +209,36 @@ class Adapter(Protocol):
         """
         ...
 
+    async def render_history(
+        self,
+        session_id: str,
+        store: "AgentStore",
+    ) -> list[RenderedMessage]:
+        """Return the conversation transcript for one session, oldest first.
+
+        The application layer never reads native conversation storage
+        directly — it asks the Adapter via this method. For Claude that
+        means scanning the SDK's JSONL; for future Adapters it might mean
+        a per-Adapter table or an external API call.
+
+        Args:
+            session_id: Our session id (matches ``session.id``).
+            store: Async store handle so the Adapter can look up
+                ``native_handle`` etc.
+
+        Returns:
+            List of :class:`RenderedMessage`, oldest first. Empty list if
+            the session exists but has no turns yet (first message
+            pending) or if the native store is missing/unreadable.
+        """
+        ...
+
 
 __all__ = [
     "Adapter",
     "Profile",
     "ProfileParseError",
+    "RenderedMessage",
     "RunResult",
     "SessionMetadata",
 ]

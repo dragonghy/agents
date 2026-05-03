@@ -5,6 +5,8 @@ import type { Workspace } from './types';
 import TicketBoard from './components/TicketBoard';
 import BriefHistory from './components/BriefHistory';
 import CostDashboard from './components/CostDashboard';
+import SessionList from './components/SessionList';
+import SessionDetail from './components/SessionDetail';
 import SessionTester from './components/SessionTester';
 
 export default function App() {
@@ -30,6 +32,9 @@ export default function App() {
           </NavLink>
           <NavLink to="/board" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
             Ticket Board
+          </NavLink>
+          <NavLink to="/sessions" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
+            Sessions
           </NavLink>
           <NavLink to="/briefs" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
             Briefs
@@ -74,6 +79,8 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Overview workspaceId={activeWorkspace} />} />
           <Route path="/board" element={<TicketBoard workspaceId={activeWorkspace} />} />
+          <Route path="/sessions" element={<SessionList />} />
+          <Route path="/sessions/:id" element={<SessionDetail />} />
           <Route path="/briefs" element={<BriefHistory />} />
           <Route path="/cost" element={<CostDashboard />} />
           <Route path="/test-harness" element={<SessionTester />} />

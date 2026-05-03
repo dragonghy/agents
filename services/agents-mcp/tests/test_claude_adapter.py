@@ -28,10 +28,17 @@ from unittest.mock import patch
 
 import pytest
 
-from agents_mcp.adapters.base import Profile, RunResult, SessionMetadata
+from agents_mcp.adapters.base import (
+    Profile,
+    RenderedMessage,
+    RunResult,
+    SessionMetadata,
+)
 from agents_mcp.adapters.claude_adapter import (
     ClaudeAdapter,
     _extract_tokens,
+    _extract_visible_text,
+    _render_jsonl_record,
     _resolve_model,
 )
 from agents_mcp.store import AgentStore
@@ -575,3 +582,177 @@ def test_live_hello_world(tmp_path):
         await store.close()
 
     run(_t())
+
+
+# ─── render_history (Task #18 Part B) ──────────────────────────────────────
+
+
+class TestExtractVisibleText:
+    def test_string_input(self):
+        assert _extract_visible_text("hello") == "hello"
+
+    def test_list_with_text_block(self):
+        assert _extract_visible_text([{"type": "text", "text": "hi"}]) == "hi"
+
+    def test_list_filters_thinking(self):
+        # Thinking + text → only text shows.
+        blocks = [
+            {"type": "thinking", "thinking": "secret"},
+            {"type": "text", "text": "visible"},
+        ]
+        assert _extract_visible_text(blocks) == "visible"
+
+    def test_list_filters_tool_use(self):
+        blocks = [
+            {"type": "tool_use", "name": "Bash", "input": {}},
+            {"type": "text", "text": "after-tool"},
+        ]
+        assert _extract_visible_text(blocks) == "after-tool"
+
+    def test_unknown_returns_empty(self):
+        assert _extract_visible_text(None) == ""
+        assert _extract_visible_text(42) == ""
+
+
+class TestRenderJsonlRecord:
+    def test_user_text(self):
+        rec = {
+            "type": "user",
+            "message": {"role": "user", "content": "hello"},
+            "timestamp": "2026-05-03T10:00:00Z",
+        }
+        m = _render_jsonl_record(rec)
+        assert m is not None
+        assert m.role == "user"
+        assert m.text == "hello"
+        assert m.timestamp == "2026-05-03T10:00:00Z"
+
+    def test_assistant_text_blocks(self):
+        rec = {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "yo"}],
+            },
+        }
+        m = _render_jsonl_record(rec)
+        assert m is not None
+        assert m.role == "assistant"
+        assert m.text == "yo"
+
+    def test_assistant_tool_only_returns_placeholder(self):
+        rec = {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "tool_use", "name": "Bash", "input": {}}],
+            },
+        }
+        m = _render_jsonl_record(rec)
+        assert m is not None
+        assert m.role == "assistant"
+        assert "tool calls" in m.text.lower()
+
+    def test_user_empty_returns_none(self):
+        rec = {
+            "type": "user",
+            "message": {"role": "user", "content": ""},
+        }
+        assert _render_jsonl_record(rec) is None
+
+    def test_queue_op_record_skipped(self):
+        rec = {"type": "queue-operation", "operation": "enqueue"}
+        assert _render_jsonl_record(rec) is None
+
+    def test_system_record_skipped(self):
+        rec = {"type": "system", "message": {"role": "system", "content": "x"}}
+        assert _render_jsonl_record(rec) is None
+
+
+class TestRenderHistory:
+    def test_no_native_handle_returns_empty(self, db_path):
+        async def _t():
+            s = await _store(db_path)
+            await s.create_session(
+                session_id="sess_a",
+                profile_name="secretary",
+                binding_kind="standalone",
+                runner_type="claude-sonnet-4.7",
+            )
+            adapter = ClaudeAdapter()
+            out = await adapter.render_history("sess_a", s)
+            assert out == []
+            await s.close()
+
+        run(_t())
+
+    def test_unknown_session_returns_empty(self, db_path):
+        async def _t():
+            s = await _store(db_path)
+            adapter = ClaudeAdapter()
+            out = await adapter.render_history("sess_bogus", s)
+            assert out == []
+            await s.close()
+
+        run(_t())
+
+    def test_reads_jsonl(self, db_path, tmp_path, monkeypatch):
+        async def _t():
+            s = await _store(db_path)
+            await s.create_session(
+                session_id="sess_b",
+                profile_name="secretary",
+                binding_kind="standalone",
+                runner_type="claude-sonnet-4.7",
+                native_handle="native-xyz",
+            )
+
+            # Build a fake projects dir + jsonl.
+            projects = tmp_path / "claude_projects"
+            project_dir = projects / "-some-cwd"
+            project_dir.mkdir(parents=True)
+            jsonl = project_dir / "native-xyz.jsonl"
+            import json as _json
+
+            jsonl.write_text(
+                "\n".join(
+                    [
+                        _json.dumps({"type": "queue-operation"}),  # filtered
+                        _json.dumps(
+                            {
+                                "type": "user",
+                                "message": {"role": "user", "content": "hi"},
+                                "timestamp": "t0",
+                            }
+                        ),
+                        _json.dumps(
+                            {
+                                "type": "assistant",
+                                "message": {
+                                    "role": "assistant",
+                                    "content": [{"type": "text", "text": "hello"}],
+                                },
+                                "timestamp": "t1",
+                            }
+                        ),
+                    ]
+                )
+                + "\n"
+            )
+
+            # Redirect ~/.claude/projects to our tmp dir.
+            monkeypatch.setenv("HOME", str(tmp_path))
+            (tmp_path / ".claude").mkdir(exist_ok=True)
+            (tmp_path / ".claude" / "projects").symlink_to(projects)
+
+            adapter = ClaudeAdapter()
+            out = await adapter.render_history("sess_b", s)
+            assert len(out) == 2
+            assert out[0].role == "user"
+            assert out[0].text == "hi"
+            assert out[0].timestamp == "t0"
+            assert out[1].role == "assistant"
+            assert out[1].text == "hello"
+            await s.close()
+
+        run(_t())

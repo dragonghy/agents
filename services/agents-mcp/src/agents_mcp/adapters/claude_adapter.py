@@ -6,6 +6,12 @@ both first-turn and resume flows; the SDK handles JSONL persistence and
 auto-compaction internally, so we only need to track its ``session_id``
 in our ``session.native_handle`` column.
 
+History rendering (:meth:`ClaudeAdapter.render_history`) walks
+``~/.claude/projects/<encoded-cwd>/<native_handle>.jsonl`` and emits
+:class:`RenderedMessage` items. The cwd is unknown at rendering time
+(sessions might have been created from different working directories), so
+we glob across every project directory and take the first match.
+
 Mapping table:
 
 | Our concept            | SDK concept                              |
@@ -36,7 +42,10 @@ Notes:
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from claude_agent_sdk import (
@@ -47,7 +56,7 @@ from claude_agent_sdk import (
     query,
 )
 
-from .base import Profile, RunResult, SessionMetadata
+from .base import Profile, RenderedMessage, RunResult, SessionMetadata
 
 if TYPE_CHECKING:
     from agents_mcp.store import AgentStore
@@ -216,6 +225,132 @@ class ClaudeAdapter:
             tokens_out=tokens_out,
             native_handle=captured_session_id,
         )
+
+    async def render_history(
+        self,
+        session_id: str,
+        store: "AgentStore",
+    ) -> list[RenderedMessage]:
+        """Read the JSONL transcript for a session and emit rendered turns.
+
+        Steps:
+
+        1. Look up the session row to get ``native_handle`` (the SDK's
+           session_id, which is the JSONL filename stem).
+        2. Glob ``~/.claude/projects/*/<native_handle>.jsonl`` to locate
+           the file (cwd at session start is unknown without storing it).
+        3. Walk the JSONL line-by-line, extracting visible text from
+           ``user`` and ``assistant`` records. Skip ``thinking`` blocks
+           and ``tool_use``/``tool_result`` blocks (they're operationally
+           noisy for human display; leave them for a future "raw view"
+           toggle).
+        4. Return the messages oldest-first.
+
+        Returns an empty list if the native handle is missing (session
+        spawned but never sent a message), if the JSONL doesn't exist on
+        disk, or if every line fails to parse.
+        """
+        row = await store.get_session(session_id)
+        if row is None:
+            return []
+        native_handle = row.get("native_handle")
+        if not native_handle:
+            return []
+
+        projects_dir = Path(os.path.expanduser("~/.claude/projects"))
+        if not projects_dir.is_dir():
+            return []
+
+        # Glob across every project directory; the cwd at session start
+        # is unknown to us. Use glob (not rglob) — JSONL files live one
+        # level deep under projects/.
+        matches = list(projects_dir.glob(f"*/{native_handle}.jsonl"))
+        if not matches:
+            return []
+
+        jsonl_path = matches[0]
+        messages: list[RenderedMessage] = []
+        try:
+            with jsonl_path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    rendered = _render_jsonl_record(record)
+                    if rendered is not None:
+                        messages.append(rendered)
+        except OSError as e:
+            logger.warning(
+                "ClaudeAdapter.render_history: failed to read %s: %s",
+                jsonl_path,
+                e,
+            )
+            return []
+
+        return messages
+
+
+def _extract_visible_text(content: Any) -> str:
+    """Pull human-visible text out of an SDK content payload.
+
+    Content can be a plain string (older format) or a list of typed
+    blocks (newer format). For block lists, only ``text`` blocks count;
+    ``thinking`` / ``tool_use`` / ``tool_result`` are filtered out.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        chunks: list[str] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") in (None, "text"):
+                t = block.get("text") or ""
+                if t:
+                    chunks.append(t)
+        return "".join(chunks)
+    return ""
+
+
+def _render_jsonl_record(record: dict) -> RenderedMessage | None:
+    """Convert a single JSONL record into a :class:`RenderedMessage`, or None.
+
+    Skips meta records (``queue-operation``, ``compact_boundary``,
+    ``system``) and any record whose visible text is empty.
+    """
+    rec_type = record.get("type")
+    if rec_type not in ("user", "assistant"):
+        return None
+
+    msg = record.get("message")
+    if not isinstance(msg, dict):
+        return None
+    role = msg.get("role")
+    if role not in ("user", "assistant"):
+        return None
+
+    text = _extract_visible_text(msg.get("content"))
+    if not text:
+        # Assistant turns that were nothing but thinking/tool_use lose
+        # all visible text; surface a placeholder so the UI doesn't
+        # silently swallow the turn entirely.
+        if role == "assistant":
+            return RenderedMessage(
+                role="assistant",
+                text="(tool calls / thinking only — no visible text)",
+                timestamp=record.get("timestamp", ""),
+            )
+        return None
+
+    return RenderedMessage(
+        role=role,
+        text=text,
+        timestamp=record.get("timestamp", ""),
+    )
 
 
 __all__ = ["ClaudeAdapter"]

@@ -14,8 +14,10 @@ import type {
   CostByTicketRow,
   CostSummary,
   CostTotalsResponse,
+  ListSessionsResponse,
   Profile,
   Session,
+  SessionHistoryResponse,
   SpawnSessionBody,
   Ticket,
   Workspace,
@@ -145,4 +147,29 @@ export async function getCostByTicket() {
 
 export async function getCostTotals() {
   return get<CostTotalsResponse>('/api/v1/orchestration/cost/totals');
+}
+
+// ── Session list + history (Task #18 Part B) ──
+
+export async function listSessions(opts: {
+  limit?: number;
+  offset?: number;
+  status?: string;
+  profile?: string;
+  ticket?: number;
+}) {
+  const qp = new URLSearchParams();
+  if (opts.limit !== undefined) qp.set('limit', String(opts.limit));
+  if (opts.offset !== undefined) qp.set('offset', String(opts.offset));
+  if (opts.status) qp.set('status', opts.status);
+  if (opts.profile) qp.set('profile', opts.profile);
+  if (opts.ticket !== undefined) qp.set('ticket', String(opts.ticket));
+  const qs = qp.toString() ? `?${qp.toString()}` : '';
+  return get<ListSessionsResponse>(`/api/v1/orchestration/sessions${qs}`);
+}
+
+export async function getSessionHistory(sessionId: string) {
+  return get<SessionHistoryResponse>(
+    `/api/v1/orchestration/sessions/${encodeURIComponent(sessionId)}/history`
+  );
 }

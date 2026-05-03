@@ -160,3 +160,23 @@ export interface CostTotalsResponse {
     note: string;
   };
 }
+
+// ── Sessions list + history (Task #18 Part B) ──
+
+export interface RenderedHistoryMessage {
+  role: 'user' | 'assistant';
+  text: string;
+  timestamp: string;
+}
+
+export interface SessionHistoryResponse {
+  messages: RenderedHistoryMessage[];
+  total: number;
+}
+
+export interface ListSessionsResponse {
+  sessions: Session[];
+  total: number;
+  limit: number;
+  offset: number;
+}

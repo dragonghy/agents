@@ -20,6 +20,7 @@ from .base import (
     Adapter,
     Profile,
     ProfileParseError,
+    RenderedMessage,
     RunResult,
     SessionMetadata,
 )
@@ -76,6 +77,7 @@ __all__ = [
     "Adapter",
     "Profile",
     "ProfileParseError",
+    "RenderedMessage",
     "RunResult",
     "SessionMetadata",
     "get_adapter",

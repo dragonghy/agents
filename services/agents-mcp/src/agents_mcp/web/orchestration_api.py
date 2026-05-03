@@ -286,6 +286,94 @@ def create_orchestration_router(store: Any, session_manager: Any) -> list[Route]
             )
         return JSONResponse(row)
 
+    async def list_sessions(request: Request) -> JSONResponse:
+        """``GET /sessions`` — paginated session list with optional filters.
+
+        Query params:
+            ``status`` (active|closed), ``profile`` (profile_name),
+            ``ticket`` (ticket_id), ``limit`` (default 50, max 500),
+            ``offset`` (default 0).
+        """
+        try:
+            limit = min(int(request.query_params.get("limit", 50)), 500)
+            offset = max(int(request.query_params.get("offset", 0)), 0)
+        except (TypeError, ValueError):
+            return JSONResponse(
+                {"error": "limit/offset must be integers"}, status_code=400
+            )
+        status = request.query_params.get("status") or None
+        profile = request.query_params.get("profile") or None
+        ticket = request.query_params.get("ticket")
+        ticket_id: Optional[int]
+        if ticket:
+            try:
+                ticket_id = int(ticket)
+            except ValueError:
+                return JSONResponse(
+                    {"error": "ticket must be an integer"}, status_code=400
+                )
+        else:
+            ticket_id = None
+
+        s = await _resolve(store)
+        try:
+            rows, total = await s.list_sessions_paginated(
+                status=status,
+                profile_name=profile,
+                ticket_id=ticket_id,
+                limit=limit,
+                offset=offset,
+            )
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return JSONResponse(
+            {
+                "sessions": rows,
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
+
+    async def get_session_history(request: Request) -> JSONResponse:
+        """``GET /sessions/{id}/history`` — Adapter-rendered transcript.
+
+        Routes to ``Adapter.render_history(session_id, store)`` based on
+        the session's ``runner_type``. Returns ``{messages: [...]}`` with
+        each message having ``role`` / ``text`` / ``timestamp``.
+        """
+        session_id = request.path_params["id"]
+        s = await _resolve(store)
+        row = await s.get_session(session_id)
+        if row is None:
+            return JSONResponse(
+                {"error": f"session not found: {session_id}"}, status_code=404
+            )
+        runner_type = row.get("runner_type") or ""
+        # Local import — adapters package pulls in the Claude SDK.
+        from ..adapters import get_adapter
+
+        try:
+            adapter = get_adapter(runner_type)
+        except (ValueError, NotImplementedError) as e:
+            return JSONResponse(
+                {"error": f"no adapter for runner_type {runner_type!r}", "detail": str(e)},
+                status_code=400,
+            )
+        try:
+            rendered = await adapter.render_history(session_id, s)
+        except Exception as e:
+            logger.exception("render_history failed for %s", session_id)
+            return JSONResponse(
+                {"error": "render_history failed", "detail": str(e)},
+                status_code=500,
+            )
+        out = [
+            {"role": m.role, "text": m.text, "timestamp": m.timestamp}
+            for m in rendered
+        ]
+        return JSONResponse({"messages": out, "total": len(out)})
+
     # ── Cost endpoints (Task #18 Part A) ──────────────────────────────────
 
     async def cost_by_session(request: Request) -> JSONResponse:
@@ -389,8 +477,10 @@ def create_orchestration_router(store: Any, session_manager: Any) -> list[Route]
     routes = [
         Route("/profiles", list_profiles, methods=["GET"]),
         Route("/sessions", spawn_session, methods=["POST"]),
+        Route("/sessions", list_sessions, methods=["GET"]),
         Route("/sessions/{id}/messages", append_message, methods=["POST"]),
         Route("/sessions/{id}/close", close_session, methods=["POST"]),
+        Route("/sessions/{id}/history", get_session_history, methods=["GET"]),
         Route("/sessions/{id}", get_session, methods=["GET"]),
         Route("/cost/by-session", cost_by_session, methods=["GET"]),
         Route("/cost/by-profile", cost_by_profile, methods=["GET"]),

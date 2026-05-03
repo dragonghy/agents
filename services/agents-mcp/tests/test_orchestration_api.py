@@ -29,7 +29,7 @@ from starlette.applications import Starlette
 from starlette.routing import Mount, Router
 from starlette.testclient import TestClient
 
-from agents_mcp.adapters.base import RunResult
+from agents_mcp.adapters.base import RenderedMessage, RunResult
 from agents_mcp.web.orchestration_api import create_orchestration_router
 
 
@@ -481,6 +481,99 @@ class TestCallableInjection:
         r = client.get("/api/v1/orchestration/profiles")
         assert r.status_code == 200
         assert r.json()["total"] == 1
+
+
+# ── GET /sessions (list) + /sessions/{id}/history (Task #18 Part B) ───────
+
+
+class TestListSessions:
+    def test_empty(self, harness):
+        client, store, _ = harness
+        store.paginated_response = ([], 0)
+        r = client.get("/api/v1/orchestration/sessions")
+        assert r.status_code == 200
+        assert r.json() == {
+            "sessions": [],
+            "total": 0,
+            "limit": 50,
+            "offset": 0,
+        }
+
+    def test_with_filters(self, harness):
+        client, store, _ = harness
+        client.get(
+            "/api/v1/orchestration/sessions"
+            "?status=closed&profile=tpm&ticket=42&limit=20&offset=10"
+        )
+        assert store.paginated_calls[0] == {
+            "status": "closed",
+            "profile_name": "tpm",
+            "ticket_id": 42,
+            "limit": 20,
+            "offset": 10,
+        }
+
+    def test_invalid_ticket_400(self, harness):
+        client, _, _ = harness
+        r = client.get("/api/v1/orchestration/sessions?ticket=abc")
+        assert r.status_code == 400
+
+
+class TestSessionHistory:
+    def test_unknown_session_404(self, harness):
+        client, _, _ = harness
+        r = client.get("/api/v1/orchestration/sessions/sess_nope/history")
+        assert r.status_code == 404
+
+    def test_happy_path(self, harness, monkeypatch):
+        client, store, _ = harness
+        store.sessions["sess_x"] = {
+            "id": "sess_x",
+            "runner_type": "claude-sonnet-4.7",
+        }
+
+        class _FakeAdapter:
+            async def render_history(self, sid, s):
+                assert sid == "sess_x"
+                return [
+                    RenderedMessage(role="user", text="hi", timestamp="t0"),
+                    RenderedMessage(role="assistant", text="yo", timestamp="t1"),
+                ]
+
+        from agents_mcp.web import orchestration_api
+
+        monkeypatch.setattr(
+            "agents_mcp.adapters.get_adapter",
+            lambda rt: _FakeAdapter(),
+        )
+        # Also patch on adapters module direct reference so the late
+        # import inside the route resolves to our fake.
+        import agents_mcp.adapters as adapters_pkg
+
+        monkeypatch.setattr(adapters_pkg, "get_adapter", lambda rt: _FakeAdapter())
+
+        r = client.get("/api/v1/orchestration/sessions/sess_x/history")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["total"] == 2
+        assert body["messages"][0] == {"role": "user", "text": "hi", "timestamp": "t0"}
+        assert body["messages"][1] == {"role": "assistant", "text": "yo", "timestamp": "t1"}
+
+    def test_unknown_runner_type_400(self, harness, monkeypatch):
+        client, store, _ = harness
+        store.sessions["sess_x"] = {
+            "id": "sess_x",
+            "runner_type": "alien-runner",
+        }
+
+        def _bad_get_adapter(rt):
+            raise ValueError(f"unknown: {rt}")
+
+        import agents_mcp.adapters as adapters_pkg
+
+        monkeypatch.setattr(adapters_pkg, "get_adapter", _bad_get_adapter)
+        r = client.get("/api/v1/orchestration/sessions/sess_x/history")
+        assert r.status_code == 400
 
 
 # ── GET /cost/* (Task #18 Part A) ──────────────────────────────────────────
