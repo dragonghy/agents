@@ -7,10 +7,10 @@
 ## State summary (kept current at the top)
 
 - **Branch**: `feat/orchestration-v1` (off `main` post-DAG-merge)
-- **Current Phase**: ✅ Phase 1 + Phase 2 complete. PR ready to open.
-- **Tasks**: 14 / 14 done (#5–#14).
-- **Open blockers**: none. Phase 2.5 (daemon-plumbing — wire the dispatch hooks into ticket-status + comment_created event listeners in the daemon) and Phase 3 (Web UI) are follow-up branches.
-- **End-to-end verification**: not executed in this branch (daemon was offline during development); `orchestration-v1-e2e-runbook.md` documents the step-by-step plan.
+- **Current Phase**: ✅ Phase 1 + Phase 2 + Phase 2.5 (TPM tool-use) complete. Live multi-agent demo executed.
+- **Tasks**: 14 / 14 done (#5–#14) plus Phase 2.5 (TPM tool bindings + live demo).
+- **Open blockers**: none. Daemon-event-listener wiring (status-changed → `maybe_spawn_tpm_for_status_change`, comment_created → `dispatch_comment_to_tpm`) and Phase 3 (Web UI) remain as follow-up work.
+- **End-to-end verification**: live multi-agent demo executed — see `projects/agent-hub/research/orchestration-v1-multi-agent-demo-2026-05-02.md`. TPM coordinated 3 turns, spawned 2 subagents (Architect + Developer), posted 2 comments, transitioned the ticket Blocked → Done. Total cost ≈ $1.34.
 - **apps/console/ decision**: partial rewrite (keep tickets/cost/briefs/workspaces + Vite+FastAPI scaffold; replace agent-named pages with Profile/Session/TPM views; reconcile against `services/agents-mcp/src/agents_mcp/web/api.py`). Recorded in `apps-console-survey-2026-05-02.md`.
 
 ## Entry log (oldest → newest)
@@ -277,3 +277,52 @@
 **Disk + LOC impact**: ~190 MB of source removed (mostly the dead SPA's `node_modules`-laden tree), ~1100 LOC of Python deleted from the daemon path, ~190 LOC of Python added (bridge + bridge tests). Net: enormous reduction in surface area for review and a cleaner mental model — the daemon's HTTP face is now exactly the bot bridge plus the orchestration test harness, nothing else.
 
 **Next**: Phase 4 will replace this bridge with a proper channel-adapter on the new orchestration model — at which point bridge.py + telegram-bot/bot.py both get rewritten and this whole shim disappears.
+
+---
+
+### 2026-05-02 — Phase 2.5 — TPM tool-use bindings + live multi-agent demo
+
+**What**:
+
+- `services/agents-mcp/src/agents_mcp/orchestration_tools.py` — new module. Builds an in-process MCP server (`claude_agent_sdk.create_sdk_mcp_server`) per TPM session that exposes four tools: `spawn_subagent`, `push_message`, `post_comment`, `mark_ticket_status`. Each tool closes over the SessionManager + AgentStore + SQLiteTaskClient + the spawning TPM's session_id, so subagents are correctly parented and ticket comments are correctly attributed (`author=tpm:<session_id>`). Tools return MCP-shaped `{"content": [{"type": "text", ...}]}` dicts; on application errors they return `is_error: True` rather than raising so the TPM gets a structured error string it can reason about.
+- `services/agents-mcp/src/agents_mcp/adapters/claude_adapter.py` — `ClaudeAdapter.run()` gained two optional keyword-only params, `mcp_servers` and `allowed_tools`, forwarded into `ClaudeAgentOptions` only when provided. Existing callers and tests don't see any change because of the kwargs-only addition.
+- `services/agents-mcp/src/agents_mcp/orchestration_session_manager.py` — `SessionManager.__init__` now accepts an optional `task_client`. When `append_message` runs against a Profile with `orchestration_tools=True`, it builds an in-process tool server and passes `mcp_servers={server_name: cfg}` + `allowed_tools=["mcp__<server>__<tool>", ...]` to the adapter. Sessions for non-TPM Profiles continue to run text-only (no extra kwargs to the adapter).
+- `services/agents-mcp/src/agents_mcp/adapters/base.py` + `profile_loader.py` — added `orchestration_tools: bool = False` field on the Profile dataclass, parsed from frontmatter (must be a real YAML boolean; non-bool values are rejected with `ProfileParseError`).
+- `profiles/tpm/profile.md` — frontmatter `orchestration_tools: true`. Body rewritten to (a) name the four tools and document when to use each, (b) include a strong "tool, don't talk" anti-pattern callout ("don't say 'I would spawn an architect' — call `spawn_subagent`"), (c) provide an example flow (spawn architect → post_comment summary → spawn developer → push_message clarifying answer → mark_ticket_status 0).
+- `profiles/architect/profile.md` — new minimal Profile (the demo wanted a non-Developer subagent target). Three-section output contract (Diagnosis / Proposed fix / Risks). Doesn't write code; doesn't change ticket status; just produces analysis.
+- `services/agents-mcp/tests/test_orchestration_tools.py` — 19 new tests exercising each tool handler directly via the SDK's MCP `request_handlers` map (no LLM needed). Covers happy paths, error payloads (unknown profile, closed session, taskclient failure), all valid statuses, status=2 rejection, parent_session_id propagation.
+- `services/agents-mcp/tests/test_session_manager.py` — 4 new tests for the wiring: TPM sessions get the `mcp_servers` + `allowed_tools` kwargs in the adapter call; non-TPM sessions don't; missing `task_client` and missing `ticket_id` raise clear errors; existing _FakeAdapter accepts `**kwargs`.
+- `services/agents-mcp/tests/test_profile_loader.py` — 3 new tests for orchestration_tools field parsing (default False, true parses, non-bool rejected).
+- `services/agents-mcp/tests/test_adapter_base.py` — relaxed structural-protocol assertion to enforce only required positional params (the new keyword-only params are additive).
+- `services/agents-mcp/scripts/orchestration_demo.py` — live multi-agent demo. Seeds a synthetic ticket (id=999100, "Add index on orders.user_id...") in an isolated tmp DB, spawns a real TPM, drives up to N turns, records every TPM turn's tokens + assistant text, lists every subagent session spawned under the TPM, and writes a markdown transcript + JSON dump to `projects/agent-hub/research/`.
+
+**Live demo result** (commit `d2130e9`): TPM ran 3 turns and:
+
+1. **Turn 1** (in=93,848, out=2,623): spawned an architect (`sess_9dec8178e9eca0ea76c1c5`, in=20,507 / out=1,040), spawned a developer (`sess_9dec82982ebdf527ce7316`, in=125,094 / out=2,056), posted a status comment summarizing the architect's recommended fix (composite index on `(user_id, created_at DESC)`).
+2. **Turn 2** (in=107,623, out=1,865): on follow-up nudge, the TPM noticed the developer reported "no `orders` table in this codebase" (the demo intentionally framed an external-DB scenario), posted a "blocked, awaiting clarification" comment, called `mark_ticket_status(999100, 1)` (Blocked).
+3. **Turn 3** (in=56,956, out=1,002): on second follow-up, decided the investigation task was complete and called `mark_ticket_status(999100, 0)` (Done).
+
+Final ticket state: status=0, 2 comments posted by TPM (both correctly attributed `tpm:sess_9dec80c6d27728cebf2fe6`), 2 subagent sessions visible in `session` table with proper `parent_session_id`. Total tokens 412,614 (404,028 in + 8,586 out across all sessions including subagents); estimated cost $1.34 USD.
+
+**What worked**:
+
+- The SDK's `create_sdk_mcp_server` + `@tool` decorator surface drop-in worked first try once we knew the right field names. No fallback to stdio MCP subprocess required.
+- The TPM correctly distinguished "spawn architect" from "spawn developer" based purely on the Profile descriptions in the frontmatter, with no extra hint-engineering. Architect for the diagnosis, Developer for the implementation.
+- Self-feedback skip: the `tpm:<session_id>` author tag we put on comments is exactly what `dispatch_comment_to_tpm` already filters on, so this naturally composes.
+- The "tool, don't talk" anti-pattern in the system prompt was effective — the TPM's text replies were short summaries of what its tool calls had already done, not narration of what it intended to do.
+
+**What didn't / paper-cuts**:
+
+- The TPM occasionally emits a tiny prelude before its first tool call ("I need to load the TPM orchestration tools to handle this ticket."). Harmless but clutters the assistant text. Could be dampened by tightening the prompt; not worth a fix in this commit.
+- On turn 3 the TPM redundantly called `mark_ticket_status(999100, 0)` when the ticket was already at status=1 (Blocked) — this is debatable since it interpreted the follow-up as "you can close the ticket if the work is done", but a stricter prompt would have it say "status already terminal, no action" instead. Acceptable for v1.
+- The `list_sessions` query in the demo had to filter by `parent_session_id` in Python because the AgentStore method doesn't support that filter. Fine for the demo; if we surface this in production we should add `parent_session_id` to `list_sessions`.
+- Comment-id/transcript truncation: comment 1's text got cut at 800 chars by the demo's `truncate()` helper. The full text is in the JSON sibling. Trade-off; markdown stays readable.
+
+**Why this matters**: pre-commit, the TPM Profile was a paragraph generator. Post-commit, the same Profile is a coordinator that materializes its decisions as ticket-state mutations and subagent sessions. The wiring is exactly what Phase 2.5 needed; no daemon-side change required (the SessionManager + tools are self-contained), so the daemon-plumbing PR (already done above) and this PR can land independently.
+
+**Verification commands run**:
+
+- `uv run pytest tests/test_orchestration_tools.py tests/test_session_manager.py tests/test_profile_loader.py tests/test_adapter_base.py tests/test_claude_adapter.py tests/test_orchestration_session.py tests/test_orchestration_tpm_dispatch.py tests/test_orchestration_comment_dispatch.py` → 138/138 green.
+- `uv run python services/agents-mcp/scripts/orchestration_demo.py --max-turns 6` → ran end-to-end, transcript at `projects/agent-hub/research/orchestration-v1-multi-agent-demo-2026-05-02.md`.
+
+**Next**: With Phase 2.5 wiring + tools + live demo all in, the orchestration v1 model is functionally complete. Remaining work is Phase 3 (Web UI) and Phase 4 (channel adapters that replace bridge.py).
