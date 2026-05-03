@@ -6,13 +6,11 @@ import {
   getCostTotals,
   getTicketBoard,
   listSessions,
-  listWorkspaces,
 } from './api';
 import type {
   CostByProfileRow,
   CostBySessionRow,
   CostTotalsResponse,
-  Workspace,
 } from './types';
 import TicketBoard from './components/TicketBoard';
 import TicketDetail from './components/TicketDetail';
@@ -25,16 +23,6 @@ import ProfileList from './components/ProfileList';
 import ProfileDetail from './components/ProfileDetail';
 
 export default function App() {
-  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
-  const [activeWorkspace, setActiveWorkspace] = useState<number>(1);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    listWorkspaces()
-      .then((r) => setWorkspaces(r.workspaces))
-      .catch((e) => setError(String(e)));
-  }, []);
-
   const location = useLocation();
 
   return (
@@ -46,7 +34,7 @@ export default function App() {
             Overview
           </NavLink>
           <NavLink to="/board" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
-            Ticket Board
+            Tickets
           </NavLink>
           <NavLink to="/sessions" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
             Sessions
@@ -65,23 +53,6 @@ export default function App() {
           </NavLink>
         </nav>
 
-        <div className="workspace-switcher">
-          <label htmlFor="ws-switch">Workspace</label>
-          <select
-            id="ws-switch"
-            value={activeWorkspace}
-            onChange={(e) => setActiveWorkspace(Number(e.target.value))}
-          >
-            {workspaces.map((w) => (
-              <option key={w.id} value={w.id}>
-                {w.name}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {error && <div className="error" style={{ marginTop: 12 }}>{error}</div>}
-
         <div style={{ marginTop: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>
           <p style={{ margin: 0 }}>Read-only Phase 1</p>
           <p style={{ margin: 0 }}>
@@ -95,7 +66,7 @@ export default function App() {
 
       <main className="main">
         <Routes>
-          <Route path="/" element={<Overview workspaceId={activeWorkspace} />} />
+          <Route path="/" element={<Overview />} />
           <Route path="/board" element={<TicketBoard />} />
           <Route path="/tickets/:id" element={<TicketDetail />} />
           <Route path="/sessions" element={<SessionList />} />
@@ -111,7 +82,7 @@ export default function App() {
   );
 }
 
-function Overview({ workspaceId }: { workspaceId: number }) {
+function Overview() {
   const [totals, setTotals] = useState<CostTotalsResponse | null>(null);
   const [activeSessionsCount, setActiveSessionsCount] = useState<number>(0);
   const [activeTpmsCount, setActiveTpmsCount] = useState<number>(0);
@@ -134,7 +105,8 @@ function Overview({ workspaceId }: { workspaceId: number }) {
           listSessions({ status: 'active', profile: 'tpm', limit: 1 }),
           getCostBySession({ limit: 5 }),
           getCostByProfile(),
-          getTicketBoard(workspaceId),
+          // Workspace-agnostic: load all open tickets across workspaces.
+          getTicketBoard(null),
         ]);
         if (cancelled) return;
         setTotals(t);
@@ -161,7 +133,7 @@ function Overview({ workspaceId }: { workspaceId: number }) {
       cancelled = true;
       clearInterval(id);
     };
-  }, [workspaceId]);
+  }, []);
 
   const openTickets = useMemo(
     () => boardCounts.new + boardCounts.wip + boardCounts.blocked,
@@ -172,7 +144,7 @@ function Overview({ workspaceId }: { workspaceId: number }) {
     <div>
       <div className="page-header">
         <h2>Overview</h2>
-        <span className="subtitle">workspace_id={workspaceId} · refreshes every 30s</span>
+        <span className="subtitle">refreshes every 30s</span>
       </div>
 
       {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
@@ -223,7 +195,7 @@ function Overview({ workspaceId }: { workspaceId: number }) {
       {/* Ticket board summary card */}
       <div className="card" style={{ marginBottom: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <h3 style={{ margin: 0 }}>Tickets · workspace {workspaceId}</h3>
+          <h3 style={{ margin: 0 }}>Tickets</h3>
           <Link to="/board" style={{ fontSize: 12, color: 'var(--text-dim)' }}>
             view full board →
           </Link>

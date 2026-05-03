@@ -56,29 +56,6 @@ a:hover { text-decoration: underline; }
 .sidebar .nav-link:hover { background: var(--bg-panel-hover); color: var(--text); text-decoration: none; }
 .sidebar .nav-link.active { background: var(--bg-panel); color: var(--accent); }
 
-.workspace-switcher {
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
-}
-.workspace-switcher label {
-  font-size: 11px;
-  text-transform: uppercase;
-  color: var(--text-muted);
-  letter-spacing: 0.05em;
-  margin-bottom: 6px;
-  display: block;
-}
-.workspace-switcher select {
-  width: 100%;
-  background: var(--bg-panel);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 6px 8px;
-  font-size: 13px;
-}
-
 .main {
   padding: 24px 32px;
   overflow-y: auto;

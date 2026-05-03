@@ -221,6 +221,173 @@ async function driveProfileDetail(browser) {
   await ctx.close();
 }
 
+async function driveTicketDetail(browser) {
+  console.log('\n=== Tickets detail walk ===');
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  const errors = [];
+  const failedRequests = [];
+  const consoleMsgs = [];
+
+  page.on('console', (msg) => {
+    if (msg.type() === 'error' || msg.type() === 'warning') {
+      consoleMsgs.push({ type: msg.type(), text: msg.text() });
+    }
+  });
+  page.on('pageerror', (err) => errors.push(String(err)));
+  page.on('response', (resp) => {
+    if (resp.status() >= 400) {
+      failedRequests.push({ status: resp.status(), url: resp.url() });
+    }
+  });
+
+  // Pull a ticket id from the API (whichever live ticket comes first).
+  let ticketId = null;
+  try {
+    const r = await fetch(`${BASE}/api/v1/orchestration/tickets?limit=1`);
+    if (r.ok) {
+      const body = await r.json();
+      if (body.tickets?.length > 0) ticketId = body.tickets[0].id;
+    }
+  } catch (e) {
+    console.log('ticket id fetch failed:', String(e));
+  }
+
+  if (ticketId == null) {
+    // Fallback: try board endpoint.
+    try {
+      const r = await fetch(`${BASE}/api/tickets/board`);
+      if (r.ok) {
+        const body = await r.json();
+        for (const col of body.columns || []) {
+          if (col.tickets?.length > 0) {
+            ticketId = col.tickets[0].id;
+            break;
+          }
+        }
+      }
+    } catch (e) {
+      console.log('board fallback fetch failed:', String(e));
+    }
+  }
+
+  if (ticketId == null) {
+    console.log('No tickets found to drill into; skipping ticket-detail walk.');
+    findings.push({
+      route: '/tickets/:id (drill-in, skipped)',
+      label: 'tickets-drill-skipped',
+      page_errors: [],
+      console_messages: [],
+      failed_requests: [],
+    });
+    await ctx.close();
+    return;
+  }
+
+  console.log(`navigating to /tickets/${ticketId}`);
+  await page.goto(`${BASE}/tickets/${ticketId}`, {
+    waitUntil: 'networkidle',
+    timeout: 15000,
+  });
+  await page.waitForTimeout(1500);
+  await page.screenshot({
+    path: path.join(OUT_DIR, 'ticket-detail.png'),
+    fullPage: true,
+  });
+
+  // Sanity assertions: header should mention the ticket id; Sessions and
+  // Comments sections should exist.
+  const bodyText = await page.evaluate(() => document.body.innerText);
+  const headerHasId = bodyText.includes(`#${ticketId}`);
+  const hasSessionsSection = bodyText.includes('Sessions');
+  const hasCommentsSection = bodyText.includes('Comments');
+  const hasDependenciesSection = bodyText.includes('Dependencies');
+
+  findings.push({
+    route: '/tickets/:id (drill-in)',
+    label: 'tickets-drill',
+    page_errors: errors,
+    console_messages: consoleMsgs,
+    failed_requests: failedRequests,
+    screenshot: path.join(OUT_DIR, 'ticket-detail.png'),
+    assertions: {
+      ticket_id: ticketId,
+      header_contains_id: headerHasId,
+      has_sessions_section: hasSessionsSection,
+      has_comments_section: hasCommentsSection,
+      has_dependencies_section: hasDependenciesSection,
+    },
+  });
+  await ctx.close();
+}
+
+async function driveBoardListToggle(browser) {
+  console.log('\n=== Board/List toggle walk ===');
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  const errors = [];
+  const failedRequests = [];
+  const consoleMsgs = [];
+
+  page.on('console', (msg) => {
+    if (msg.type() === 'error' || msg.type() === 'warning') {
+      consoleMsgs.push({ type: msg.type(), text: msg.text() });
+    }
+  });
+  page.on('pageerror', (err) => errors.push(String(err)));
+  page.on('response', (resp) => {
+    if (resp.status() >= 400) {
+      failedRequests.push({ status: resp.status(), url: resp.url() });
+    }
+  });
+
+  await page.goto(`${BASE}/board`, { waitUntil: 'networkidle', timeout: 15000 });
+  await page.waitForTimeout(1500);
+  await page.screenshot({
+    path: path.join(OUT_DIR, 'board-mode.png'),
+    fullPage: true,
+  });
+
+  // Click the "List" tab.
+  const listBtn = await page.$('button:has-text("List")');
+  let listModeBodyText = '';
+  if (listBtn) {
+    await listBtn.click();
+    await page.waitForTimeout(2000);
+    await page.screenshot({
+      path: path.join(OUT_DIR, 'list-mode.png'),
+      fullPage: true,
+    });
+    listModeBodyText = await page.evaluate(() => document.body.innerText);
+  } else {
+    console.log('List tab button not found.');
+  }
+
+  // Check: sidebar should NOT contain a Workspace switcher (Finding #3).
+  // The sidebar's `select#ws-switch` is the legacy id; absence is success.
+  const wsSwitcher = await page.$('#ws-switch');
+  const sidebarHasWorkspace = wsSwitcher !== null;
+  // Per-page workspace dropdown SHOULD exist on the Tickets page.
+  const pageHasWorkspaceFilter =
+    listModeBodyText.includes('Workspace:') ||
+    (await page.$('label:has-text("Workspace")')) !== null;
+
+  findings.push({
+    route: '/board (Board/List toggle)',
+    label: 'board-list-toggle',
+    page_errors: errors,
+    console_messages: consoleMsgs,
+    failed_requests: failedRequests,
+    screenshot: path.join(OUT_DIR, 'list-mode.png'),
+    assertions: {
+      list_button_clicked: listBtn !== null,
+      sidebar_has_legacy_workspace_switcher: sidebarHasWorkspace,
+      page_has_workspace_filter: pageHasWorkspaceFilter,
+    },
+  });
+  await ctx.close();
+}
+
 async function driveSessionDetail(browser) {
   console.log('\n=== Sessions detail walk ===');
   const ctx = await browser.newContext();
@@ -272,6 +439,8 @@ async function driveSessionDetail(browser) {
   }
   await driveSessionDetail(browser);
   await driveProfileDetail(browser);
+  await driveTicketDetail(browser);
+  await driveBoardListToggle(browser);
   await driveTestHarness(browser);
   await browser.close();
 
