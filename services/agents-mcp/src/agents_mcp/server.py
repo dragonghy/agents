@@ -575,15 +575,16 @@ async def get_all_subtasks(ticket_id: int) -> str:
     """Get all subtasks for a ticket.
 
     Returns the union of (a) Leantime subtasks (type='subtask',
-    dependingTicketId=ticket_id) and (b) any DAG dependents from
-    `ticket_dependencies` whose underlying ticket has type='subtask'.
+    dependingTicketId=ticket_id) and (b) any DAG dependencies of
+    `ticket_id` (since parent depends on child) whose underlying
+    ticket has type='subtask'.
     """
     client = get_client()
     result = await client.get_all_subtasks(ticket_id)
     try:
         store = await get_store()
         existing_ids = {t.get("id") for t in result if isinstance(t, dict)}
-        for dep_id in await store.get_dependents(ticket_id):
+        for dep_id in await store.get_dependencies(ticket_id):
             if dep_id in existing_ids:
                 continue
             extra = await client.get_ticket(dep_id, prune=True)
@@ -631,14 +632,15 @@ async def upsert_subtask(
         parent_ticket_id=parent_ticket, headline=headline,
         tags=tags, assignee=assignedTo, **kwargs,
     )
-    # Mirror into the soft-dependency DAG: subtask depends on parent.
+    # Mirror into the soft-dependency DAG: parent depends on subtask
+    # (i.e. subtask is the child/prerequisite of the parent).
     try:
         subtask_id = result if isinstance(result, int) else (
             result.get("id") if isinstance(result, dict) else None
         )
         if subtask_id:
             store = await get_store()
-            await store.add_dependency(int(subtask_id), int(parent_ticket))
+            await store.add_dependency(int(parent_ticket), int(subtask_id))
     except Exception as e:
         logger.debug(
             f"DAG mirror on upsert_subtask parent={parent_ticket} failed: {e}"
@@ -815,10 +817,12 @@ async def get_parent_chain(ticket_id: int) -> str:
     Each entry includes full detail fields (headline, description, status, etc.).
     Use this to load project-level context when starting work on a task.
 
-    Augments the Leantime chain with any extra dependencies in the
+    Augments the Leantime chain with any extra ancestors in the
     soft-dependency DAG (`ticket_dependencies`) that aren't already
-    represented by `dependingTicketId`. Order: Leantime chain first,
-    then DAG-only ancestors (deduped by id).
+    represented by `dependingTicketId`. Since parent depends on child,
+    walking UP the hierarchy from `ticket_id` corresponds to following
+    `get_ancestors` (tickets that transitively depend on `ticket_id`).
+    Order: Leantime chain first, then DAG-only ancestors (deduped by id).
 
     Args:
         ticket_id: The ticket whose parent chain to fetch.
@@ -828,7 +832,7 @@ async def get_parent_chain(ticket_id: int) -> str:
     try:
         store = await get_store()
         seen = {t.get("id") for t in chain if isinstance(t, dict)}
-        for dep_id in await store.get_descendants(ticket_id):
+        for dep_id in await store.get_ancestors(ticket_id):
             if dep_id in seen:
                 continue
             extra = await client.get_ticket(dep_id, prune=True)
@@ -851,9 +855,10 @@ async def get_children(ticket_id: int, child_type: str = None) -> str:
     Unlike get_all_subtasks (which only returns type='subtask'), this returns
     children of any type.
 
-    Augments the Leantime result with any extra dependents in the
+    Augments the Leantime result with any extra children in the
     soft-dependency DAG (`ticket_dependencies`) that aren't already
-    represented by `dependingTicketId`. Deduped by id.
+    represented by `dependingTicketId`. Since parent depends on child,
+    children of `ticket_id` are its one-hop dependencies. Deduped by id.
 
     Args:
         ticket_id: Parent ticket ID.
@@ -864,7 +869,7 @@ async def get_children(ticket_id: int, child_type: str = None) -> str:
     try:
         store = await get_store()
         existing_ids = {t.get("id") for t in children if isinstance(t, dict)}
-        for dep_id in await store.get_dependents(ticket_id):
+        for dep_id in await store.get_dependencies(ticket_id):
             if dep_id in existing_ids:
                 continue
             extra = await client.get_ticket(dep_id, prune=True)

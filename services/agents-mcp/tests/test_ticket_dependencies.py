@@ -181,6 +181,39 @@ class TestAddDependency:
 
         run(_test())
 
+    def test_transitive_cycle_rejected(self, db_path):
+        """If B already transitively depends on A (B -> X -> A), then
+        adding A -> B must be rejected: it would close the cycle
+        A -> B -> X -> A.
+
+        Re-verifies the BFS direction in `_would_create_cycle` after the
+        edge-orientation flip. The BFS walks forward from `B` following
+        (ticket_id -> depends_on_ticket_id) edges; if it reaches `A`,
+        the candidate edge (A, B) would close a cycle.
+        """
+        async def _test():
+            store = AgentStore(db_path)
+            await store.initialize()
+
+            # Build B -> X -> A (B depends on X, X depends on A).
+            assert (await store.add_dependency(2, 99))["ok"] is True   # B=2, X=99
+            assert (await store.add_dependency(99, 1))["ok"] is True   # X=99, A=1
+
+            # Now A -> B would close cycle A -> B -> X -> A.
+            r = await store.add_dependency(1, 2)
+            assert r["ok"] is False
+            assert r["cycle"] is True
+
+            # Existing edges intact, no cyclic edge inserted.
+            cur = await store._db.execute(
+                "SELECT COUNT(*) AS c FROM ticket_dependencies"
+            )
+            assert (await cur.fetchone())["c"] == 2
+            assert await store.get_dependencies(1) == []
+            await store.close()
+
+        run(_test())
+
 
 # ── remove_dependency ──
 
@@ -352,6 +385,9 @@ class TestTransitiveClose:
 
 class TestBackfill:
     def test_backfill_inserts_rows(self, db_path):
+        """Edge orientation: parent depends on child. A row with
+        dependingTicketId=100 means 100 is the parent, so the edge is
+        (100, row.id)."""
         async def _test():
             store = AgentStore(db_path)
             await store.initialize()
@@ -366,17 +402,24 @@ class TestBackfill:
                 {"id": 104, "dependingTicketId": None, "milestoneid": None},
             ]
             inserted = await store.backfill_ticket_dependencies(tickets)
-            # 101->100, 102->100, 102->50 = 3 edges
+            # Edges: (100,101), (100,102), (50,102) = 3 edges
             assert inserted == 3
 
-            d101 = await store.get_dependencies(101)
-            assert d101 == [100]
+            # 100 is parent of 101 and 102 → 100 depends on both.
+            d100 = await store.get_dependencies(100)
+            assert sorted(d100) == [101, 102]
 
-            d102 = await store.get_dependencies(102)
-            assert sorted(d102) == [50, 100]
+            # 50 is the milestone-parent of 102 → 50 depends on 102.
+            d50 = await store.get_dependencies(50)
+            assert d50 == [102]
 
-            d103 = await store.get_dependencies(103)
-            assert d103 == []
+            # Children have no dependencies of their own (in this fixture).
+            assert await store.get_dependencies(101) == []
+            assert await store.get_dependencies(102) == []
+            assert await store.get_dependencies(103) == []
+
+            # 102 is depended on by both its parents.
+            assert sorted(await store.get_dependents(102)) == [50, 100]
 
             await store.close()
 
@@ -400,6 +443,41 @@ class TestBackfill:
             )
             row = await cur.fetchone()
             assert row["c"] == 1
+            await store.close()
+
+        run(_test())
+
+    def test_backfill_umbrella_scenario(self, db_path):
+        """Regression for the edge-direction flip.
+
+        Umbrella ticket #493 with sub-tickets #494 and #495. In Leantime,
+        #494 and #495 carry dependingTicketId=493. Under the
+        "parent depends on child" semantic, the resulting edges should be
+        (493, 494) and (493, 495), so:
+            - get_dependencies(493) == [494, 495]   (children, one hop)
+            - get_dependents(494) == [493]          (parents, one hop)
+            - get_descendants(493) == [494, 495]    (transitive children)
+            - get_ancestors(494) == [493]           (transitive parents)
+        """
+        async def _test():
+            store = AgentStore(db_path)
+            await store.initialize()
+
+            tickets = [
+                {"id": 493, "dependingTicketId": 0, "milestoneid": 0},
+                {"id": 494, "dependingTicketId": 493, "milestoneid": 0},
+                {"id": 495, "dependingTicketId": 493, "milestoneid": 0},
+            ]
+            inserted = await store.backfill_ticket_dependencies(tickets)
+            assert inserted == 2  # (493,494), (493,495)
+
+            assert sorted(await store.get_dependencies(493)) == [494, 495]
+            assert await store.get_dependents(494) == [493]
+            assert await store.get_dependents(495) == [493]
+            assert sorted(await store.get_descendants(493)) == [494, 495]
+            assert await store.get_ancestors(494) == [493]
+            assert await store.get_ancestors(495) == [493]
+
             await store.close()
 
         run(_test())
@@ -478,6 +556,37 @@ class TestUpdateDependsOnMirror:
             assert await store.get_dependencies(10) == []
             # The pre-existing edge is intact
             assert await store.get_dependents(10) == [20]
+            await store.close()
+
+        run(_test())
+
+
+class TestUpsertSubtaskMirror:
+    def test_upsert_subtask_writes_parent_to_child_edge(self, tmp_path):
+        """upsert_subtask(parent=P, ...) creates a subtask S and should
+        record edge (P, S) in the DAG — parent depends on child."""
+        async def _test():
+            store = AgentStore(str(tmp_path / "mcp_subtask.db"))
+            await store.initialize()
+
+            from agents_mcp.server import upsert_subtask
+
+            mock_client = MagicMock()
+            # Leantime client returns the new subtask id directly (int).
+            mock_client.upsert_subtask = AsyncMock(return_value=777)
+            fn = getattr(upsert_subtask, "fn", upsert_subtask)
+
+            with patch(
+                "agents_mcp.server.get_client", return_value=mock_client
+            ), patch(
+                "agents_mcp.server.get_store",
+                new=AsyncMock(return_value=store),
+            ):
+                await fn(parent_ticket=500, headline="some subtask")
+
+            # Edge (500, 777): parent 500 depends on its new subtask 777.
+            assert await store.get_dependencies(500) == [777]
+            assert await store.get_dependents(777) == [500]
             await store.close()
 
         run(_test())

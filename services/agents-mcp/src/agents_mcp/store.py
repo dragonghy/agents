@@ -1248,6 +1248,11 @@ class AgentStore:
         """Backfill ticket_dependencies from existing tickets' dependingTicketId
         and milestoneid columns.
 
+        Edge orientation: parent depends on child. Leantime's
+        `dependingTicketId` on row `t` points to t's parent, so we insert
+        `(parent, t.id)` — i.e. (t.dependingTicketId, t.id). Same shape for
+        `milestoneid`.
+
         Idempotent (uses INSERT OR IGNORE). Skips self-references and zero/None
         parents. Returns the number of rows actually inserted.
 
@@ -1271,7 +1276,7 @@ class AgentStore:
                 async with self._db.execute(
                     "INSERT OR IGNORE INTO ticket_dependencies "
                     "(ticket_id, depends_on_ticket_id) VALUES (?, ?)",
-                    (tid, parent),
+                    (parent, tid),
                 ) as cursor:
                     if cursor.rowcount > 0:
                         inserted += 1
