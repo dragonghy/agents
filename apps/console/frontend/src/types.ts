@@ -179,3 +179,92 @@ export interface ProfileSessionsResponse {
   total: number;
   profile_name: string;
 }
+
+// ── Ticket detail + tree (Task #20 — UI rework) ──
+
+export interface TicketSummary {
+  id: number;
+  headline: string;
+  status: number;
+  priority: string;
+  type: string;
+  tags: string;
+  assignee: string;
+  workspace_id?: number | null;
+  workspace_name?: string | null;
+  projectId?: number | null;
+  phase?: string;
+  date?: string;
+  dependencies?: { depends_on_count: number; dependents_count: number };
+}
+
+export interface TicketDependencyRef {
+  id: number;
+  headline: string | null;
+  status: number | null;
+}
+
+export interface TicketDetail extends Omit<TicketSummary, 'dependencies'> {
+  description?: string | null;
+  project_name?: string | null;
+  dependencies: {
+    depends_on: TicketDependencyRef[];
+    dependents: TicketDependencyRef[];
+  };
+}
+
+export interface TicketComment {
+  id: number;
+  text: string;
+  author: string | null;
+  date: string;
+  userId?: number | null;
+  moduleId?: number;
+}
+
+export interface TicketCommentsResponse {
+  comments: TicketComment[];
+  total: number;
+  limit?: number;
+  offset?: number;
+}
+
+export interface TicketSessionsResponse {
+  sessions: Session[];
+  total: number;
+  ticket_id: number;
+  limit?: number;
+  offset?: number;
+}
+
+export interface TicketTreeTicket {
+  ticket: TicketSummary;
+  children: TicketSummary[];
+}
+
+export interface TicketTreeProject {
+  project: { id: number | null; name: string | null };
+  tickets: TicketTreeTicket[];
+}
+
+export interface TicketTreeWorkspace {
+  workspace: { id: number | null; name: string; kind: string | null };
+  projects: TicketTreeProject[];
+}
+
+export interface TicketTreeResponse {
+  workspaces: TicketTreeWorkspace[];
+}
+
+export interface ListTicketsResponse {
+  tickets: TicketSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface PatchTicketBody {
+  status?: number;
+  priority?: string;
+  headline?: string;
+}
