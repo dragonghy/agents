@@ -207,6 +207,13 @@ _TOOL_TIMEOUTS = {
     "reassign_ticket": 120,
     "upsert_subtask": 120,
     "update_depends_on": 30,
+    # Soft-dependency DAG tools: simple SQLite operations on a small table (30s)
+    "add_ticket_dependency": 30,
+    "remove_ticket_dependency": 30,
+    "get_ticket_dependencies": 30,
+    "get_ticket_dependents": 30,
+    "get_ticket_descendants": 30,
+    "get_ticket_ancestors": 30,
     "suggest_assignee": 120,
     "get_agent_status": 120,
     # Slow tools: involve subprocess, tmux, or heavy operations (300s)
@@ -565,9 +572,28 @@ async def get_status_labels() -> str:
 @app.tool()
 @_with_timeout
 async def get_all_subtasks(ticket_id: int) -> str:
-    """Get all subtasks for a ticket."""
+    """Get all subtasks for a ticket.
+
+    Returns the union of (a) Leantime subtasks (type='subtask',
+    dependingTicketId=ticket_id) and (b) any DAG dependents from
+    `ticket_dependencies` whose underlying ticket has type='subtask'.
+    """
     client = get_client()
     result = await client.get_all_subtasks(ticket_id)
+    try:
+        store = await get_store()
+        existing_ids = {t.get("id") for t in result if isinstance(t, dict)}
+        for dep_id in await store.get_dependents(ticket_id):
+            if dep_id in existing_ids:
+                continue
+            extra = await client.get_ticket(dep_id, prune=True)
+            if extra and extra.get("type") == "subtask":
+                result.append(extra)
+                existing_ids.add(dep_id)
+    except Exception as e:
+        logger.debug(
+            f"DAG union on get_all_subtasks #{ticket_id} failed: {e}"
+        )
     return _json_dumps(result, indent=2)
 
 
@@ -605,6 +631,18 @@ async def upsert_subtask(
         parent_ticket_id=parent_ticket, headline=headline,
         tags=tags, assignee=assignedTo, **kwargs,
     )
+    # Mirror into the soft-dependency DAG: subtask depends on parent.
+    try:
+        subtask_id = result if isinstance(result, int) else (
+            result.get("id") if isinstance(result, dict) else None
+        )
+        if subtask_id:
+            store = await get_store()
+            await store.add_dependency(int(subtask_id), int(parent_ticket))
+    except Exception as e:
+        logger.debug(
+            f"DAG mirror on upsert_subtask parent={parent_ticket} failed: {e}"
+        )
     return _json_dumps(result, indent=2)
 
 
@@ -618,13 +656,146 @@ async def update_depends_on(ticket_id: int, depends_on: str) -> str:
     tickets with unresolved dependencies (status→1) and auto-unlock when
     all dependencies are done (status→3).
 
+    Also mirrors edges into the soft-dependency DAG (`ticket_dependencies`):
+    each id in `depends_on` is added as an edge ticket_id -> id (cycle-checked).
+    Existing DAG edges no longer in the new list are removed. Pass an empty
+    string to clear all DAG edges sourced via this API.
+
     Args:
         ticket_id: The ticket to update.
         depends_on: Comma-separated ticket IDs (e.g. '10,20,30').
     """
     client = get_client()
     result = await client.update_depends_on(ticket_id, depends_on)
+    # Mirror into the soft-dependency DAG.
+    try:
+        store = await get_store()
+        new_ids: set[int] = set()
+        for part in (depends_on or "").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                new_ids.add(int(part))
+            except ValueError:
+                continue
+        existing = set(await store.get_dependencies(ticket_id))
+        for dep in new_ids - existing:
+            await store.add_dependency(ticket_id, dep)
+        for dep in existing - new_ids:
+            await store.remove_dependency(ticket_id, dep)
+    except Exception as e:
+        logger.debug(
+            f"DAG mirror on update_depends_on #{ticket_id} failed: {e}"
+        )
     return _json_dumps(result, indent=2)
+
+
+# ════════════════════════════════════════
+# Soft-dependency DAG Tools
+# ════════════════════════════════════════
+#
+# A "soft dependency" is a recorded relationship `A depends on B`
+# (equivalently: B is a prerequisite/child of A). The dispatcher does
+# NOT consult these — agents decide for themselves whether they're
+# blocked. The DAG is purely for navigation, audit, and context loading.
+
+
+@app.tool()
+@_with_timeout
+async def add_ticket_dependency(ticket_id: int, depends_on: int) -> str:
+    """Record that `ticket_id` depends on `depends_on` in the soft-dependency DAG.
+
+    Idempotent: re-adding an existing edge is a no-op.
+    Rejects self-loops and any edge that would close a cycle.
+
+    Returns JSON: {"ok": true} on success or
+    {"ok": false, "cycle": true, "reason": "..."} when rejected.
+
+    Args:
+        ticket_id: The ticket that has the dependency.
+        depends_on: The ticket it depends on (prerequisite/child).
+    """
+    store = await get_store()
+    result = await store.add_dependency(ticket_id, depends_on)
+    return _json_dumps(result, indent=2)
+
+
+@app.tool()
+@_with_timeout
+async def remove_ticket_dependency(ticket_id: int, depends_on: int) -> str:
+    """Remove an edge from the soft-dependency DAG.
+
+    Returns JSON: {"removed": true} if a row was removed, {"removed": false}
+    if no such edge existed.
+
+    Args:
+        ticket_id: The dependent ticket.
+        depends_on: The prerequisite ticket.
+    """
+    store = await get_store()
+    removed = await store.remove_dependency(ticket_id, depends_on)
+    return _json_dumps({"removed": removed}, indent=2)
+
+
+@app.tool()
+@_with_timeout
+async def get_ticket_dependencies(ticket_id: int) -> str:
+    """Return one-hop tickets that `ticket_id` depends on.
+
+    Args:
+        ticket_id: The dependent ticket.
+    """
+    store = await get_store()
+    deps = await store.get_dependencies(ticket_id)
+    return _json_dumps(deps, indent=2)
+
+
+@app.tool()
+@_with_timeout
+async def get_ticket_dependents(ticket_id: int) -> str:
+    """Return one-hop tickets that depend on `ticket_id`.
+
+    Args:
+        ticket_id: The prerequisite ticket.
+    """
+    store = await get_store()
+    deps = await store.get_dependents(ticket_id)
+    return _json_dumps(deps, indent=2)
+
+
+@app.tool()
+@_with_timeout
+async def get_ticket_descendants(ticket_id: int, max_depth: int = None) -> str:
+    """BFS transitive close downstream from `ticket_id`.
+
+    Returns the IDs of tickets reachable by following "depends on" edges
+    from `ticket_id`. Excludes `ticket_id` itself.
+
+    Args:
+        ticket_id: Starting ticket.
+        max_depth: Optional BFS depth limit (1 = one hop). Omit for unlimited.
+    """
+    store = await get_store()
+    deps = await store.get_descendants(ticket_id, max_depth=max_depth)
+    return _json_dumps(deps, indent=2)
+
+
+@app.tool()
+@_with_timeout
+async def get_ticket_ancestors(ticket_id: int, max_depth: int = None) -> str:
+    """BFS transitive close upstream from `ticket_id`.
+
+    Returns the IDs of tickets that transitively depend on `ticket_id`.
+    Excludes `ticket_id` itself.
+
+    Args:
+        ticket_id: Starting ticket.
+        max_depth: Optional BFS depth limit (1 = one hop). Omit for unlimited.
+    """
+    store = await get_store()
+    deps = await store.get_ancestors(ticket_id, max_depth=max_depth)
+    return _json_dumps(deps, indent=2)
 
 
 # ════════════════════════════════════════
@@ -644,11 +815,30 @@ async def get_parent_chain(ticket_id: int) -> str:
     Each entry includes full detail fields (headline, description, status, etc.).
     Use this to load project-level context when starting work on a task.
 
+    Augments the Leantime chain with any extra dependencies in the
+    soft-dependency DAG (`ticket_dependencies`) that aren't already
+    represented by `dependingTicketId`. Order: Leantime chain first,
+    then DAG-only ancestors (deduped by id).
+
     Args:
         ticket_id: The ticket whose parent chain to fetch.
     """
     client = get_client()
     chain = await client.get_parent_chain(ticket_id)
+    try:
+        store = await get_store()
+        seen = {t.get("id") for t in chain if isinstance(t, dict)}
+        for dep_id in await store.get_descendants(ticket_id):
+            if dep_id in seen:
+                continue
+            extra = await client.get_ticket(dep_id, prune=True)
+            if extra:
+                chain.append(extra)
+                seen.add(dep_id)
+    except Exception as e:
+        logger.debug(
+            f"DAG union on get_parent_chain #{ticket_id} failed: {e}"
+        )
     return _json_dumps(chain, indent=2)
 
 
@@ -661,12 +851,33 @@ async def get_children(ticket_id: int, child_type: str = None) -> str:
     Unlike get_all_subtasks (which only returns type='subtask'), this returns
     children of any type.
 
+    Augments the Leantime result with any extra dependents in the
+    soft-dependency DAG (`ticket_dependencies`) that aren't already
+    represented by `dependingTicketId`. Deduped by id.
+
     Args:
         ticket_id: Parent ticket ID.
         child_type: Optional type filter ('milestone', 'task', 'subtask').
     """
     client = get_client()
     children = await client.get_children(ticket_id, child_type=child_type)
+    try:
+        store = await get_store()
+        existing_ids = {t.get("id") for t in children if isinstance(t, dict)}
+        for dep_id in await store.get_dependents(ticket_id):
+            if dep_id in existing_ids:
+                continue
+            extra = await client.get_ticket(dep_id, prune=True)
+            if not extra:
+                continue
+            if child_type and extra.get("type") != child_type:
+                continue
+            children.append(extra)
+            existing_ids.add(dep_id)
+    except Exception as e:
+        logger.debug(
+            f"DAG union on get_children #{ticket_id} failed: {e}"
+        )
     return _json_dumps(children, indent=2)
 
 
@@ -1688,11 +1899,14 @@ async def _start_auto_dispatch_async():
     if seeded:
         logger.info(f"Seeded {seeded} schedule(s) from agents.yaml")
 
-    # Pub/Sub: backfill existing ticket assignees as subscribers
+    # Pub/Sub: backfill existing ticket assignees as subscribers.
+    # Soft-dep DAG: backfill existing dependingTicketId / milestoneid edges.
+    # Both reuse the same single list_tickets call.
     try:
         all_tickets = await client.list_tickets(status="all", limit=0)
+        ticket_rows = all_tickets.get("tickets", [])
         backfilled = 0
-        for ticket in all_tickets.get("tickets", []):
+        for ticket in ticket_rows:
             assignee = ticket.get("assignee")
             tid = ticket.get("id")
             if assignee and tid:
@@ -1701,6 +1915,12 @@ async def _start_auto_dispatch_async():
                 await store.subscribe(tid, "admin")
         if backfilled:
             logger.info(f"Pub/Sub: backfilled {backfilled} ticket subscription(s)")
+        dag_inserted = await store.backfill_ticket_dependencies(ticket_rows)
+        if dag_inserted:
+            logger.info(
+                f"Soft-dep DAG: backfilled {dag_inserted} edge(s) from "
+                f"dependingTicketId/milestoneid"
+            )
     except Exception as e:
         logger.warning(f"Pub/Sub subscription backfill failed: {e}")
 

@@ -135,6 +135,18 @@ CREATE TABLE IF NOT EXISTS service_locks (
     acquired_at TEXT DEFAULT (datetime('now')),
     expires_at  TEXT NOT NULL
 );
+
+-- Soft-dependency DAG between tickets. Edge (A, B) means
+-- "ticket A depends on ticket B" (B is a prerequisite/child of A).
+-- Cycles are forbidden at write time. Not consulted by the dispatcher.
+CREATE TABLE IF NOT EXISTS ticket_dependencies (
+    ticket_id            INTEGER NOT NULL,
+    depends_on_ticket_id INTEGER NOT NULL,
+    created_at           TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (ticket_id, depends_on_ticket_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tdep_ticket ON ticket_dependencies(ticket_id);
+CREATE INDEX IF NOT EXISTS idx_tdep_dep    ON ticket_dependencies(depends_on_ticket_id);
 """
 
 # Max dispatch events to keep per agent (auto-cleanup on insert)
@@ -1055,3 +1067,214 @@ class AgentStore:
             updated = cursor.rowcount > 0
         await self._db.commit()
         return updated
+
+    # ── Soft-dependency DAG methods ──
+    #
+    # Edge (ticket_id, depends_on_ticket_id) means "ticket_id depends on
+    # depends_on_ticket_id". The dispatcher does NOT consult this table —
+    # it is used purely for navigation, audit, and context loading.
+    # Cycles are rejected at write time.
+
+    async def _would_create_cycle(self, ticket_id: int, depends_on: int) -> bool:
+        """Return True if adding edge (ticket_id -> depends_on) closes a cycle.
+
+        Walks forward from `depends_on` following ticket_dependencies edges
+        (ticket_id -> depends_on_ticket_id). If we reach `ticket_id`, the new
+        edge would close a cycle.
+        """
+        if ticket_id == depends_on:
+            return True
+        visited = {depends_on}
+        frontier = [depends_on]
+        while frontier:
+            placeholders = ", ".join("?" for _ in frontier)
+            async with self._db.execute(
+                f"SELECT depends_on_ticket_id FROM ticket_dependencies "
+                f"WHERE ticket_id IN ({placeholders})",
+                frontier,
+            ) as cursor:
+                rows = await cursor.fetchall()
+            next_frontier = []
+            for row in rows:
+                child = row["depends_on_ticket_id"]
+                if child == ticket_id:
+                    return True
+                if child not in visited:
+                    visited.add(child)
+                    next_frontier.append(child)
+            frontier = next_frontier
+        return False
+
+    async def add_dependency(self, ticket_id: int, depends_on: int) -> dict:
+        """Insert an edge ticket_id depends on depends_on.
+
+        Returns:
+            {"ok": True} when inserted (or already present — idempotent),
+            {"ok": False, "cycle": True, "reason": ...} when the edge would
+            close a cycle (including self-loop).
+        """
+        if ticket_id == depends_on:
+            return {
+                "ok": False,
+                "cycle": True,
+                "reason": f"self-loop rejected: ticket {ticket_id} cannot depend on itself",
+            }
+        # If the edge already exists, nothing to do — and cycle check is moot.
+        async with self._db.execute(
+            "SELECT 1 FROM ticket_dependencies "
+            "WHERE ticket_id = ? AND depends_on_ticket_id = ?",
+            (ticket_id, depends_on),
+        ) as cursor:
+            if await cursor.fetchone():
+                return {"ok": True}
+        if await self._would_create_cycle(ticket_id, depends_on):
+            return {
+                "ok": False,
+                "cycle": True,
+                "reason": (
+                    f"cycle rejected: adding {ticket_id} -> {depends_on} "
+                    f"would close a cycle"
+                ),
+            }
+        await self._db.execute(
+            "INSERT OR IGNORE INTO ticket_dependencies "
+            "(ticket_id, depends_on_ticket_id) VALUES (?, ?)",
+            (ticket_id, depends_on),
+        )
+        await self._db.commit()
+        return {"ok": True}
+
+    async def remove_dependency(self, ticket_id: int, depends_on: int) -> bool:
+        """Remove an edge. Returns True if a row was removed, False otherwise."""
+        async with self._db.execute(
+            "DELETE FROM ticket_dependencies "
+            "WHERE ticket_id = ? AND depends_on_ticket_id = ?",
+            (ticket_id, depends_on),
+        ) as cursor:
+            removed = cursor.rowcount > 0
+        await self._db.commit()
+        return removed
+
+    async def get_dependencies(self, ticket_id: int) -> list[int]:
+        """One-hop downstream: tickets that this ticket depends on."""
+        async with self._db.execute(
+            "SELECT depends_on_ticket_id FROM ticket_dependencies "
+            "WHERE ticket_id = ? ORDER BY depends_on_ticket_id",
+            (ticket_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [row["depends_on_ticket_id"] for row in rows]
+
+    async def get_dependents(self, ticket_id: int) -> list[int]:
+        """One-hop upstream: tickets that depend on this ticket."""
+        async with self._db.execute(
+            "SELECT ticket_id FROM ticket_dependencies "
+            "WHERE depends_on_ticket_id = ? ORDER BY ticket_id",
+            (ticket_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [row["ticket_id"] for row in rows]
+
+    async def get_descendants(
+        self, ticket_id: int, max_depth: Optional[int] = None
+    ) -> list[int]:
+        """Transitive close downstream (dependencies of dependencies). BFS.
+
+        Returns ticket IDs in BFS order. Excludes the starting ticket_id.
+        """
+        return await self._bfs_walk(
+            ticket_id, max_depth, direction="down"
+        )
+
+    async def get_ancestors(
+        self, ticket_id: int, max_depth: Optional[int] = None
+    ) -> list[int]:
+        """Transitive close upstream (tickets that transitively depend on this). BFS.
+
+        Returns ticket IDs in BFS order. Excludes the starting ticket_id.
+        """
+        return await self._bfs_walk(
+            ticket_id, max_depth, direction="up"
+        )
+
+    async def _bfs_walk(
+        self,
+        ticket_id: int,
+        max_depth: Optional[int],
+        direction: str,
+    ) -> list[int]:
+        """BFS walk through ticket_dependencies in the given direction.
+
+        direction='down': follow ticket_id -> depends_on_ticket_id (descendants).
+        direction='up':   follow depends_on_ticket_id -> ticket_id (ancestors).
+        """
+        if direction == "down":
+            select_col = "depends_on_ticket_id"
+            where_col = "ticket_id"
+        elif direction == "up":
+            select_col = "ticket_id"
+            where_col = "depends_on_ticket_id"
+        else:
+            raise ValueError(f"invalid direction: {direction}")
+
+        result: list[int] = []
+        visited = {ticket_id}
+        frontier = [ticket_id]
+        depth = 0
+        while frontier:
+            if max_depth is not None and depth >= max_depth:
+                break
+            placeholders = ", ".join("?" for _ in frontier)
+            async with self._db.execute(
+                f"SELECT DISTINCT {select_col} FROM ticket_dependencies "
+                f"WHERE {where_col} IN ({placeholders})",
+                frontier,
+            ) as cursor:
+                rows = await cursor.fetchall()
+            next_frontier = []
+            for row in rows:
+                tid = row[select_col]
+                if tid not in visited:
+                    visited.add(tid)
+                    result.append(tid)
+                    next_frontier.append(tid)
+            frontier = next_frontier
+            depth += 1
+        return result
+
+    async def backfill_ticket_dependencies(
+        self, tickets: list[dict]
+    ) -> int:
+        """Backfill ticket_dependencies from existing tickets' dependingTicketId
+        and milestoneid columns.
+
+        Idempotent (uses INSERT OR IGNORE). Skips self-references and zero/None
+        parents. Returns the number of rows actually inserted.
+
+        Args:
+            tickets: list of ticket dicts that include 'id', 'dependingTicketId',
+                     and (optionally) 'milestoneid'.
+        """
+        inserted = 0
+        for t in tickets:
+            tid = t.get("id")
+            if not tid:
+                continue
+            for parent_field in ("dependingTicketId", "milestoneid"):
+                parent = t.get(parent_field) or 0
+                try:
+                    parent = int(parent)
+                except (TypeError, ValueError):
+                    continue
+                if not parent or parent == tid:
+                    continue
+                async with self._db.execute(
+                    "INSERT OR IGNORE INTO ticket_dependencies "
+                    "(ticket_id, depends_on_ticket_id) VALUES (?, ?)",
+                    (tid, parent),
+                ) as cursor:
+                    if cursor.rowcount > 0:
+                        inserted += 1
+        if inserted:
+            await self._db.commit()
+        return inserted
