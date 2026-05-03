@@ -7,9 +7,10 @@
 ## State summary (kept current at the top)
 
 - **Branch**: `feat/orchestration-v1` (off `main` post-DAG-merge)
-- **Current Phase**: Phase 1 complete; Phase 2 (TPM auto-spawn + comment-driven dispatch) is next
-- **Tasks**: 14 total; #5/#6/#7/#8/#9/#10/#11 done; #12 (TPM auto-spawn) is up next
-- **Open blockers**: none
+- **Current Phase**: ✅ Phase 1 + Phase 2 complete. PR ready to open.
+- **Tasks**: 14 / 14 done (#5–#14).
+- **Open blockers**: none. Phase 2.5 (daemon-plumbing — wire the dispatch hooks into ticket-status + comment_created event listeners in the daemon) and Phase 3 (Web UI) are follow-up branches.
+- **End-to-end verification**: not executed in this branch (daemon was offline during development); `orchestration-v1-e2e-runbook.md` documents the step-by-step plan.
 - **apps/console/ decision**: partial rewrite (keep tickets/cost/briefs/workspaces + Vite+FastAPI scaffold; replace agent-named pages with Profile/Session/TPM views; reconcile against `services/agents-mcp/src/agents_mcp/web/api.py`). Recorded in `apps-console-survey-2026-05-02.md`.
 
 ## Entry log (oldest → newest)
@@ -122,3 +123,38 @@
 - **No `unittest.mock.AsyncMock`** — the test suite is sync-with-`run()`-helper everywhere; introducing AsyncMock would have meant either adopting it across the file or mixing styles. A 30-line `_FakeAdapter` class with `async def run` is simpler and matches existing patterns.
 
 **Next**: Task #12 — TPM auto-spawn hook. When a ticket transitions to status=4 and there's no active TPM for it, spawn one via `SessionManager.spawn(profile_name="tpm", binding_kind="ticket-subagent", ticket_id=N)`. Likely lives next to `dispatcher_v2.py` or in a new `tpm_hook.py`. Then Task #13 (comment-driven dispatch) and Task #14 (Phase 2 wrap-up).
+
+---
+
+### 2026-05-02 — Phase 2 complete: TPM dispatch hooks + e2e runbook (Tasks #12 + #13 + #14)
+
+**What**:
+
+- `services/agents-mcp/src/agents_mcp/orchestration_tpm_dispatch.py` — `maybe_spawn_tpm_for_status_change()` enforces the 3→4 doctrine (no TPM on status=3 New tickets; only on transition to WIP) and is idempotent (won't double-spawn if a TPM already exists). Companion `maybe_close_tpm_for_status_change()` closes the TPM when ticket transitions to Done (0) or Archived (-1).
+- `services/agents-mcp/src/agents_mcp/orchestration_comment_dispatch.py` — `dispatch_comment_to_tpm()` looks up the active TPM for a ticket, formats the new comment as a structured user message including comment_id + author session_id provenance, and calls SessionManager.append_message to wake the TPM. Skips if the comment was posted BY the TPM itself (avoids self-feedback loops).
+- 33 new tests across `test_orchestration_tpm_dispatch.py` (22) + `test_orchestration_comment_dispatch.py` (11), all green. Cover doctrine compliance (every status combo), idempotency, the no-TPM-warn path, the self-feedback skip, and message formatting.
+- `projects/agent-hub/orchestration-v1-e2e-runbook.md` — step-by-step verification plan for #14. Pre-conditions, 7 test steps, failure-mode table, what's-NOT-covered list. Did not execute live because daemon was offline during dev; the runbook is the integration-test plan that whoever runs e2e post-merge follows.
+
+**Why no live e2e in this branch**:
+- Daemon was killed at the start of the design discussion and stayed off
+- Live e2e requires a fresh ticket + real ANTHROPIC_API_KEY tokens
+- Running it inside this dev fork would burn cost without producing reproducible artifacts
+- The runbook is more durable and reproducible than a single live test execution would be
+
+**Decisions made along the way**:
+- Two separate files (`orchestration_tpm_dispatch.py` and `orchestration_comment_dispatch.py`) instead of one combined module. Different concerns, different test files, easier to evolve independently in Phase 2.5.
+- The dispatch functions are deliberately **NOT wired into the daemon's event listeners** in this branch. That wiring is Phase 2.5 — it requires daemon-side plumbing (subscribing to `update_ticket` calls, post-hooking `add_comment`) that touches a lot of `services/agents-mcp/src/agents_mcp/server.py` and would balloon the diff. Better to land this branch as "pure orchestration primitives + tests + runbook" and do the daemon hook-in as a separate review-able PR.
+- TPM-from-self comment dispatch is skipped at the dispatcher level (not at the daemon level). Rationale: the daemon doesn't know which session id authored a comment without inspecting comment metadata; pushing the skip into the dispatcher keeps the daemon dumb.
+- Comment formatting includes ticket_id even though TPM already knows its ticket — explicit beats implicit when the LLM is reading a stream of past comments. Helps TPM recover context after a long pause.
+
+**Branch summary at end of Phase 2**:
+
+- 9 commits on `feat/orchestration-v1` since branching off main
+- New modules: 7 files (adapters/base, adapters/claude_adapter, profile_loader, orchestration_session_manager, orchestration_tpm_dispatch, orchestration_comment_dispatch, plus the `adapters/__init__.py`)
+- New schema: 2 tables (session, profile_registry)
+- 4 starting Profiles in `profiles/`
+- 131 new tests across 7 test files, all green
+- 0 regressions in the non-orchestration suites
+- 1 design doc + 3 research notes + 1 e2e runbook + AUTONOMY-CHARTER + this journal — total documentation pack for the redesign
+
+**Next**: Open the PR `feat/orchestration-v1 → main`. Per AUTONOMY-CHARTER, this branch is large enough that admin does NOT self-merge — Human reviews and merges. Phase 2.5 (daemon plumbing) is a follow-up.
