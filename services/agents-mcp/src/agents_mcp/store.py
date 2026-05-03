@@ -147,6 +147,51 @@ CREATE TABLE IF NOT EXISTS ticket_dependencies (
 );
 CREATE INDEX IF NOT EXISTS idx_tdep_ticket ON ticket_dependencies(ticket_id);
 CREATE INDEX IF NOT EXISTS idx_tdep_dep    ON ticket_dependencies(depends_on_ticket_id);
+
+-- Orchestration v1: Session metadata.
+-- A Session is a single conversation thread bound to a Profile and (optionally)
+-- to a Ticket and/or a channel. Conversation history itself lives in the
+-- Adapter's native store (e.g. Claude Agent SDK's JSONL files at
+-- ~/.claude/projects/<encoded-cwd>/<session-id>.jsonl); we only hold metadata
+-- and a native_handle that the Adapter uses to locate that history.
+--
+-- See: projects/agent-hub/design/agent-orchestration-v1-2026-05-02.md
+CREATE TABLE IF NOT EXISTS session (
+    id                TEXT PRIMARY KEY,
+    profile_name      TEXT NOT NULL,
+    ticket_id         INTEGER,
+    binding_kind      TEXT NOT NULL CHECK (
+                          binding_kind IN ('ticket-subagent', 'human-channel', 'standalone')
+                      ),
+    channel_id        TEXT,                 -- e.g. "telegram:<chat_id>", "web:<conn_id>", null otherwise
+    parent_session_id TEXT,                 -- e.g. TPM session that spawned this subagent
+    status            TEXT NOT NULL CHECK (status IN ('active', 'closed')) DEFAULT 'active',
+    runner_type       TEXT NOT NULL,        -- e.g. "claude-sonnet-4.6" — selects Adapter
+    native_handle     TEXT,                 -- Adapter-specific: for Claude, the SDK session_id
+    created_at        TEXT DEFAULT (datetime('now')),
+    closed_at         TEXT,
+    cost_tokens_in    INTEGER DEFAULT 0,
+    cost_tokens_out   INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_session_ticket   ON session(ticket_id) WHERE ticket_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_session_channel  ON session(channel_id) WHERE channel_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_session_parent   ON session(parent_session_id) WHERE parent_session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_session_active   ON session(status, profile_name) WHERE status = 'active';
+
+-- Orchestration v1: Profile registry — track which Profile definitions
+-- have been seen by the daemon. Source of truth for Profile content lives
+-- in profiles/<name>/profile.md on disk; this table is a discovery cache
+-- so we can list / lookup Profiles via the API without scanning the FS.
+-- Entries are upserted on daemon boot and on Profile file changes.
+CREATE TABLE IF NOT EXISTS profile_registry (
+    name            TEXT PRIMARY KEY,
+    description     TEXT NOT NULL DEFAULT '',
+    runner_type     TEXT NOT NULL,
+    file_path       TEXT NOT NULL,        -- absolute path to profile.md
+    file_hash       TEXT NOT NULL,        -- sha256 of the file content; used to detect changes
+    loaded_at       TEXT DEFAULT (datetime('now')),
+    last_used_at    TEXT
+);
 """
 
 # Max dispatch events to keep per agent (auto-cleanup on insert)
@@ -1283,3 +1328,231 @@ class AgentStore:
         if inserted:
             await self._db.commit()
         return inserted
+
+    # ── Orchestration v1: Session methods ──
+
+    async def create_session(
+        self,
+        session_id: str,
+        profile_name: str,
+        binding_kind: str,
+        runner_type: str,
+        ticket_id: Optional[int] = None,
+        channel_id: Optional[str] = None,
+        parent_session_id: Optional[str] = None,
+        native_handle: Optional[str] = None,
+    ) -> dict:
+        """Create a new session row.
+
+        ``binding_kind`` must be one of: 'ticket-subagent', 'human-channel',
+        'standalone'. The CHECK constraint enforces this at the SQLite level.
+
+        Returns the created session as a dict. Raises sqlite3.IntegrityError
+        if ``session_id`` already exists.
+        """
+        await self._db.execute(
+            "INSERT INTO session "
+            "(id, profile_name, ticket_id, binding_kind, channel_id, "
+            " parent_session_id, status, runner_type, native_handle) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)",
+            (
+                session_id,
+                profile_name,
+                ticket_id,
+                binding_kind,
+                channel_id,
+                parent_session_id,
+                runner_type,
+                native_handle,
+            ),
+        )
+        await self._db.commit()
+        result = await self.get_session(session_id)
+        assert result is not None  # we just inserted it
+        return result
+
+    async def get_session(self, session_id: str) -> Optional[dict]:
+        """Look up a session by id. Returns None if not found."""
+        async with self._db.execute(
+            "SELECT * FROM session WHERE id = ?", (session_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def update_session_native_handle(
+        self, session_id: str, native_handle: str
+    ) -> bool:
+        """Set the Adapter-specific handle (e.g. SDK session_id) for a session.
+
+        Called by the Adapter on first turn when it's just learned the handle
+        from the SDK. Idempotent — overwriting with the same value is fine.
+        Returns True if a row was updated.
+        """
+        async with self._db.execute(
+            "UPDATE session SET native_handle = ? WHERE id = ?",
+            (native_handle, session_id),
+        ) as cursor:
+            updated = cursor.rowcount > 0
+        if updated:
+            await self._db.commit()
+        return updated
+
+    async def add_session_cost(
+        self, session_id: str, tokens_in: int, tokens_out: int
+    ) -> bool:
+        """Increment a session's cumulative token counters.
+
+        Called by the Adapter after each LLM call. Returns True if the
+        session exists and was updated.
+        """
+        async with self._db.execute(
+            "UPDATE session SET "
+            "  cost_tokens_in  = cost_tokens_in  + ?, "
+            "  cost_tokens_out = cost_tokens_out + ? "
+            "WHERE id = ?",
+            (tokens_in, tokens_out, session_id),
+        ) as cursor:
+            updated = cursor.rowcount > 0
+        if updated:
+            await self._db.commit()
+        return updated
+
+    async def close_session(self, session_id: str) -> bool:
+        """Mark a session as closed. Idempotent.
+
+        Closed sessions remain in the table for audit / replay; they're just
+        no longer active recipients of messages. Returns True if the row was
+        updated (i.e. it was active and is now closed). Returns False if the
+        session doesn't exist or was already closed.
+        """
+        async with self._db.execute(
+            "UPDATE session SET status = 'closed', closed_at = datetime('now') "
+            "WHERE id = ? AND status = 'active'",
+            (session_id,),
+        ) as cursor:
+            updated = cursor.rowcount > 0
+        if updated:
+            await self._db.commit()
+        return updated
+
+    async def list_sessions(
+        self,
+        ticket_id: Optional[int] = None,
+        channel_id: Optional[str] = None,
+        profile_name: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """List sessions matching the given filters. All filters optional.
+
+        Ordered by created_at DESC (newest first).
+        """
+        clauses = []
+        params: list = []
+        if ticket_id is not None:
+            clauses.append("ticket_id = ?")
+            params.append(ticket_id)
+        if channel_id is not None:
+            clauses.append("channel_id = ?")
+            params.append(channel_id)
+        if profile_name is not None:
+            clauses.append("profile_name = ?")
+            params.append(profile_name)
+        if status is not None:
+            if status not in ("active", "closed"):
+                raise ValueError(f"invalid status: {status!r}")
+            clauses.append("status = ?")
+            params.append(status)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = f"SELECT * FROM session{where} ORDER BY created_at DESC LIMIT ?"
+        params.append(int(limit))
+        async with self._db.execute(sql, tuple(params)) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def get_active_tpm_for_ticket(self, ticket_id: int) -> Optional[dict]:
+        """Find the active TPM session bound to a ticket, if any.
+
+        Convention: TPM sessions have ``profile_name='tpm'`` and
+        ``binding_kind='ticket-subagent'`` and ``parent_session_id IS NULL``
+        (the TPM is the root of the per-ticket session tree).
+
+        Returns the most recent active TPM, or None if there's no active TPM.
+        Multiple active TPMs for the same ticket would be a bug; we return
+        the newest and let callers escalate if they detect duplicates.
+        """
+        async with self._db.execute(
+            "SELECT * FROM session WHERE ticket_id = ? "
+            "AND profile_name = 'tpm' "
+            "AND binding_kind = 'ticket-subagent' "
+            "AND parent_session_id IS NULL "
+            "AND status = 'active' "
+            "ORDER BY created_at DESC LIMIT 1",
+            (ticket_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    # ── Orchestration v1: Profile registry methods ──
+
+    async def upsert_profile_registry(
+        self,
+        name: str,
+        description: str,
+        runner_type: str,
+        file_path: str,
+        file_hash: str,
+    ) -> dict:
+        """Register or update a Profile in the discovery cache.
+
+        Called by the daemon's Profile loader on boot and on file change
+        events. The actual Profile content (system prompt, tool list, etc.)
+        is read from ``file_path`` at session-creation time, NOT cached here
+        — this table is just for listing / lookup.
+        """
+        await self._db.execute(
+            "INSERT INTO profile_registry "
+            "(name, description, runner_type, file_path, file_hash, loaded_at) "
+            "VALUES (?, ?, ?, ?, ?, datetime('now')) "
+            "ON CONFLICT(name) DO UPDATE SET "
+            "  description = excluded.description, "
+            "  runner_type = excluded.runner_type, "
+            "  file_path   = excluded.file_path, "
+            "  file_hash   = excluded.file_hash, "
+            "  loaded_at   = excluded.loaded_at",
+            (name, description, runner_type, file_path, file_hash),
+        )
+        await self._db.commit()
+        result = await self.get_profile_registry(name)
+        assert result is not None
+        return result
+
+    async def get_profile_registry(self, name: str) -> Optional[dict]:
+        """Look up one registered Profile by name."""
+        async with self._db.execute(
+            "SELECT * FROM profile_registry WHERE name = ?", (name,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def list_profile_registry(self) -> list[dict]:
+        """List all registered Profiles, ordered by name."""
+        async with self._db.execute(
+            "SELECT * FROM profile_registry ORDER BY name"
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def touch_profile_used(self, name: str) -> None:
+        """Mark a Profile as having been used (for last-used-at tracking).
+
+        Called when a session for this Profile is created. Best-effort: if
+        the Profile isn't registered yet, this is a no-op (the registry is
+        a discovery cache, not a foreign-key constraint).
+        """
+        await self._db.execute(
+            "UPDATE profile_registry SET last_used_at = datetime('now') "
+            "WHERE name = ?",
+            (name,),
+        )
+        await self._db.commit()
