@@ -55,48 +55,87 @@ class SendResult:
 def build_send_script(chat_name: str, body: str) -> str:
     """Render the AppleScript that sends ``body`` to ``chat_name``.
 
+    Verified live against WeChat for Mac 4.x on 2026-05-02 (admin).
+
     The structure is intentionally linear — no branching — because debugging
     a multi-step UI script that branches is painful. If a step fails, the
     whole script errors out and the failure mode is recoverable (caller
     retries; nothing was sent).
 
-    The ``delay`` values are deliberately conservative. WeChat 3.8.x is
-    sometimes sluggish to render the search results list; under-tuning the
-    delay leads to "Return pressed before the chat opened" which silently
-    closes the search palette.
+    Critical CJK fix
+    ----------------
+    The original implementation used ``keystroke "<name>"`` for both the
+    chat-name search and the message body. This silently fails for CJK
+    input on macOS: ``keystroke`` posts virtual key events through whatever
+    IME is active, and most IMEs route Chinese characters through a
+    composition buffer that the MCP can't drive — the search field ends up
+    populated with literal romaji like ``a a a a a a`` instead of "老婆".
+
+    Symptom is a textbook pitfall #14 ("DOM .click() returned" ≠ "modal
+    opened"): osascript exits 0 and ``ok=True`` propagates back, but no
+    message was sent — the search just landed on whatever IME-mangled
+    fallback text happened to match.
+
+    Workaround: write the value to the system clipboard and paste with
+    ``Cmd+V``. macOS pastes verbatim, bypassing the IME entirely. This
+    works for 1:1 chats, group chats, mixed CJK / emoji bodies, and any
+    contact name that isn't ASCII. The cost is one extra clipboard write
+    per send.
+
+    The ``delay`` values are deliberately conservative. WeChat 4.x can take
+    ~300-500ms to render the search dropdown when the contact list is
+    large; under-tuning the delay leads to "Return pressed before the chat
+    opened" which silently closes the search palette and types the body
+    into nowhere.
     """
     safe_name = escape_applescript_string(chat_name)
     safe_body = escape_applescript_string(body)
     return (
+        # Stage 0: Set chat-name on clipboard before activating WeChat (so
+        # the Cmd+V paste below picks up the right value).
+        f'set the clipboard to "{safe_name}"\n'
         'tell application "WeChat" to activate\n'
         'delay 0.5\n'
         'tell application "System Events"\n'
         '  tell process "WeChat"\n'
-        # Open the search palette. Cmd+F is the documented shortcut for
-        # WeChat for Mac's conversation switcher (3.8.x).
-        '    keystroke "f" using {command down}\n'
-        '    delay 0.4\n'
-        # Type the chat name into the search field.
-        f'    keystroke "{safe_name}"\n'
-        '    delay 0.6\n'
-        # Open the top match.
-        '    key code 36\n'  # Return
-        '    delay 0.6\n'
-        # Focus the message input. WeChat for Mac binds the input as the
-        # default focus when a chat is opened, but a stray focus on the
-        # message list (e.g. after arrow-key search) means typing would do
-        # nothing. Tab moves focus to the input area on 3.8.x; we then
-        # follow with Cmd+A to select-all (no-op if input was empty) and
-        # Delete to clear any draft text the user had typed.
-        '    keystroke tab\n'
+        # Dismiss any leftover modal/search overlay (Esc twice — one for the
+        # search dropdown, one for the conversation switcher itself if it
+        # was already open).
+        '    key code 53\n'
         '    delay 0.2\n'
+        '    key code 53\n'
+        '    delay 0.2\n'
+        # Open the search palette. Cmd+F is the conversation switcher in
+        # both WeChat 3.8.x and 4.x on macOS.
+        '    keystroke "f" using {command down}\n'
+        '    delay 0.5\n'
+        # Clear any leftover search text, then paste the chat name.
         '    keystroke "a" using {command down}\n'
         '    key code 51\n'  # Delete
-        '    delay 0.1\n'
-        # Type the body and send.
-        f'    keystroke "{safe_body}"\n'
+        '    delay 0.2\n'
+        '    keystroke "v" using {command down}\n'
+        '    delay 0.7\n'
+        # Open the top match.
+        '    key code 36\n'  # Return
+        '    delay 0.7\n'
+        # Focus the message input. Tab moves focus from the chat list to
+        # the input area on 4.x; we then Cmd+A + Delete to clear any draft
+        # text that may have been there.
+        '    keystroke tab\n'
         '    delay 0.3\n'
+        '    keystroke "a" using {command down}\n'
+        '    key code 51\n'  # Delete
+        '    delay 0.2\n'
+        '  end tell\n'
+        'end tell\n'
+        # Stage 1: Set body on clipboard, then paste + send.
+        f'set the clipboard to "{safe_body}"\n'
+        'tell application "System Events"\n'
+        '  tell process "WeChat"\n'
+        '    keystroke "v" using {command down}\n'
+        '    delay 0.4\n'
         '    key code 36\n'  # Return → send
+        '    delay 0.3\n'
         '  end tell\n'
         'end tell\n'
     )

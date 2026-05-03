@@ -9,23 +9,30 @@ from wechat_mcp.sender import build_send_script, send_wechat_message
 
 def test_build_send_script_contains_chat_and_body():
     s = build_send_script("张三", "hello world")
-    # Activate -> System Events -> Cmd+F flow must all be present.
+    # Activate → search palette flow must all be present.
     assert 'tell application "WeChat" to activate' in s
     assert 'keystroke "f" using {command down}' in s
-    assert 'keystroke "张三"' in s
-    assert 'keystroke "hello world"' in s
+    # CJK fix: chat name + body go through the clipboard, not keystroke,
+    # because System Events keystroke routes Chinese through the IME and
+    # produces garbage like "a a a a a" in the WeChat search field.
+    assert 'set the clipboard to "张三"' in s
+    assert 'set the clipboard to "hello world"' in s
+    # Two paste operations (one for chat-name search, one for body).
+    assert s.count('keystroke "v" using {command down}') >= 2
     # Two Returns: one to open the chat, one to send.
     assert s.count("key code 36") >= 2
 
 
-def test_build_send_script_escapes_quotes():
+def test_build_send_script_escapes_quotes_in_clipboard():
     s = build_send_script("Bob", 'say "hi" please')
-    assert 'keystroke "say \\"hi\\" please"' in s
+    # Quotes in body must be escaped inside the AppleScript "set the
+    # clipboard to" literal — otherwise the script syntax errors out.
+    assert 'set the clipboard to "say \\"hi\\" please"' in s
 
 
-def test_build_send_script_escapes_backslashes():
+def test_build_send_script_escapes_backslashes_in_clipboard():
     s = build_send_script("Bob", "path: c:\\foo")
-    assert 'keystroke "path: c:\\\\foo"' in s
+    assert 'set the clipboard to "path: c:\\\\foo"' in s
 
 
 def test_send_rejects_empty_chat_name():
