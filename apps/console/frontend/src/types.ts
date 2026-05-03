@@ -8,33 +8,6 @@ export interface Workspace {
   updated_at: string;
 }
 
-export interface AgentWorkload {
-  in_progress: number;
-  new: number;
-  blocked: number;
-  total_active: number;
-}
-
-export interface AgentProfile {
-  identity: string | null;
-  current_context: string | null;
-  expertise: string | null;
-  updated_at: string | null;
-}
-
-export interface Agent {
-  id: string;
-  role: string;
-  description: string;
-  project: string;
-  work_stream: string;
-  dispatchable: boolean;
-  agent_type: string;
-  tmux_status: 'active' | 'idle' | 'no_window' | 'unavailable';
-  workload: AgentWorkload;
-  profile?: AgentProfile;
-}
-
 export interface Ticket {
   id: number;
   headline: string;
@@ -62,51 +35,147 @@ export interface BriefSummary {
   size_bytes: number;
 }
 
-export interface CostByAgent {
-  agent_id: string;
-  today_usd: number;
-  week_usd: number;
-  lifetime_usd: number;
-  lifetime_messages: number;
+// ── Orchestration v1 (Phase 1+2 test harness, Task #17) ──
+
+export interface Profile {
+  name: string;
+  description: string;
+  runner_type: string;
+  file_path: string;
+  file_hash: string;
+  loaded_at: string | null;
+  last_used_at: string | null;
 }
 
-export interface CostSummary {
-  today_usd: number;
-  week_usd: number;
-  lifetime_usd: number;
-  today_input_tokens: number;
-  today_output_tokens: number;
-  lifetime_input_tokens: number;
-  lifetime_output_tokens: number;
-  top_today: CostByAgent[];
-  by_agent: CostByAgent[];
+export interface Session {
+  id: string;
+  profile_name: string;
+  binding_kind: 'ticket-subagent' | 'human-channel' | 'standalone';
+  ticket_id: number | null;
+  channel_id: string | null;
+  parent_session_id: string | null;
+  status: 'active' | 'closed';
+  runner_type: string;
+  native_handle: string | null;
+  cost_tokens_in: number;
+  cost_tokens_out: number;
+  created_at?: string;
+  closed_at?: string | null;
+}
+
+export interface SpawnSessionBody {
+  profile_name: string;
+  binding_kind: 'ticket-subagent' | 'human-channel' | 'standalone';
+  ticket_id?: number;
+  channel_id?: string;
+  parent_session_id?: string;
+}
+
+export interface AppendMessageResult {
+  assistant_text: string;
+  tokens_in: number;
+  tokens_out: number;
+  native_handle: string;
+}
+
+export interface SessionMessage {
+  role: 'user' | 'assistant';
+  text: string;
+  ts: number; // local epoch ms — for stable React keys
+}
+
+// ── Cost dashboard (Task #18 Part A) ──
+
+export interface CostBySessionRow {
+  id: string;
+  profile_name: string;
+  ticket_id: number | null;
+  channel_id: string | null;
+  status: 'active' | 'closed';
+  cost_tokens_in: number;
+  cost_tokens_out: number;
+  cost_usd: number;
+  created_at: string;
+}
+
+export interface CostByProfileRow {
+  profile_name: string;
+  sessions_count: number;
+  total_tokens_in: number;
+  total_tokens_out: number;
+  total_usd: number;
+  last_used_at: string | null;
+}
+
+export interface CostByTicketRow {
+  ticket_id: number;
+  sessions_count: number;
+  total_tokens_in: number;
+  total_tokens_out: number;
+  total_usd: number;
+  last_used_at: string | null;
+}
+
+export interface CostBucket {
+  tokens_in: number;
+  tokens_out: number;
+  sessions_count: number;
+  usd: number;
+}
+
+export interface CostTotalsResponse {
+  today: CostBucket;
+  week: CostBucket;
+  lifetime: CostBucket;
   pricing: {
     input_per_million: number;
     output_per_million: number;
-    cache_read_per_million: number;
-    cache_write_per_million: number;
     note: string;
   };
 }
 
-export interface TmuxWindow {
+// ── Sessions list + history (Task #18 Part B) ──
+
+export interface RenderedHistoryMessage {
+  role: 'user' | 'assistant';
+  text: string;
+  timestamp: string;
+}
+
+export interface SessionHistoryResponse {
+  messages: RenderedHistoryMessage[];
+  total: number;
+}
+
+export interface ListSessionsResponse {
+  sessions: Session[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+// ── Profile detail (Task #18 Part C) ──
+
+export interface ProfileBody {
   name: string;
-  active: boolean;
+  description: string;
+  runner_type: string;
+  system_prompt: string;
+  mcp_servers: string[];
+  skills: string[];
+  orchestration_tools: boolean;
+  file_path: string;
+  file_hash: string;
 }
 
-export interface TmuxCapture {
-  session: string;
-  window: string;
-  lines_requested: number;
-  raw: boolean;
-  output: string;
+export interface ProfileDetailResponse {
+  registry: Profile;
+  profile: ProfileBody | null;
+  error?: string;
 }
 
-export interface AgentMessage {
-  id: number;
-  from_agent: string;
-  to_agent: string;
-  body: string;
-  created_at: string;
-  read_at: string | null;
+export interface ProfileSessionsResponse {
+  sessions: Session[];
+  total: number;
+  profile_name: string;
 }

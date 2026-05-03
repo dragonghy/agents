@@ -1,105 +1,367 @@
-import { useEffect, useState } from 'react';
-import { getCostSummary } from '../api';
-import type { CostSummary } from '../types';
-
-interface Props {
-  compact?: boolean;
-}
+/**
+ * CostDashboard — orchestration v1 cost view (Task #18 Part A).
+ *
+ * Three-tab pivot over session-derived data:
+ *   1. By Session — paginated table of recent sessions with token + USD.
+ *   2. By Profile — rollup grouped by profile_name.
+ *   3. By Ticket  — rollup grouped by ticket_id.
+ *
+ * Plus today / 7-day / lifetime totals at the top, sourced from
+ * ``session.created_at`` + cost_tokens_in/out (NOT the legacy
+ * token_usage_daily table).
+ *
+ * Per Finding #3 (ui-findings-2026-05-03.md): the by-Agent pivot is gone
+ * because Agent isn't a thing anymore — Profile and Session are the new
+ * dimensions and they are independent.
+ */
+import { useEffect, useMemo, useState } from 'react';
+import {
+  getCostBySession,
+  getCostByProfile,
+  getCostByTicket,
+  getCostTotals,
+} from '../api';
+import type {
+  CostBySessionRow,
+  CostByProfileRow,
+  CostByTicketRow,
+  CostTotalsResponse,
+} from '../types';
 
 const REFRESH_MS = 30000;
+type Tab = 'session' | 'profile' | 'ticket';
 
-function fmt(n: number): string {
-  return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function fmtUsd(n: number | null | undefined): string {
+  return (n ?? 0).toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
 }
 
-export default function CostDashboard({ compact = false }: Props) {
-  const [data, setData] = useState<CostSummary | null>(null);
+function fmtNum(n: number | null | undefined): string {
+  return (n ?? 0).toLocaleString('en-US');
+}
+
+function shortDate(s: string | null | undefined): string {
+  if (!s) return '—';
+  // SQLite gives us "YYYY-MM-DD HH:MM:SS"; show first 16 chars.
+  return s.slice(0, 16);
+}
+
+export default function CostDashboard() {
+  const [totals, setTotals] = useState<CostTotalsResponse | null>(null);
+  const [sessionRows, setSessionRows] = useState<CostBySessionRow[]>([]);
+  const [sessionTotal, setSessionTotal] = useState<number>(0);
+  const [profileRows, setProfileRows] = useState<CostByProfileRow[]>([]);
+  const [ticketRows, setTicketRows] = useState<CostByTicketRow[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>('session');
+  const [offset, setOffset] = useState<number>(0);
+  const limit = 50;
 
   useEffect(() => {
     let cancelled = false;
-    const load = () => {
-      getCostSummary()
-        .then((r) => {
-          if (cancelled) return;
-          setData(r);
-          setError(null);
-        })
-        .catch((e) => {
-          if (cancelled) return;
-          setError(String(e));
-        });
+    const load = async () => {
+      try {
+        const [t, byS, byP, byT] = await Promise.all([
+          getCostTotals(),
+          getCostBySession({ limit, offset }),
+          getCostByProfile(),
+          getCostByTicket(),
+        ]);
+        if (cancelled) return;
+        setTotals(t);
+        setSessionRows(byS.sessions);
+        setSessionTotal(byS.total);
+        setProfileRows(byP.rollup);
+        setTicketRows(byT.rollup);
+        setError(null);
+      } catch (e) {
+        if (cancelled) return;
+        setError(String(e));
+      }
     };
     load();
-    const t = setInterval(load, REFRESH_MS);
+    const id = setInterval(load, REFRESH_MS);
     return () => {
       cancelled = true;
-      clearInterval(t);
+      clearInterval(id);
     };
-  }, []);
+  }, [offset]);
+
+  const totalPages = useMemo(
+    () => Math.max(1, Math.ceil(sessionTotal / limit)),
+    [sessionTotal]
+  );
+  const currentPage = Math.floor(offset / limit) + 1;
 
   if (error) return <div className="error">{error}</div>;
-  if (!data) return <p className="loading">Loading cost summary…</p>;
+  if (!totals) return <p className="loading">Loading cost dashboard…</p>;
 
   return (
     <div>
-      {!compact && (
-        <div className="page-header">
-          <h2>Cost Dashboard</h2>
-          <span className="subtitle">refreshes every 30s</span>
-        </div>
-      )}
+      <div className="page-header">
+        <h2>Cost</h2>
+        <span className="subtitle">
+          sourced from session.cost_tokens_in/out · refreshes every 30s
+        </span>
+      </div>
 
+      {/* ── Top-of-page totals ── */}
       <div className="grid grid-3">
         <div className="card">
           <h3>Today</h3>
-          <div className="metric-big">${fmt(data.today_usd)}</div>
+          <div className="metric-big">${fmtUsd(totals.today.usd)}</div>
           <div className="metric-sub">
-            {data.today_input_tokens.toLocaleString()} in /{' '}
-            {data.today_output_tokens.toLocaleString()} out
+            {fmtNum(totals.today.tokens_in)} in / {fmtNum(totals.today.tokens_out)} out
+            · {fmtNum(totals.today.sessions_count)} sess
           </div>
         </div>
         <div className="card">
           <h3>Last 7 days</h3>
-          <div className="metric-big">${fmt(data.week_usd)}</div>
-          <div className="metric-sub">rolling window</div>
+          <div className="metric-big">${fmtUsd(totals.week.usd)}</div>
+          <div className="metric-sub">
+            {fmtNum(totals.week.tokens_in)} in / {fmtNum(totals.week.tokens_out)} out
+            · {fmtNum(totals.week.sessions_count)} sess
+          </div>
         </div>
         <div className="card">
           <h3>Lifetime</h3>
-          <div className="metric-big">${fmt(data.lifetime_usd)}</div>
+          <div className="metric-big">${fmtUsd(totals.lifetime.usd)}</div>
           <div className="metric-sub">
-            {data.lifetime_input_tokens.toLocaleString()} in /{' '}
-            {data.lifetime_output_tokens.toLocaleString()} out
+            {fmtNum(totals.lifetime.tokens_in)} in / {fmtNum(totals.lifetime.tokens_out)} out
+            · {fmtNum(totals.lifetime.sessions_count)} sess
           </div>
         </div>
       </div>
 
-      {!compact && (
-        <>
-          <div className="card" style={{ marginTop: 16 }}>
-            <h3>By agent (lifetime)</h3>
-            {data.by_agent.length === 0 ? (
-              <div className="empty-state">no usage recorded yet</div>
-            ) : (
-              data.by_agent.map((a) => (
-                <div className="cost-rank" key={a.agent_id}>
-                  <span className="agent">{a.agent_id}</span>
-                  <span>
-                    today ${fmt(a.today_usd)} · week ${fmt(a.week_usd)} · lifetime $
-                    {fmt(a.lifetime_usd)} · {a.lifetime_messages.toLocaleString()} msgs
-                  </span>
-                </div>
-              ))
-            )}
-          </div>
+      {/* ── Tabs ── */}
+      <div
+        style={{
+          marginTop: 24,
+          marginBottom: 8,
+          display: 'flex',
+          gap: 4,
+          borderBottom: '1px solid var(--border)',
+        }}
+      >
+        <TabBtn current={tab} value="session" label="By Session" set={setTab} />
+        <TabBtn current={tab} value="profile" label="By Profile" set={setTab} />
+        <TabBtn current={tab} value="ticket" label="By Ticket" set={setTab} />
+      </div>
 
-          <div className="refresh-note">
-            {data.pricing.note} Input ${data.pricing.input_per_million}/M, Output $
-            {data.pricing.output_per_million}/M, Cache R/W $
-            {data.pricing.cache_read_per_million}/M / ${data.pricing.cache_write_per_million}/M.
-          </div>
-        </>
+      {tab === 'session' && (
+        <SessionTable
+          rows={sessionRows}
+          total={sessionTotal}
+          currentPage={currentPage}
+          totalPages={totalPages}
+          onPrev={() => setOffset(Math.max(0, offset - limit))}
+          onNext={() =>
+            setOffset(
+              Math.min(Math.max(0, sessionTotal - limit), offset + limit)
+            )
+          }
+        />
       )}
+      {tab === 'profile' && <ProfileTable rows={profileRows} />}
+      {tab === 'ticket' && <TicketTable rows={ticketRows} />}
+
+      <div className="refresh-note" style={{ marginTop: 12 }}>
+        {totals.pricing.note} Input ${totals.pricing.input_per_million}/M,
+        Output ${totals.pricing.output_per_million}/M.
+      </div>
     </div>
   );
 }
+
+function TabBtn(props: {
+  current: Tab;
+  value: Tab;
+  label: string;
+  set: (t: Tab) => void;
+}) {
+  const active = props.current === props.value;
+  return (
+    <button
+      onClick={() => props.set(props.value)}
+      style={{
+        padding: '8px 16px',
+        background: active ? 'var(--bg-panel-hover)' : 'transparent',
+        color: active ? 'var(--text)' : 'var(--text-dim)',
+        border: 'none',
+        borderBottom: active
+          ? '2px solid var(--accent, #4f8cff)'
+          : '2px solid transparent',
+        cursor: 'pointer',
+        fontFamily: 'inherit',
+        fontSize: 13,
+      }}
+    >
+      {props.label}
+    </button>
+  );
+}
+
+function SessionTable(props: {
+  rows: CostBySessionRow[];
+  total: number;
+  currentPage: number;
+  totalPages: number;
+  onPrev: () => void;
+  onNext: () => void;
+}) {
+  if (props.rows.length === 0) {
+    return (
+      <div className="card">
+        <div className="empty-state">No sessions recorded yet.</div>
+      </div>
+    );
+  }
+  return (
+    <div className="card">
+      <h3 style={{ marginTop: 0 }}>
+        Sessions · {props.total} total · page {props.currentPage} / {props.totalPages}
+      </h3>
+      <table style={tableStyle}>
+        <thead>
+          <tr>
+            <th style={thStyle}>Session</th>
+            <th style={thStyle}>Profile</th>
+            <th style={thStyle}>Ticket</th>
+            <th style={thStyle}>Status</th>
+            <th style={{ ...thStyle, textAlign: 'right' }}>Tokens in</th>
+            <th style={{ ...thStyle, textAlign: 'right' }}>Tokens out</th>
+            <th style={{ ...thStyle, textAlign: 'right' }}>USD</th>
+            <th style={thStyle}>Created</th>
+          </tr>
+        </thead>
+        <tbody>
+          {props.rows.map((s) => (
+            <tr key={s.id}>
+              <td style={tdStyle}>
+                <code style={{ fontSize: 11 }}>{s.id}</code>
+              </td>
+              <td style={tdStyle}>{s.profile_name}</td>
+              <td style={tdStyle}>
+                {s.ticket_id ? `#${s.ticket_id}` : <span style={{ color: 'var(--text-muted)' }}>—</span>}
+              </td>
+              <td style={tdStyle}>{s.status}</td>
+              <td style={{ ...tdStyle, textAlign: 'right' }}>{fmtNum(s.cost_tokens_in)}</td>
+              <td style={{ ...tdStyle, textAlign: 'right' }}>{fmtNum(s.cost_tokens_out)}</td>
+              <td style={{ ...tdStyle, textAlign: 'right' }}>${fmtUsd(s.cost_usd)}</td>
+              <td style={tdStyle}>{shortDate(s.created_at)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
+        <button onClick={props.onPrev} disabled={props.currentPage <= 1}>
+          ← Prev
+        </button>
+        <button onClick={props.onNext} disabled={props.currentPage >= props.totalPages}>
+          Next →
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ProfileTable({ rows }: { rows: CostByProfileRow[] }) {
+  if (rows.length === 0) {
+    return (
+      <div className="card">
+        <div className="empty-state">No profile rollup yet (no sessions recorded).</div>
+      </div>
+    );
+  }
+  return (
+    <div className="card">
+      <h3 style={{ marginTop: 0 }}>Profiles ({rows.length})</h3>
+      <table style={tableStyle}>
+        <thead>
+          <tr>
+            <th style={thStyle}>Profile</th>
+            <th style={{ ...thStyle, textAlign: 'right' }}>Sessions</th>
+            <th style={{ ...thStyle, textAlign: 'right' }}>Tokens in</th>
+            <th style={{ ...thStyle, textAlign: 'right' }}>Tokens out</th>
+            <th style={{ ...thStyle, textAlign: 'right' }}>USD</th>
+            <th style={thStyle}>Last used</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.profile_name}>
+              <td style={tdStyle}>{r.profile_name}</td>
+              <td style={{ ...tdStyle, textAlign: 'right' }}>{fmtNum(r.sessions_count)}</td>
+              <td style={{ ...tdStyle, textAlign: 'right' }}>{fmtNum(r.total_tokens_in)}</td>
+              <td style={{ ...tdStyle, textAlign: 'right' }}>{fmtNum(r.total_tokens_out)}</td>
+              <td style={{ ...tdStyle, textAlign: 'right' }}>${fmtUsd(r.total_usd)}</td>
+              <td style={tdStyle}>{shortDate(r.last_used_at)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function TicketTable({ rows }: { rows: CostByTicketRow[] }) {
+  if (rows.length === 0) {
+    return (
+      <div className="card">
+        <div className="empty-state">No ticket-bound sessions yet.</div>
+      </div>
+    );
+  }
+  return (
+    <div className="card">
+      <h3 style={{ marginTop: 0 }}>Tickets ({rows.length})</h3>
+      <table style={tableStyle}>
+        <thead>
+          <tr>
+            <th style={thStyle}>Ticket</th>
+            <th style={{ ...thStyle, textAlign: 'right' }}>Sessions</th>
+            <th style={{ ...thStyle, textAlign: 'right' }}>Tokens in</th>
+            <th style={{ ...thStyle, textAlign: 'right' }}>Tokens out</th>
+            <th style={{ ...thStyle, textAlign: 'right' }}>USD</th>
+            <th style={thStyle}>Last activity</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.ticket_id}>
+              <td style={tdStyle}>#{r.ticket_id}</td>
+              <td style={{ ...tdStyle, textAlign: 'right' }}>{fmtNum(r.sessions_count)}</td>
+              <td style={{ ...tdStyle, textAlign: 'right' }}>{fmtNum(r.total_tokens_in)}</td>
+              <td style={{ ...tdStyle, textAlign: 'right' }}>{fmtNum(r.total_tokens_out)}</td>
+              <td style={{ ...tdStyle, textAlign: 'right' }}>${fmtUsd(r.total_usd)}</td>
+              <td style={tdStyle}>{shortDate(r.last_used_at)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+const tableStyle: React.CSSProperties = {
+  width: '100%',
+  borderCollapse: 'collapse',
+  fontSize: 13,
+};
+
+const thStyle: React.CSSProperties = {
+  textAlign: 'left',
+  padding: '6px 8px',
+  borderBottom: '1px solid var(--border)',
+  color: 'var(--text-dim)',
+  fontWeight: 600,
+  fontSize: 11,
+  textTransform: 'uppercase',
+};
+
+const tdStyle: React.CSSProperties = {
+  padding: '6px 8px',
+  borderBottom: '1px solid var(--border)',
+};

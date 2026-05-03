@@ -10,7 +10,7 @@ Thank you for your interest in contributing to Agent-Hub! This guide will help y
 - [uv](https://docs.astral.sh/uv/) (Python package manager)
 - Docker & Docker Compose
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)
-- Node.js 18+ (for Web UI development)
+- Node.js 18+ (for the `apps/console/` web frontend)
 
 ### Local Development
 
@@ -29,16 +29,6 @@ cd services/agents-mcp && uv run python tests/test_staleness.py
 python3 tests/e2e_env.py up --name mytest --preset minimal
 # ... run tests ...
 python3 tests/e2e_env.py down --name mytest
-```
-
-### Web UI Development
-
-```bash
-cd services/agents-mcp/web
-npm install
-npm run dev     # Development server with hot reload
-npm run build   # Production build
-npm test        # Playwright E2E tests
 ```
 
 ## Pull Request Process
@@ -69,7 +59,7 @@ docs: add getting-started guide for new users
 ## Project Structure
 
 - `services/agents-mcp/` — The core MCP daemon (Python). Start here for backend changes.
-- `services/agents-mcp/web/` — The Web UI (React + Vite + Tailwind).
+- `apps/console/` — Read-only web console (Vite + React + FastAPI).
 - `templates/` — Agent template resources (CLAUDE.md, skills). Each subdirectory is a role template.
 - `templates/shared/` — Skills shared across all agents (tasks, daily-journal, etc.).
 - `.claude/agents/` — Native agent definitions (YAML frontmatter + system prompt).

@@ -177,7 +177,79 @@ async def get_store() -> AgentStore:
         db_path = os.path.join(root_dir, ".agents-mcp.db")
         _store = AgentStore(db_path)
         await _store.initialize()
+        # Orchestration v1: bring up the SessionManager + scan Profiles.
+        # Lazy + best-effort — if profiles/ doesn't exist or scan fails the
+        # daemon must still come up; orchestration just won't auto-spawn.
+        await _ensure_orchestration_ready(root_dir)
     return _store
+
+
+# Orchestration v1 singletons — populated by _ensure_orchestration_ready,
+# consumed by the dispatch hooks wired into update_ticket / add_comment.
+_session_manager = None  # type: ignore[var-annotated]
+_orchestration_ready = False
+
+
+async def _ensure_orchestration_ready(root_dir: str) -> None:
+    """Best-effort orchestration v1 boot.
+
+    Builds a module-level :class:`SessionManager` bound to ``profiles/``
+    under ``root_dir`` and runs :class:`ProfileLoader.scan` once so
+    ``profile_registry`` reflects what's on disk. Called from
+    :func:`get_store` right after ``store.initialize()``.
+
+    Failures are swallowed (logged at warning) — orchestration is an
+    overlay; if profiles/ doesn't exist (e.g. legacy install) the daemon
+    must still serve the rest of its MCP surface.
+    """
+    global _session_manager, _orchestration_ready
+    if _orchestration_ready:
+        return
+    try:
+        from pathlib import Path
+
+        from .orchestration_session_manager import SessionManager
+        from .profile_loader import ProfileLoader
+
+        profiles_dir = Path(root_dir) / "profiles"
+        _session_manager = SessionManager(
+            _store, profiles_dir, task_client=get_client()
+        )
+        if profiles_dir.exists():
+            try:
+                results = await ProfileLoader(profiles_dir, _store).scan()
+                logger.info(
+                    "Orchestration v1: profile scan complete (%d profiles)",
+                    len(results),
+                )
+            except Exception:
+                logger.warning(
+                    "Orchestration v1: profile scan failed; continuing without "
+                    "registry refresh",
+                    exc_info=True,
+                )
+        else:
+            logger.info(
+                "Orchestration v1: profiles_dir %s does not exist; skipping scan",
+                profiles_dir,
+            )
+    except Exception:
+        logger.warning(
+            "Orchestration v1: SessionManager init failed; auto-spawn / "
+            "comment dispatch hooks will be no-ops",
+            exc_info=True,
+        )
+        _session_manager = None
+    _orchestration_ready = True
+
+
+def _get_session_manager():
+    """Return the orchestration v1 SessionManager, or None if unavailable.
+
+    Used by the dispatch hooks wired into update_ticket / add_comment.
+    Returning ``None`` is a documented "skip orchestration this call" signal.
+    """
+    return _session_manager
 
 
 # ════════════════════════════════════════
@@ -492,7 +564,69 @@ async def update_ticket(
         kwargs["priority"] = priority
     if tags is not None:
         kwargs["tags"] = tags
+
+    # Capture old_status BEFORE the update so we can detect the
+    # canonical 3→4 transition for TPM auto-spawn and the 4→0/-1
+    # transition for TPM auto-close. Best-effort — if the lookup fails
+    # we just skip the orchestration hook below.
+    old_status = None
+    if status is not None:
+        try:
+            existing = await client.get_ticket(ticket_id, prune=True)
+            if existing:
+                old_status = existing.get("status")
+        except Exception:
+            logger.debug(
+                f"update_ticket: pre-fetch of ticket #{ticket_id} failed; "
+                f"skipping TPM dispatch"
+            )
+
     result = await client.update_ticket(ticket_id, project_id, assignee=assignee, **kwargs)
+
+    # Orchestration v1: TPM auto-spawn / auto-close on status transitions.
+    # Only fires when status was actually provided AND the value changed.
+    # Failures are caught + logged so the primary update_ticket return
+    # path is never affected.
+    if (
+        status is not None
+        and old_status is not None
+        and int(old_status) != int(status)
+    ):
+        sm = _get_session_manager()
+        if sm is not None:
+            try:
+                from .orchestration_tpm_dispatch import (
+                    maybe_close_tpm_for_status_change,
+                    maybe_spawn_tpm_for_status_change,
+                )
+
+                store = await get_store()
+                spawned_id = await maybe_spawn_tpm_for_status_change(
+                    sm,
+                    store,
+                    ticket_id=ticket_id,
+                    old_status=int(old_status),
+                    new_status=int(status),
+                )
+                if spawned_id:
+                    logger.info(
+                        f"Auto-spawned TPM session {spawned_id} for ticket {ticket_id}"
+                    )
+
+                closed = await maybe_close_tpm_for_status_change(
+                    store, ticket_id=ticket_id, new_status=int(status)
+                )
+                if closed:
+                    logger.info(
+                        f"Closed TPM for ticket {ticket_id} (status={status})"
+                    )
+            except Exception:
+                logger.exception(
+                    f"TPM dispatch hook failed for ticket {ticket_id} "
+                    f"status change"
+                )
+                # Do NOT re-raise — primary update_ticket succeeded.
+
     # Pub/Sub: notify on status change or assignee change
     try:
         changes = []
@@ -533,7 +667,13 @@ async def get_comments(
 
 @app.tool()
 @_with_timeout
-async def add_comment(module: str, module_id: int, comment: str, author: str = None) -> str:
+async def add_comment(
+    module: str,
+    module_id: int,
+    comment: str,
+    author: str = None,
+    author_session_id: str = None,
+) -> str:
     """Add a comment to a ticket or other module.
 
     Args:
@@ -541,9 +681,47 @@ async def add_comment(module: str, module_id: int, comment: str, author: str = N
         module_id: ID of the module entity.
         comment: Comment text.
         author: Agent ID of the comment author (e.g. 'dev-alex'). Optional.
+        author_session_id: Orchestration v1 session id of the author, when
+            the comment is posted by an agent session (used to suppress
+            self-feedback in the TPM dispatch hook). ``None`` for
+            Human-authored comments.
     """
     client = get_client()
     result = await client.add_comment(module, module_id, comment, author=author)
+
+    # Orchestration v1: forward new ticket comments into the active TPM
+    # session for the same ticket, if any. Failures are caught + logged so
+    # the primary add_comment return path is never affected.
+    if module in ("ticket", "tickets"):
+        sm = _get_session_manager()
+        if sm is not None:
+            try:
+                from .orchestration_comment_dispatch import (
+                    dispatch_comment_to_tpm,
+                )
+
+                store = await get_store()
+                # add_comment returns the new comment_id (lastrowid) from
+                # the SQLite client. Be defensive in case of None / dict
+                # shape from a future Leantime backend.
+                comment_id = result if isinstance(result, int) else (
+                    result.get("id") if isinstance(result, dict) else 0
+                )
+                await dispatch_comment_to_tpm(
+                    sm,
+                    store,
+                    ticket_id=module_id,
+                    comment_id=comment_id or 0,
+                    comment_body=comment,
+                    author_session_id=author_session_id,
+                )
+            except Exception:
+                logger.exception(
+                    f"TPM comment dispatch failed for ticket {module_id} "
+                    f"comment {result}"
+                )
+                # Do NOT re-raise.
+
     # Pub/Sub: notify subscribers on ticket comment
     try:
         if module in ("ticket", "tickets"):
@@ -2092,54 +2270,40 @@ def main():
 
         http_app = app.http_app(transport="sse")
 
-        # Mount REST API for Display UI
-        from agents_mcp.web.api import create_api_router
-        from agents_mcp.web.events import websocket_endpoint
-        from starlette.routing import WebSocketRoute
+        # Mount REST API surfaces:
+        # - /api          → Telegram bridge (5 routes preserved from old web/api.py)
+        # - /api/v1/orchestration → orchestration session/profile endpoints (MVTH + future)
+        # The predecessor SPA + websocket bus + static-mount were retired in
+        # cleanup pass ae6dc8b — apps/console is the live Web UI now.
+        from agents_mcp.web.bridge import create_bridge_router
+        from agents_mcp.web.orchestration_api import create_orchestration_router
+        from starlette.routing import Mount
 
-        api_router = create_api_router(get_client, get_store, get_config, resolve_agents)
-        http_app.mount("/api", api_router)
+        bridge_routes = create_bridge_router(get_client, get_store, get_config, resolve_agents)
+        http_app.routes.insert(0, Mount("/api", routes=bridge_routes))
 
-        # Mount WebSocket for real-time events
-        http_app.routes.insert(0, WebSocketRoute("/ws", websocket_endpoint))
+        # Orchestration endpoints. The router accepts callables (lazy resolve)
+        # so we don't need the asyncio loop to be running yet.
+        try:
+            from pathlib import Path as _Path
 
-        # Mount static files with SPA fallback
-        static_dir = os.path.join(os.path.dirname(__file__), "web", "static")
-        web_ui_available = False
-        if os.path.isdir(static_dir) and os.path.isfile(
-            os.path.join(static_dir, "index.html")
-        ):
-            from starlette.staticfiles import StaticFiles
-            from starlette.responses import FileResponse
-
-            index_path = os.path.join(static_dir, "index.html")
-
-            class SPAStaticFiles(StaticFiles):
-                """StaticFiles with SPA fallback: serves index.html for 404 GETs."""
-
-                async def __call__(self, scope, receive, send):
-                    if scope["type"] == "http" and scope.get("method") == "GET":
-                        try:
-                            return await super().__call__(scope, receive, send)
-                        except Exception:
-                            if os.path.isfile(index_path):
-                                resp = FileResponse(index_path)
-                                return await resp(scope, receive, send)
-                            raise
-                    return await super().__call__(scope, receive, send)
-
-            http_app.mount("/", SPAStaticFiles(directory=static_dir, html=True))
-            web_ui_available = True
+            _config_path = os.environ.get("AGENTS_CONFIG_PATH") or ""
+            _profiles_dir = (
+                _Path(os.path.dirname(os.path.abspath(_config_path))) / "profiles"
+                if _config_path
+                else None
+            )
+            orch_routes = create_orchestration_router(
+                get_store, _get_session_manager, _profiles_dir
+            )
+            http_app.routes.insert(0, Mount("/api/v1/orchestration", routes=orch_routes))
+            logger.info(f"Orchestration API: http://{args.host}:{port}/api/v1/orchestration/*")
+        except Exception:
+            logger.exception("Failed to mount orchestration API (non-fatal — bridge still works)")
 
         # Print startup summary
         logger.info(f"MCP SSE:  http://{args.host}:{port}/sse")
-        if web_ui_available:
-            logger.info(f"Web UI:   http://{args.host}:{port}/")
-        else:
-            logger.warning(
-                "Web UI:   not available "
-                "(run 'cd services/agents-mcp/web && npm install && npm run build' to enable)"
-            )
+        logger.info(f"Bridge:   http://{args.host}:{port}/api/v1/{{health,brief,human/*}}")
 
         config = uvicorn.Config(
             http_app, host=args.host, port=port, log_level="info"

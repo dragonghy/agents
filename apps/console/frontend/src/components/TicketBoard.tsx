@@ -4,12 +4,11 @@ import type { BoardColumn } from '../types';
 
 interface Props {
   workspaceId: number;
-  embedded?: boolean;
 }
 
 const REFRESH_MS = 15000;
 
-export default function TicketBoard({ workspaceId, embedded = false }: Props) {
+export default function TicketBoard({ workspaceId }: Props) {
   const [columns, setColumns] = useState<BoardColumn[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -46,14 +45,12 @@ export default function TicketBoard({ workspaceId, embedded = false }: Props) {
 
   return (
     <>
-      {!embedded && (
-        <div className="page-header">
-          <h2>Ticket Board · workspace {workspaceId}</h2>
-          <span className="subtitle">
-            {totalTickets} active · refreshes every 15s
-          </span>
-        </div>
-      )}
+      <div className="page-header">
+        <h2>Ticket Board · workspace {workspaceId}</h2>
+        <span className="subtitle">
+          {totalTickets} active · refreshes every 15s
+        </span>
+      </div>
       {totalTickets === 0 && (
         <div className="empty-state">
           No active tickets for workspace {workspaceId}.
