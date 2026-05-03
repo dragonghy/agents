@@ -1,12 +1,11 @@
-"""Tmux pane introspection helpers used by v2 dispatch and the web API.
+"""Tmux pane introspection helpers retained from the legacy v1/v2 model.
 
 Historically this module hosted the v1 dispatch loop (poll idle agents and
-push them tasks). v2 replaced that model with task-driven ephemeral sessions
-(`dispatcher_v2.py` + `session_manager.py`). The functions left here are the
-small set of tmux/process probes still consumed by:
-
-- `web/api.py` and `server.py` (`get_agent_tmux_status`)
-- `session_manager.py` (`_tmux_window_exists`, `_is_idle`, `_is_agent_process_alive`)
+push them tasks). The v2 ephemeral-tmux-window dispatcher (`dispatcher_v2.py`
++ `session_manager.py`) and `templates/v2/` were retired in the 2026-05-03
+v1 infrastructure cleanup. The functions left here are the small set of
+tmux/process probes still consumed by ``server.py`` (``get_agent_tmux_status``,
+surfaced through the legacy ``/api/agents/...`` endpoints).
 """
 
 import logging

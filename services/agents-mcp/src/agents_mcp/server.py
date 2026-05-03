@@ -2028,7 +2028,6 @@ async def get_pending_human_decisions() -> str:
 
 
 _dispatch_task = None
-_v2_dispatch_task = None
 _usage_task = None
 _brief_task = None
 _pr_monitor_task = None
@@ -2060,7 +2059,6 @@ async def _start_auto_dispatch_async():
     """Start auto-dispatch as a background asyncio task (called from running loop)."""
     global _dispatch_task
     cfg = get_config()
-    tmux_session = cfg.get("tmux_session", "agents")
     agents_expanded = resolve_agents(cfg)
     agents_list = [
         name for name, info in agents_expanded.items()
@@ -2070,10 +2068,6 @@ async def _start_auto_dispatch_async():
     if not agents_list:
         logger.info("No dispatchable agents, skipping auto-dispatch")
         return
-
-    # Extract staleness detection config
-    staleness_cfg = cfg.get("staleness", {})
-    staleness_threshold = staleness_cfg.get("threshold_minutes", 30)
 
     config_path = os.environ.get("AGENTS_CONFIG_PATH", ".")
     root_dir = os.path.dirname(os.path.abspath(config_path))
@@ -2127,29 +2121,14 @@ async def _start_auto_dispatch_async():
     except Exception as e:
         logger.warning(f"Pub/Sub subscription backfill failed: {e}")
 
-    # V2 dispatcher: task-driven, ephemeral sessions
-    v2_config = cfg.get("v2", {})
-    if v2_config.get("enabled", True):  # default to enabled now
-        from agents_mcp.session_manager import SessionManager
-        from agents_mcp.dispatcher_v2 import dispatch_loop_v2
-
-        max_sessions = v2_config.get("max_concurrent_sessions", 4)
-        project_config = cfg.get("projects", {})
-        session_mgr = SessionManager(
-            tmux_session=tmux_session,
-            root_dir=root_dir,
-            max_sessions=max_sessions,
-            project_config=project_config,
-        )
-
-        global _v2_dispatch_task
-        _v2_dispatch_task = asyncio.create_task(
-            dispatch_loop_v2(client, session_mgr, store,
-                             interval=10, project_config=project_config)
-        )
-        logger.info(f"V2 dispatcher started: max_sessions={max_sessions}")
-    else:
-        logger.info("V2 dispatcher disabled (set v2.enabled: true to activate)")
+    # The legacy v2 ephemeral-tmux-window dispatcher (dispatcher_v2 +
+    # services/agents-mcp/src/agents_mcp/session_manager.py) was retired in
+    # the 2026-05-03 v1 infrastructure cleanup. Task-driven session spawning
+    # now happens inside the orchestration model (TPM auto-spawn via
+    # orchestration_tpm_dispatch + comment hooks via
+    # orchestration_comment_dispatch — both wired off the AgentStore /
+    # SessionManager defined in orchestration_session_manager.py, not via a
+    # background polling loop).
 
     # Start usage collection background task (collect from ALL agents, not just dispatchable)
     global _usage_task
