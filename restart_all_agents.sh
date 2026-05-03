@@ -53,33 +53,6 @@ daemon_is_running() {
   lsof -i ":${port}" -sTCP:LISTEN >/dev/null 2>&1
 }
 
-build_web_ui() {
-  local web_dir="${ROOT_DIR}/services/agents-mcp/web"
-  local static_dir="${ROOT_DIR}/services/agents-mcp/src/agents_mcp/web/static"
-
-  if [[ -f "${static_dir}/index.html" ]]; then
-    return 0  # Already built
-  fi
-
-  if [[ ! -f "${web_dir}/package.json" ]]; then
-    echo "  Web UI: source not found, skipping build"
-    return 0
-  fi
-
-  if ! command -v npm &>/dev/null; then
-    echo "  Web UI: npm not found, skipping build (install Node.js to enable)"
-    return 0
-  fi
-
-  echo "  Web UI: building frontend..."
-  (cd "$web_dir" && npm install --silent 2>/dev/null && npm run build --silent 2>/dev/null)
-  if [[ -f "${static_dir}/index.html" ]]; then
-    echo "  Web UI: build successful"
-  else
-    echo "  Web UI: build failed (daemon will start without Web UI)"
-  fi
-}
-
 start_daemon() {
   local port host
   port="$(get_daemon_port)"
@@ -101,9 +74,6 @@ start_daemon() {
       return 0
     fi
   fi
-
-  # Build Web UI if not already built
-  build_web_ui
 
   # Rotate log: keep previous crash log for diagnosis
   if [[ -f "$DAEMON_LOG" ]] && [[ -s "$DAEMON_LOG" ]]; then

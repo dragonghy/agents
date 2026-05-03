@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import repo
-from app.routes import agents, briefs, cost, tickets, tmux, workspaces
+from app.routes import briefs, cost, tickets, workspaces
 
 app = FastAPI(
     title="Agent Harness Console",
@@ -55,11 +55,9 @@ async def health():
 # Mount all API routers under /api
 api_routers = [
     workspaces.router,
-    agents.router,
     tickets.router,
     briefs.router,
     cost.router,
-    tmux.router,
 ]
 for r in api_routers:
     app.include_router(r, prefix="/api")

@@ -302,14 +302,6 @@ async def dispatch_loop_v2(
                     f"{active}/{session_mgr.max_sessions} sessions active"
                 )
 
-            # Broadcast via WebSocket
-            try:
-                from agents_mcp.web.events import event_bus
-                if event_bus.client_count > 0:
-                    await event_bus.broadcast("v2_dispatch_completed", results)
-            except Exception:
-                pass
-
         except Exception as e:
             logger.error(f"V2 dispatch error: {e}")
 
