@@ -8,33 +8,6 @@ export interface Workspace {
   updated_at: string;
 }
 
-export interface AgentWorkload {
-  in_progress: number;
-  new: number;
-  blocked: number;
-  total_active: number;
-}
-
-export interface AgentProfile {
-  identity: string | null;
-  current_context: string | null;
-  expertise: string | null;
-  updated_at: string | null;
-}
-
-export interface Agent {
-  id: string;
-  role: string;
-  description: string;
-  project: string;
-  work_stream: string;
-  dispatchable: boolean;
-  agent_type: string;
-  tmux_status: 'active' | 'idle' | 'no_window' | 'unavailable';
-  workload: AgentWorkload;
-  profile?: AgentProfile;
-}
-
 export interface Ticket {
   id: number;
   headline: string;
@@ -89,24 +62,51 @@ export interface CostSummary {
   };
 }
 
-export interface TmuxWindow {
+// ── Orchestration v1 (Phase 1+2 test harness, Task #17) ──
+
+export interface Profile {
   name: string;
-  active: boolean;
+  description: string;
+  runner_type: string;
+  file_path: string;
+  file_hash: string;
+  loaded_at: string | null;
+  last_used_at: string | null;
 }
 
-export interface TmuxCapture {
-  session: string;
-  window: string;
-  lines_requested: number;
-  raw: boolean;
-  output: string;
+export interface Session {
+  id: string;
+  profile_name: string;
+  binding_kind: 'ticket-subagent' | 'human-channel' | 'standalone';
+  ticket_id: number | null;
+  channel_id: string | null;
+  parent_session_id: string | null;
+  status: 'active' | 'closed';
+  runner_type: string;
+  native_handle: string | null;
+  cost_tokens_in: number;
+  cost_tokens_out: number;
+  created_at?: string;
+  closed_at?: string | null;
 }
 
-export interface AgentMessage {
-  id: number;
-  from_agent: string;
-  to_agent: string;
-  body: string;
-  created_at: string;
-  read_at: string | null;
+export interface SpawnSessionBody {
+  profile_name: string;
+  binding_kind: 'ticket-subagent' | 'human-channel' | 'standalone';
+  ticket_id?: number;
+  channel_id?: string;
+  parent_session_id?: string;
+}
+
+export interface AppendMessageResult {
+  assistant_text: string;
+  tokens_in: number;
+  tokens_out: number;
+  native_handle: string;
+}
+
+export interface SessionMessage {
+  role: 'user' | 'assistant';
+  text: string;
+  ts: number; // local epoch ms — for stable React keys
 }

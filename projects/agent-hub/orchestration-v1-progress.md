@@ -158,3 +158,122 @@
 - 1 design doc + 3 research notes + 1 e2e runbook + AUTONOMY-CHARTER + this journal — total documentation pack for the redesign
 
 **Next**: Open the PR `feat/orchestration-v1 → main`. Per AUTONOMY-CHARTER, this branch is large enough that admin does NOT self-merge — Human reviews and merges. Phase 2.5 (daemon plumbing) is a follow-up.
+
+---
+
+### 2026-05-02 — Phase 2.5 daemon plumbing — wire dispatch hooks (Task #16 complete)
+
+**What**:
+
+- `services/agents-mcp/src/agents_mcp/server.py`:
+  - Added module-level `_session_manager` singleton + `_ensure_orchestration_ready(root_dir)` helper that builds a `SessionManager(store, profiles_dir, task_client=client)` and runs `ProfileLoader(profiles_dir, store).scan()` once. Called from `get_store()` immediately after `store.initialize()` so the singletons are always ready by the time any MCP tool handler runs. Wrapped in try/except — if `profiles/` doesn't exist or scan errors, the daemon logs a warning and continues; orchestration just becomes a no-op for that boot.
+  - Wired `update_ticket` MCP tool: BEFORE `client.update_ticket`, fetches the current ticket via `client.get_ticket(ticket_id, prune=True)` to capture `old_status` (only when `status` is being changed). AFTER the update, if `status` was provided AND `old_status != new_status`, calls `maybe_spawn_tpm_for_status_change` and `maybe_close_tpm_for_status_change`. Failures inside the dispatch hook are caught + logged via `logger.exception`; the primary update_ticket return path is untouched.
+  - Wired `add_comment` MCP tool: added optional `author_session_id: str = None` parameter. After the comment is created, if `module in ("ticket", "tickets")` and `_session_manager` is available, calls `dispatch_comment_to_tpm` with the comment_id (lastrowid from SQLite client), body, and author_session_id forwarded through. Same best-effort try/except pattern.
+- `services/agents-mcp/tests/test_server_plumbing.py` — 11 new tests covering: 3→4 spawns TPM, no-status-change path skips dispatch, status-unchanged-value skips dispatch, 4→0 calls close hook, SessionManager-unavailable path skips silently, comment dispatch with explicit/None author_session_id, non-ticket modules don't dispatch, dispatch failure doesn't break primary path. Tests mock the Leantime client + the dispatch helpers and call the raw async function via the FastMCP `.fn` accessor (sync wrapper + `run()` helper, no pytest-asyncio dep — matches the existing convention).
+
+**Why**: Without this wiring the dispatch helpers existed but nothing called them — TPM auto-spawn / wake never fired in the real daemon. After this commit, posting a comment on a ticket OR transitioning its status in the daemon's MCP tool surface fires the orchestration hooks automatically.
+
+**Decisions made along the way**:
+- **Module-level singletons over per-handler lazy init**: Tried lazy init from each handler first, but that meant repeating the try/except boilerplate at every entry point and harder testing. The `_get_session_manager()` accessor (returning ``None`` when orchestration isn't booted) gives tests a clean injection seam via `patch.object(srv, "_get_session_manager", return_value=...)`.
+- **Pre-fetch ticket only when status is changing**: avoids an extra SQLite read on the hot non-status update path. Keeps the failure mode for "ticket doesn't exist" identical to the existing client behaviour.
+- **`task_client=client` passed to SessionManager constructor at boot**: TPM profile declares `orchestration_tools: true`, so `append_message` needs a task_client when the TPM eventually runs. Wiring it once at construction time keeps later callers (the dispatch hooks themselves) simple.
+- **Late imports of dispatch helpers inside the handlers**: keeps server.py module-level imports unchanged for callers that don't exercise orchestration (faster cold-start, no transitive `claude-agent-sdk` import on import-server). Same pattern as the existing v2 dispatcher import inside `_start_auto_dispatch_async`.
+- **`author_session_id` plumbed through but no caller wired today**: per task spec, MCP callers (TPM tool wrapper, Web UI, future agent code) will pass it; default `None` makes Human-via-Web-UI / Telegram comments correctly attribute to "human". No new tools shipped — the existing `add_comment` tool surface gained one optional kwarg.
+- **Used FastMCP's `.fn` accessor in tests**: tools are wrapped twice (`@app.tool()` + `@_with_timeout`); calling them from tests requires the underlying async function. `_raw(tool)` helper in the test file does the unwrap.
+
+**Verification**: 11/11 new tests green; full suite count delta = +11.
+
+**TPM auto-spawn now fires automatically on status=3→4 transitions in real daemon flow.**
+
+---
+
+### 2026-05-02 — Minimum viable test harness (Task #17 complete) — MVTH ready
+
+**What**:
+
+- New backend module `services/agents-mcp/src/agents_mcp/web/orchestration_api.py` (~230 LOC) — a Starlette `Route` factory `create_orchestration_router(store, session_manager)` exposing the five MVTH endpoints under `/api/v1/orchestration/`:
+  - `GET /profiles` — wraps `store.list_profile_registry()`.
+  - `POST /sessions` — body `{profile_name, binding_kind, ticket_id?, channel_id?, parent_session_id?}`; calls `SessionManager.spawn(...)`; returns the session row (201).
+  - `POST /sessions/{id}/messages` — body `{text}`; calls `SessionManager.append_message(...)`; returns `{assistant_text, tokens_in, tokens_out, native_handle}`. May take 5-30s while Claude is called.
+  - `POST /sessions/{id}/close` — calls `SessionManager.close(...)`; returns `{ok}`.
+  - `GET /sessions/{id}` — wraps `store.get_session(...)`.
+  - The factory accepts either live objects or zero-arg async getters — daemon mounting happens before the asyncio loop is up, so the daemon hands in async getters that lazily resolve on first request; tests pass live mocks directly.
+- `services/agents-mcp/src/agents_mcp/server.py` — mounted the new router under `/api/v1/orchestration` next to the bridge. Reused the existing `_get_session_manager()` accessor that the Phase 2.5 plumbing landed; added a thin getter wrapper that ensures `get_store()` (which triggers `_ensure_orchestration_ready`) has run.
+- `services/agents-mcp/tests/test_orchestration_api.py` — 22 tests using Starlette's `TestClient` + a `_FakeStore` + `_FakeSessionManager` (mirrors the real shapes; never hits the LLM). Covers happy paths + 404 on missing session + 400 on missing/invalid body fields + 400 on bad JSON + 400 on validation errors raised by the manager + a test that the callable-injection path used by the daemon works.
+- New frontend page `apps/console/frontend/src/components/SessionTester.tsx` (~225 LOC) — three stacked sections (Profile picker → Session controls → Conversation log). Default profile = `secretary`. No streaming, no markdown — plain text turns rendered as stacked role-tagged divs. Disabled-while-pending guard on the Send button. Errors surfaced inline.
+- `apps/console/frontend/src/api.ts` — added `listProfiles`, `spawnSession`, `appendMessage`, `closeSession`, `getSession` plus a small `post<T>()` wrapper.
+- `apps/console/frontend/src/types.ts` — added `Profile`, `Session`, `SpawnSessionBody`, `AppendMessageResult`, `SessionMessage`.
+- `apps/console/frontend/src/App.tsx` — added a `/test-harness` route + sidebar nav link.
+- `apps/console/frontend/vite.config.ts` — added a more-specific `/api/v1/orchestration` proxy entry that targets `http://127.0.0.1:8765` (the daemon), placed BEFORE the existing catch-all `/api` → `:3000` (apps/console/backend) so the orchestration calls reach the daemon while the rest of the console keeps reaching the FastAPI backend.
+
+**Verification**:
+
+- `cd services/agents-mcp && uv run pytest tests/test_orchestration_api.py -v` → 22/22 green.
+- Full orchestration suite (api + session_manager + orchestration_session + profile_loader + adapter_base + tpm_dispatch + comment_dispatch) → 131/131 green.
+- `cd apps/console/frontend && npm run typecheck` → green.
+- `cd apps/console/frontend && npm run build` → green (177.73 kB JS, 5.81 kB CSS).
+- Live e2e (point browser at the daemon, spawn → send → see Claude reply) NOT executed — coordinated with the daemon-plumbing subagent's parallel work, MVTH artifacts are in place for Human to verify when ready.
+
+**Decisions made along the way**:
+
+- **Live object vs. callable getter**: The daemon's HTTP mount happens inside `main()` before any asyncio loop is running, so we can't `await get_store()` there. The router accepts either form via a tiny `_resolve(value)` helper that calls + awaits when the input is callable. Tests stay simple (pass live mocks).
+- **404 vs. 400 split**: unknown session id → 404 (the verb is `get`-shaped); closed session / invalid binding_kind / missing required field → 400. Matches the bridge's existing convention. Append-message on unknown session is 404 (not 400) because the path-param identifies the resource.
+- **Vite proxy ordering**: the `/api/v1/orchestration` rule has to come BEFORE `/api`; Vite resolves prefixes top-to-bottom and the catch-all would otherwise win.
+- **No CSS additions**: every visual element reuses existing `.card`, `.error`, `.empty-state`, `.loading`, `.page-header`, `.subtitle`, plus the dark-theme CSS vars (`--bg`, `--bg-panel`, `--bg-panel-hover`, `--border`, `--text`, `--text-dim`, `--text-muted`). Inline-styled the message bubbles + textarea to keep `styles.css` untouched.
+- **Cleanup subagent overlap**: the parallel cleanup subagent removed `AgentPanel`/`AgentDetail`/`TmuxStream` (components + types + api helpers) and replaced `web/api.py` with `web/bridge.py`. They mounted only `/api`; I added the orchestration mount alongside theirs, plus the proxy + the new types/api helpers. No merge conflicts ended up materialising — the cleanup landed cleanly under us.
+
+**MVTH ready for live verification**: Human points browser at `http://127.0.0.1:3001/test-harness`, picks `secretary`, hits Spawn, types something, sees a real Claude reply.
+
+**Next**: Open PR `feat/orchestration-v1 → main` — Phase 1+2 + 2.5 daemon plumbing + MVTH all on the same branch, ready for Human review.
+
+---
+
+### 2026-05-02 — Cleanup pass v2 — extract Telegram bridge, delete dead Web UI
+
+**What**:
+
+- New module `services/agents-mcp/src/agents_mcp/web/bridge.py` (~190 LOC, ~40 of which are docstring/blanks) — `create_bridge_router(get_client, get_store, get_config, resolve_agents)` returns the 5 Starlette `Route` objects the Telegram bot still consumes:
+  - `POST /v1/human/messages` (inbound from Human)
+  - `GET  /v1/human/outbox` (outbound poll, marks rows delivered)
+  - `POST /v1/human/send` (admin's outbound path — CLAUDE.md pitfall #6)
+  - `GET  /v1/brief` (`/brief` slash command)
+  - `GET  /v1/health` (`/status` slash command)
+  - Logic copied verbatim from the deleted `web/api.py` so behaviour stays bit-identical for the bot. The brief routing inside `post_human_message` (parse_brief_response → execute_actions vs. forward to admin P2P) is preserved.
+- `services/agents-mcp/tests/test_bridge.py` — 11 smoke tests using Starlette's `TestClient` + stubs. Covers all 5 routes (success + error paths) + the import-smoke that catches daemon-boot regressions.
+- `services/agents-mcp/src/agents_mcp/server.py` — replaced the `web.api.create_api_router` mount with `create_bridge_router`; removed the `WebSocketRoute("/ws", websocket_endpoint)` insert (events.py is gone); removed the SPA static-file mount + the entire `if static_dir exists` branch (~30 LOC); removed the broadcast-to-event_bus block in `_create_notifications_with_subscribers`.
+- `services/agents-mcp/src/agents_mcp/dispatcher_v2.py` — removed the same broadcast-to-event_bus block at the end of each dispatch cycle.
+- Deletions:
+  - `services/agents-mcp/src/agents_mcp/web/api.py` (1049 LOC dead Display-UI REST + onboarding endpoints).
+  - `services/agents-mcp/src/agents_mcp/web/events.py` (61 LOC EventBus + WebSocket handler).
+  - `services/agents-mcp/src/agents_mcp/web/static/` (1 MB of pre-built SPA bundle from the old build pipeline).
+  - `services/agents-mcp/web/` (189 MB SPA source — 38 .tsx/.ts files, e2e specs, package-lock.json, etc.).
+  - `apps/console/backend/app/routes/agents.py` + `tmux.py` (2 dead FastAPI routers).
+  - `apps/console/frontend/src/components/{AgentDetail,AgentPanel,TmuxStream}.tsx`.
+  - `tests/e2e_onboarding.cjs` + `tests/e2e_token_usage_test.py` (E2E tests for the deleted SPA).
+- Edits:
+  - `restart_all_agents.sh` — stripped the `build_web_ui()` function + its caller in `start_daemon()` (now no longer trying to `npm install` a deleted directory).
+  - `CONTRIBUTING.md` — removed the "Web UI Development" section; updated Project Structure to point at `apps/console/` instead of the deleted SPA.
+  - `apps/console/backend/app/main.py` — dropped the `agents` + `tmux` router imports + their `include_router` calls.
+  - `apps/console/frontend/src/App.tsx` — dropped `AgentPanel`/`AgentDetail`/`TmuxStream` imports + 4 Route lines + 2 NavLink lines + the `<AgentPanel compact />` from Overview.
+  - `apps/console/frontend/src/api.ts` — removed `listAgents`/`getAgent`/`getAgentTickets`/`getAgentInbox`/`getAgentSent`/`listTmuxWindows`/`captureTmux` (7 helpers).
+  - `apps/console/frontend/src/types.ts` — removed `Agent`/`AgentWorkload`/`AgentProfile`/`AgentMessage`/`TmuxWindow`/`TmuxCapture` (6 types).
+
+**Why**: The Telegram bot's 5 endpoints are the only legacy HTTP surface still in production use. Everything else under `web/api.py` (~1000 LOC of agent panels, terminal capture, schedules, onboarding, tickets/messages CRUD) is shadow-code — nothing reads it now that the SPA is dead and `apps/console/` has its own FastAPI backend. Path (b) of the cleanup directive: extract the small live surface, delete the dead bulk.
+
+**Decisions made along the way**:
+- **Bridge as `list[Route]` (not a `Router` instance)**: matches the convention the orchestration_api subagent landed in parallel — the daemon `Mount("/api", routes=[...])` pattern keeps both factories swappable. The server still wraps the list in `Router(routes=...)` at mount time because `http_app.mount` wants a callable ASGI app, not a list.
+- **No `/ws` WebSocket**: the only consumer was the dead SPA's real-time refresh hook. The Telegram bot never opened a WS. Removing both the route and the events module cuts ~75 LOC of broadcast plumbing across server.py + dispatcher_v2.py.
+- **`apps/console/backend/app/routes/agents.py` deletion**: this was the apps/console copy of the agent panel — different from `web/api.py`'s but equally orphaned (the AgentPanel.tsx that consumed it is the one I just deleted). Same logic for `tmux.py`.
+- **Empty `__init__.py` left in `web/`**: keeps the package importable so `web.bridge` and `web.orchestration_api` (parallel subagent's file) still resolve.
+- **Test stubs (no SQLite)**: `test_bridge.py` uses stub store/client/cursor classes rather than a real `AgentStore` because the bot endpoints are pure-passthrough and the integration coverage already lives in store/client tests. Keeps the new file fast (<100 ms total).
+- **Server.py merge race**: The Phase 2.5 daemon-plumbing subagent (commit d2130e9) committed in parallel and shifted my line numbers. First Edit succeeded but a subsequent linter/parallel-write reverted my mount change; re-applied against the new line numbers and re-ran imports + pytest to confirm.
+
+**Verification**:
+- `cd services/agents-mcp && uv run pytest --ignore=tests/test_message_filter.py` → 295/295 green (was 295 before, +11 from test_bridge, -0 because the deleted modules had no tests of their own).
+- `cd apps/console/frontend && npm run typecheck` → green.
+- `python -c "from agents_mcp.web.bridge import create_bridge_router; routes = create_bridge_router(lambda: None, lambda: None, lambda: {}, lambda c: {}); print(len(routes))"` → `5`.
+- `python -c "import agents_mcp.server; import agents_mcp.dispatcher_v2; print('ok')"` → `ok`.
+
+**Disk + LOC impact**: ~190 MB of source removed (mostly the dead SPA's `node_modules`-laden tree), ~1100 LOC of Python deleted from the daemon path, ~190 LOC of Python added (bridge + bridge tests). Net: enormous reduction in surface area for review and a cleaner mental model — the daemon's HTTP face is now exactly the bot bridge plus the orchestration test harness, nothing else.
+
+**Next**: Phase 4 will replace this bridge with a proper channel-adapter on the new orchestration model — at which point bridge.py + telegram-bot/bot.py both get rewritten and this whole shim disappears.

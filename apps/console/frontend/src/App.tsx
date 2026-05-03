@@ -2,12 +2,10 @@ import { useEffect, useState } from 'react';
 import { Link, NavLink, Route, Routes, useLocation } from 'react-router-dom';
 import { listWorkspaces } from './api';
 import type { Workspace } from './types';
-import AgentPanel from './components/AgentPanel';
 import TicketBoard from './components/TicketBoard';
 import BriefHistory from './components/BriefHistory';
 import CostDashboard from './components/CostDashboard';
-import TmuxStream from './components/TmuxStream';
-import AgentDetail from './components/AgentDetail';
+import SessionTester from './components/SessionTester';
 
 export default function App() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -30,9 +28,6 @@ export default function App() {
           <NavLink to="/" end className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
             Overview
           </NavLink>
-          <NavLink to="/agents" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
-            Agents
-          </NavLink>
           <NavLink to="/board" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
             Ticket Board
           </NavLink>
@@ -42,8 +37,8 @@ export default function App() {
           <NavLink to="/cost" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
             Cost
           </NavLink>
-          <NavLink to="/tmux" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
-            Tmux
+          <NavLink to="/test-harness" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
+            Test Harness
           </NavLink>
         </nav>
 
@@ -78,12 +73,10 @@ export default function App() {
       <main className="main">
         <Routes>
           <Route path="/" element={<Overview workspaceId={activeWorkspace} />} />
-          <Route path="/agents" element={<AgentPanel />} />
-          <Route path="/agents/:id" element={<AgentDetail />} />
           <Route path="/board" element={<TicketBoard workspaceId={activeWorkspace} />} />
           <Route path="/briefs" element={<BriefHistory />} />
           <Route path="/cost" element={<CostDashboard />} />
-          <Route path="/tmux" element={<TmuxStream />} />
+          <Route path="/test-harness" element={<SessionTester />} />
         </Routes>
       </main>
     </div>
@@ -98,10 +91,6 @@ function Overview({ workspaceId }: { workspaceId: number }) {
         <span className="subtitle">workspace_id={workspaceId}</span>
       </div>
       <div className="grid grid-2">
-        <div className="card">
-          <h3>Agents</h3>
-          <AgentPanel compact />
-        </div>
         <div className="card">
           <h3>Cost (today / week / lifetime)</h3>
           <CostDashboard compact />
