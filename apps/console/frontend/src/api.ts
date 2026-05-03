@@ -9,7 +9,11 @@ import type {
   AppendMessageResult,
   BoardColumn,
   BriefSummary,
+  CostBySessionRow,
+  CostByProfileRow,
+  CostByTicketRow,
   CostSummary,
+  CostTotalsResponse,
   Profile,
   Session,
   SpawnSessionBody,
@@ -101,4 +105,44 @@ export async function closeSession(sessionId: string) {
 
 export async function getSession(sessionId: string) {
   return get<Session>(`/api/v1/orchestration/sessions/${encodeURIComponent(sessionId)}`);
+}
+
+// ── Cost (Task #18 Part A) ──
+
+export async function getCostBySession(opts: {
+  limit?: number;
+  offset?: number;
+  status?: string;
+  profile?: string;
+  ticket?: number;
+}) {
+  const qp = new URLSearchParams();
+  if (opts.limit !== undefined) qp.set('limit', String(opts.limit));
+  if (opts.offset !== undefined) qp.set('offset', String(opts.offset));
+  if (opts.status) qp.set('status', opts.status);
+  if (opts.profile) qp.set('profile', opts.profile);
+  if (opts.ticket !== undefined) qp.set('ticket', String(opts.ticket));
+  const qs = qp.toString() ? `?${qp.toString()}` : '';
+  return get<{
+    sessions: CostBySessionRow[];
+    total: number;
+    limit: number;
+    offset: number;
+  }>(`/api/v1/orchestration/cost/by-session${qs}`);
+}
+
+export async function getCostByProfile() {
+  return get<{ rollup: CostByProfileRow[]; total: number }>(
+    '/api/v1/orchestration/cost/by-profile'
+  );
+}
+
+export async function getCostByTicket() {
+  return get<{ rollup: CostByTicketRow[]; total: number }>(
+    '/api/v1/orchestration/cost/by-ticket'
+  );
+}
+
+export async function getCostTotals() {
+  return get<CostTotalsResponse>('/api/v1/orchestration/cost/totals');
 }

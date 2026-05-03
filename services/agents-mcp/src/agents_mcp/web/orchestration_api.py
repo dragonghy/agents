@@ -1,13 +1,23 @@
 """Orchestration v1 REST API — Profile registry + Session lifecycle endpoints.
 
-This module exposes the minimum HTTP surface needed by the Phase 1+2 test
-harness (Task #17) so a browser can drive a Session end-to-end:
+This module exposes the HTTP surface for orchestration v1:
 
+Lifecycle (MVTH, Task #17):
 - ``GET  /profiles``                       — list registered Profiles
+- ``GET  /profiles/{name}``                — Profile detail (registry + body)
+- ``GET  /profiles/{name}/sessions``       — recent sessions of a Profile
 - ``POST /sessions``                       — spawn a session
 - ``POST /sessions/{id}/messages``         — append a user turn (calls Claude)
 - ``POST /sessions/{id}/close``            — close a session
 - ``GET  /sessions/{id}``                  — fetch session metadata
+- ``GET  /sessions/{id}/history``          — render conversation transcript
+- ``GET  /sessions``                       — list with filters
+
+Cost (Task #18 Part A):
+- ``GET /cost/by-session``                 — paginated session-level cost rows
+- ``GET /cost/by-profile``                 — rollup grouped by profile_name
+- ``GET /cost/by-ticket``                  — rollup grouped by ticket_id
+- ``GET /cost/totals``                     — today/week/lifetime totals
 
 The factory :func:`create_orchestration_router` returns a list of
 :class:`starlette.routing.Route` objects (matching the bridge's
@@ -16,6 +26,7 @@ The factory :func:`create_orchestration_router` returns a list of
 No FastAPI here — daemon HTTP is plain Starlette.
 
 Design references:
+- ``projects/agent-hub/design/agent-orchestration-v1-2026-05-02.md`` §8
 - ``projects/agent-hub/research/ui-rewrite-vs-adapt-2026-05-02.md`` §"minimum
   viable test harness"
 - ``services/agents-mcp/src/agents_mcp/orchestration_session_manager.py``
@@ -36,6 +47,32 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 logger = logging.getLogger(__name__)
+
+
+# Sonnet token pricing (USD per million tokens). Mirrors
+# apps/console/backend/app/pricing.py and morning_brief.py so cost numbers
+# match across surfaces. We don't break out cache-read / cache-write here
+# because the ``session`` table only holds aggregated tokens_in / tokens_out.
+_INPUT_PER_M = 3.00
+_OUTPUT_PER_M = 15.00
+
+
+def _estimate_usd(tokens_in: int, tokens_out: int) -> float:
+    """Compute Sonnet-rate USD cost for a (tokens_in, tokens_out) pair."""
+    cost = (
+        (tokens_in or 0) * _INPUT_PER_M
+        + (tokens_out or 0) * _OUTPUT_PER_M
+    ) / 1_000_000.0
+    return round(cost, 4)
+
+
+def _pricing_block() -> dict[str, Any]:
+    """Pricing metadata returned alongside totals for UI display."""
+    return {
+        "input_per_million": _INPUT_PER_M,
+        "output_per_million": _OUTPUT_PER_M,
+        "note": "Sonnet rates; cost = sum over sessions of cost_tokens_in/out.",
+    }
 
 
 async def _resolve(value: Any) -> Any:
@@ -249,12 +286,116 @@ def create_orchestration_router(store: Any, session_manager: Any) -> list[Route]
             )
         return JSONResponse(row)
 
+    # ── Cost endpoints (Task #18 Part A) ──────────────────────────────────
+
+    async def cost_by_session(request: Request) -> JSONResponse:
+        """``GET /cost/by-session`` — paginated session-level cost rows.
+
+        Query params:
+            ``limit`` (default 50, max 500), ``offset`` (default 0),
+            ``status`` (active|closed), ``profile`` (profile_name),
+            ``ticket`` (ticket_id).
+
+        Each row: id, profile_name, ticket_id, channel_id, status,
+        cost_tokens_in, cost_tokens_out, cost_usd, created_at.
+        """
+        try:
+            limit = min(int(request.query_params.get("limit", 50)), 500)
+            offset = max(int(request.query_params.get("offset", 0)), 0)
+        except (TypeError, ValueError):
+            return JSONResponse({"error": "limit/offset must be integers"}, status_code=400)
+        status = request.query_params.get("status") or None
+        profile = request.query_params.get("profile") or None
+        ticket = request.query_params.get("ticket")
+        ticket_id: Optional[int]
+        if ticket:
+            try:
+                ticket_id = int(ticket)
+            except ValueError:
+                return JSONResponse(
+                    {"error": "ticket must be an integer"}, status_code=400
+                )
+        else:
+            ticket_id = None
+
+        s = await _resolve(store)
+        try:
+            rows, total = await s.list_sessions_paginated(
+                status=status,
+                profile_name=profile,
+                ticket_id=ticket_id,
+                limit=limit,
+                offset=offset,
+            )
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+
+        for r in rows:
+            r["cost_usd"] = _estimate_usd(
+                r.get("cost_tokens_in") or 0,
+                r.get("cost_tokens_out") or 0,
+            )
+        return JSONResponse(
+            {
+                "sessions": rows,
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
+
+    async def cost_by_profile(request: Request) -> JSONResponse:
+        """``GET /cost/by-profile`` — rollup grouped by profile_name."""
+        del request
+        s = await _resolve(store)
+        rows = await s.cost_by_profile()
+        for r in rows:
+            r["total_usd"] = _estimate_usd(
+                r.get("total_tokens_in") or 0,
+                r.get("total_tokens_out") or 0,
+            )
+        return JSONResponse({"rollup": rows, "total": len(rows)})
+
+    async def cost_by_ticket(request: Request) -> JSONResponse:
+        """``GET /cost/by-ticket`` — rollup grouped by ticket_id."""
+        del request
+        s = await _resolve(store)
+        rows = await s.cost_by_ticket()
+        for r in rows:
+            r["total_usd"] = _estimate_usd(
+                r.get("total_tokens_in") or 0,
+                r.get("total_tokens_out") or 0,
+            )
+        return JSONResponse({"rollup": rows, "total": len(rows)})
+
+    async def cost_totals(request: Request) -> JSONResponse:
+        """``GET /cost/totals`` — today/week/lifetime totals.
+
+        Buckets on ``session.created_at``. Each bucket contains
+        ``tokens_in``, ``tokens_out``, ``sessions_count``, and a derived
+        ``usd`` figure at Sonnet rates.
+        """
+        del request
+        s = await _resolve(store)
+        out = await s.cost_totals()
+        for bucket in out.values():
+            bucket["usd"] = _estimate_usd(
+                bucket.get("tokens_in") or 0,
+                bucket.get("tokens_out") or 0,
+            )
+        out["pricing"] = _pricing_block()
+        return JSONResponse(out)
+
     routes = [
         Route("/profiles", list_profiles, methods=["GET"]),
         Route("/sessions", spawn_session, methods=["POST"]),
         Route("/sessions/{id}/messages", append_message, methods=["POST"]),
         Route("/sessions/{id}/close", close_session, methods=["POST"]),
         Route("/sessions/{id}", get_session, methods=["GET"]),
+        Route("/cost/by-session", cost_by_session, methods=["GET"]),
+        Route("/cost/by-profile", cost_by_profile, methods=["GET"]),
+        Route("/cost/by-ticket", cost_by_ticket, methods=["GET"]),
+        Route("/cost/totals", cost_totals, methods=["GET"]),
     ]
     return routes
 

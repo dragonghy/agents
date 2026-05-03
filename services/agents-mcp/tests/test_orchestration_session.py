@@ -352,3 +352,143 @@ class TestProfileRegistry:
             await s.close()
 
         run(_t())
+
+
+# ── Cost rollup methods (Task #18 Part A) ──
+
+
+class TestCostRollups:
+    def test_paginated_empty(self, db_path):
+        async def _t():
+            s = await _make_store(db_path)
+            rows, total = await s.list_sessions_paginated()
+            assert rows == []
+            assert total == 0
+            await s.close()
+
+        run(_t())
+
+    def test_paginated_with_data(self, db_path):
+        async def _t():
+            s = await _make_store(db_path)
+            for i in range(3):
+                await s.create_session(
+                    session_id=f"sess_{i}",
+                    profile_name="tpm" if i < 2 else "developer",
+                    binding_kind="ticket-subagent",
+                    runner_type="claude-sonnet-4.7",
+                    ticket_id=100 + i,
+                )
+            rows, total = await s.list_sessions_paginated(limit=2, offset=0)
+            assert total == 3
+            assert len(rows) == 2
+
+            # filter by profile
+            rows, total = await s.list_sessions_paginated(profile_name="tpm")
+            assert total == 2
+            assert all(r["profile_name"] == "tpm" for r in rows)
+
+            # filter by ticket
+            rows, total = await s.list_sessions_paginated(ticket_id=101)
+            assert total == 1
+            assert rows[0]["ticket_id"] == 101
+
+            await s.close()
+
+        run(_t())
+
+    def test_paginated_invalid_status_raises(self, db_path):
+        async def _t():
+            s = await _make_store(db_path)
+            with pytest.raises(ValueError):
+                await s.list_sessions_paginated(status="bogus")
+            await s.close()
+
+        run(_t())
+
+    def test_cost_by_profile(self, db_path):
+        async def _t():
+            s = await _make_store(db_path)
+            # Two TPM sessions, one developer; record cost on each.
+            await s.create_session(
+                session_id="t1",
+                profile_name="tpm",
+                binding_kind="ticket-subagent",
+                runner_type="claude-sonnet-4.7",
+            )
+            await s.add_session_cost("t1", 1000, 200)
+            await s.create_session(
+                session_id="t2",
+                profile_name="tpm",
+                binding_kind="ticket-subagent",
+                runner_type="claude-sonnet-4.7",
+            )
+            await s.add_session_cost("t2", 500, 100)
+            await s.create_session(
+                session_id="d1",
+                profile_name="developer",
+                binding_kind="ticket-subagent",
+                runner_type="claude-sonnet-4.7",
+            )
+            await s.add_session_cost("d1", 2000, 50)
+
+            rollup = await s.cost_by_profile()
+            by_name = {r["profile_name"]: r for r in rollup}
+            assert by_name["tpm"]["sessions_count"] == 2
+            assert by_name["tpm"]["total_tokens_in"] == 1500
+            assert by_name["tpm"]["total_tokens_out"] == 300
+            assert by_name["developer"]["sessions_count"] == 1
+            assert by_name["developer"]["total_tokens_in"] == 2000
+            await s.close()
+
+        run(_t())
+
+    def test_cost_by_ticket_excludes_null(self, db_path):
+        async def _t():
+            s = await _make_store(db_path)
+            await s.create_session(
+                session_id="t1",
+                profile_name="tpm",
+                binding_kind="ticket-subagent",
+                runner_type="claude-sonnet-4.7",
+                ticket_id=42,
+            )
+            await s.add_session_cost("t1", 100, 10)
+            await s.create_session(
+                session_id="s1",
+                profile_name="secretary",
+                binding_kind="standalone",
+                runner_type="claude-sonnet-4.7",
+                # no ticket_id — should be excluded
+            )
+            await s.add_session_cost("s1", 9999, 9999)
+
+            rollup = await s.cost_by_ticket()
+            assert len(rollup) == 1
+            assert rollup[0]["ticket_id"] == 42
+            assert rollup[0]["total_tokens_in"] == 100
+            await s.close()
+
+        run(_t())
+
+    def test_cost_totals_includes_today_and_lifetime(self, db_path):
+        async def _t():
+            s = await _make_store(db_path)
+            await s.create_session(
+                session_id="t1",
+                profile_name="tpm",
+                binding_kind="ticket-subagent",
+                runner_type="claude-sonnet-4.7",
+            )
+            await s.add_session_cost("t1", 1234, 567)
+
+            totals = await s.cost_totals()
+            assert totals["today"]["tokens_in"] == 1234
+            assert totals["today"]["tokens_out"] == 567
+            assert totals["today"]["sessions_count"] == 1
+            assert totals["week"]["tokens_in"] == 1234
+            assert totals["lifetime"]["tokens_in"] == 1234
+            assert totals["lifetime"]["sessions_count"] == 1
+            await s.close()
+
+        run(_t())

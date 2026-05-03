@@ -2,7 +2,7 @@
 
 import json
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 import aiosqlite
 
@@ -1556,3 +1556,144 @@ class AgentStore:
             (name,),
         )
         await self._db.commit()
+
+    # ── Orchestration v1: Session cost rollups ──
+
+    async def list_sessions_paginated(
+        self,
+        status: Optional[str] = None,
+        profile_name: Optional[str] = None,
+        ticket_id: Optional[int] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[dict], int]:
+        """List sessions for the cost / sessions UI with pagination.
+
+        Returns (rows, total_count). Ordered by created_at DESC.
+        Filters are AND-combined; all optional.
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status is not None:
+            if status not in ("active", "closed"):
+                raise ValueError(f"invalid status: {status!r}")
+            clauses.append("status = ?")
+            params.append(status)
+        if profile_name is not None:
+            clauses.append("profile_name = ?")
+            params.append(profile_name)
+        if ticket_id is not None:
+            clauses.append("ticket_id = ?")
+            params.append(ticket_id)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+
+        async with self._db.execute(
+            f"SELECT COUNT(*) FROM session{where}", tuple(params)
+        ) as cursor:
+            total_row = await cursor.fetchone()
+            total = int(total_row[0]) if total_row else 0
+
+        sql = (
+            f"SELECT * FROM session{where} "
+            "ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        )
+        async with self._db.execute(
+            sql, tuple(params) + (int(limit), int(offset))
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows], total
+
+    async def cost_by_profile(self) -> list[dict]:
+        """Rollup of session cost grouped by profile_name.
+
+        Each row contains: profile_name, sessions_count, total_tokens_in,
+        total_tokens_out, last_used_at (max created_at across the group).
+        Sessions with no cost recorded are still counted. Profiles with no
+        sessions do not appear (use list_profile_registry for the full set).
+        Ordered by total_tokens_in + total_tokens_out DESC.
+        """
+        async with self._db.execute(
+            "SELECT profile_name, "
+            "       COUNT(*)                AS sessions_count, "
+            "       COALESCE(SUM(cost_tokens_in), 0)  AS total_tokens_in, "
+            "       COALESCE(SUM(cost_tokens_out), 0) AS total_tokens_out, "
+            "       MAX(created_at)         AS last_used_at "
+            "FROM session "
+            "GROUP BY profile_name "
+            "ORDER BY (COALESCE(SUM(cost_tokens_in), 0) "
+            "          + COALESCE(SUM(cost_tokens_out), 0)) DESC, "
+            "         profile_name ASC"
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def cost_by_ticket(self) -> list[dict]:
+        """Rollup of session cost grouped by ticket_id (excludes NULL).
+
+        Each row contains: ticket_id, sessions_count, total_tokens_in,
+        total_tokens_out, last_used_at.
+        Ordered by total tokens DESC.
+        """
+        async with self._db.execute(
+            "SELECT ticket_id, "
+            "       COUNT(*)                AS sessions_count, "
+            "       COALESCE(SUM(cost_tokens_in), 0)  AS total_tokens_in, "
+            "       COALESCE(SUM(cost_tokens_out), 0) AS total_tokens_out, "
+            "       MAX(created_at)         AS last_used_at "
+            "FROM session "
+            "WHERE ticket_id IS NOT NULL "
+            "GROUP BY ticket_id "
+            "ORDER BY (COALESCE(SUM(cost_tokens_in), 0) "
+            "          + COALESCE(SUM(cost_tokens_out), 0)) DESC, "
+            "         ticket_id DESC"
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def cost_totals(self) -> dict:
+        """Compute today / week / lifetime token totals from session rows.
+
+        Bucketed on session.created_at. SQLite stores it as 'YYYY-MM-DD HH:MM:SS'
+        UTC. Returns a dict with three nested dicts each having
+        ``tokens_in`` / ``tokens_out`` / ``sessions_count``.
+        """
+        # We do three queries — clearer than one giant CASE expression and
+        # the session table is small (one row per spawn, never trimmed).
+        out: dict[str, dict] = {}
+
+        async with self._db.execute(
+            "SELECT COALESCE(SUM(cost_tokens_in), 0)  AS tokens_in, "
+            "       COALESCE(SUM(cost_tokens_out), 0) AS tokens_out, "
+            "       COUNT(*)                          AS sessions_count "
+            "FROM session "
+            "WHERE date(created_at) = date('now')"
+        ) as cursor:
+            row = await cursor.fetchone()
+            out["today"] = dict(row) if row else {
+                "tokens_in": 0, "tokens_out": 0, "sessions_count": 0
+            }
+
+        async with self._db.execute(
+            "SELECT COALESCE(SUM(cost_tokens_in), 0)  AS tokens_in, "
+            "       COALESCE(SUM(cost_tokens_out), 0) AS tokens_out, "
+            "       COUNT(*)                          AS sessions_count "
+            "FROM session "
+            "WHERE date(created_at) >= date('now', '-6 days')"
+        ) as cursor:
+            row = await cursor.fetchone()
+            out["week"] = dict(row) if row else {
+                "tokens_in": 0, "tokens_out": 0, "sessions_count": 0
+            }
+
+        async with self._db.execute(
+            "SELECT COALESCE(SUM(cost_tokens_in), 0)  AS tokens_in, "
+            "       COALESCE(SUM(cost_tokens_out), 0) AS tokens_out, "
+            "       COUNT(*)                          AS sessions_count "
+            "FROM session"
+        ) as cursor:
+            row = await cursor.fetchone()
+            out["lifetime"] = dict(row) if row else {
+                "tokens_in": 0, "tokens_out": 0, "sessions_count": 0
+            }
+
+        return out

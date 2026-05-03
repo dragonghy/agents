@@ -44,6 +44,15 @@ class _FakeStore:
         self.sessions: dict[str, dict] = {}
         self.list_calls = 0
         self.get_calls: list[str] = []
+        self.paginated_response: tuple[list[dict], int] = ([], 0)
+        self.paginated_calls: list[dict] = []
+        self.by_profile_response: list[dict] = []
+        self.by_ticket_response: list[dict] = []
+        self.totals_response: dict = {
+            "today": {"tokens_in": 0, "tokens_out": 0, "sessions_count": 0},
+            "week": {"tokens_in": 0, "tokens_out": 0, "sessions_count": 0},
+            "lifetime": {"tokens_in": 0, "tokens_out": 0, "sessions_count": 0},
+        }
 
     async def list_profile_registry(self) -> list[dict]:
         self.list_calls += 1
@@ -52,6 +61,36 @@ class _FakeStore:
     async def get_session(self, session_id: str):
         self.get_calls.append(session_id)
         return self.sessions.get(session_id)
+
+    async def list_sessions_paginated(
+        self,
+        status=None,
+        profile_name=None,
+        ticket_id=None,
+        limit=50,
+        offset=0,
+    ):
+        self.paginated_calls.append(
+            {
+                "status": status,
+                "profile_name": profile_name,
+                "ticket_id": ticket_id,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
+        if status is not None and status not in ("active", "closed"):
+            raise ValueError(f"invalid status: {status!r}")
+        return self.paginated_response
+
+    async def cost_by_profile(self):
+        return list(self.by_profile_response)
+
+    async def cost_by_ticket(self):
+        return list(self.by_ticket_response)
+
+    async def cost_totals(self):
+        return dict(self.totals_response)
 
 
 class _FakeSessionManager:
@@ -442,6 +481,172 @@ class TestCallableInjection:
         r = client.get("/api/v1/orchestration/profiles")
         assert r.status_code == 200
         assert r.json()["total"] == 1
+
+
+# ── GET /cost/* (Task #18 Part A) ──────────────────────────────────────────
+
+
+class TestCostBySession:
+    def test_empty(self, harness):
+        client, store, _ = harness
+        store.paginated_response = ([], 0)
+        r = client.get("/api/v1/orchestration/cost/by-session")
+        assert r.status_code == 200
+        body = r.json()
+        assert body == {"sessions": [], "total": 0, "limit": 50, "offset": 0}
+        assert store.paginated_calls == [
+            {
+                "status": None,
+                "profile_name": None,
+                "ticket_id": None,
+                "limit": 50,
+                "offset": 0,
+            }
+        ]
+
+    def test_returns_rows_with_usd(self, harness):
+        client, store, _ = harness
+        store.paginated_response = (
+            [
+                {
+                    "id": "sess_a",
+                    "profile_name": "tpm",
+                    "ticket_id": 100,
+                    "channel_id": None,
+                    "status": "active",
+                    "cost_tokens_in": 1_000_000,
+                    "cost_tokens_out": 500_000,
+                    "created_at": "2026-05-03 10:00:00",
+                },
+            ],
+            1,
+        )
+        r = client.get("/api/v1/orchestration/cost/by-session")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total"] == 1
+        row = body["sessions"][0]
+        # 1M input * $3/M + 500K output * $15/M = $3 + $7.5 = $10.5
+        assert row["cost_usd"] == 10.5
+
+    def test_filters_passthrough(self, harness):
+        client, store, _ = harness
+        r = client.get(
+            "/api/v1/orchestration/cost/by-session"
+            "?status=active&profile=tpm&ticket=42&limit=10&offset=20"
+        )
+        assert r.status_code == 200
+        assert store.paginated_calls[0] == {
+            "status": "active",
+            "profile_name": "tpm",
+            "ticket_id": 42,
+            "limit": 10,
+            "offset": 20,
+        }
+
+    def test_invalid_ticket_400(self, harness):
+        client, _, _ = harness
+        r = client.get("/api/v1/orchestration/cost/by-session?ticket=abc")
+        assert r.status_code == 400
+
+    def test_invalid_status_400(self, harness):
+        client, _, _ = harness
+        r = client.get("/api/v1/orchestration/cost/by-session?status=bogus")
+        assert r.status_code == 400
+
+    def test_limit_capped(self, harness):
+        client, store, _ = harness
+        client.get("/api/v1/orchestration/cost/by-session?limit=9999")
+        assert store.paginated_calls[0]["limit"] == 500
+
+
+class TestCostByProfile:
+    def test_empty(self, harness):
+        client, store, _ = harness
+        store.by_profile_response = []
+        r = client.get("/api/v1/orchestration/cost/by-profile")
+        assert r.status_code == 200
+        assert r.json() == {"rollup": [], "total": 0}
+
+    def test_with_rows(self, harness):
+        client, store, _ = harness
+        store.by_profile_response = [
+            {
+                "profile_name": "tpm",
+                "sessions_count": 3,
+                "total_tokens_in": 2_000_000,
+                "total_tokens_out": 1_000_000,
+                "last_used_at": "2026-05-03 10:00:00",
+            }
+        ]
+        r = client.get("/api/v1/orchestration/cost/by-profile")
+        body = r.json()
+        assert body["total"] == 1
+        # 2M*3 + 1M*15 = 6 + 15 = 21
+        assert body["rollup"][0]["total_usd"] == 21.0
+
+
+class TestCostByTicket:
+    def test_empty(self, harness):
+        client, store, _ = harness
+        store.by_ticket_response = []
+        r = client.get("/api/v1/orchestration/cost/by-ticket")
+        assert r.status_code == 200
+        assert r.json() == {"rollup": [], "total": 0}
+
+    def test_with_rows(self, harness):
+        client, store, _ = harness
+        store.by_ticket_response = [
+            {
+                "ticket_id": 18,
+                "sessions_count": 2,
+                "total_tokens_in": 100_000,
+                "total_tokens_out": 50_000,
+                "last_used_at": "2026-05-03 10:00:00",
+            }
+        ]
+        r = client.get("/api/v1/orchestration/cost/by-ticket")
+        body = r.json()
+        assert body["total"] == 1
+        # 100K*3 + 50K*15 = $0.3 + $0.75 = $1.05
+        assert body["rollup"][0]["total_usd"] == 1.05
+
+
+class TestCostTotals:
+    def test_empty(self, harness):
+        client, _, _ = harness
+        r = client.get("/api/v1/orchestration/cost/totals")
+        assert r.status_code == 200
+        body = r.json()
+        assert "today" in body
+        assert "week" in body
+        assert "lifetime" in body
+        assert "pricing" in body
+        for bucket in ("today", "week", "lifetime"):
+            assert body[bucket] == {
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "sessions_count": 0,
+                "usd": 0.0,
+            }
+
+    def test_with_data(self, harness):
+        client, store, _ = harness
+        store.totals_response = {
+            "today": {"tokens_in": 1_000_000, "tokens_out": 0, "sessions_count": 5},
+            "week": {"tokens_in": 5_000_000, "tokens_out": 100_000, "sessions_count": 20},
+            "lifetime": {"tokens_in": 10_000_000, "tokens_out": 200_000, "sessions_count": 100},
+        }
+        r = client.get("/api/v1/orchestration/cost/totals")
+        body = r.json()
+        # 1M * 3 = $3
+        assert body["today"]["usd"] == 3.0
+        # 5M * 3 + 100K * 15 = 15 + 1.5 = 16.5
+        assert body["week"]["usd"] == 16.5
+        # 10M * 3 + 200K * 15 = 30 + 3 = 33
+        assert body["lifetime"]["usd"] == 33.0
+        assert body["pricing"]["input_per_million"] == 3.0
+        assert body["pricing"]["output_per_million"] == 15.0
 
 
 # Make pyflakes happy — Any imported for typing comments only.

@@ -110,3 +110,53 @@ export interface SessionMessage {
   text: string;
   ts: number; // local epoch ms — for stable React keys
 }
+
+// ── Cost dashboard (Task #18 Part A) ──
+
+export interface CostBySessionRow {
+  id: string;
+  profile_name: string;
+  ticket_id: number | null;
+  channel_id: string | null;
+  status: 'active' | 'closed';
+  cost_tokens_in: number;
+  cost_tokens_out: number;
+  cost_usd: number;
+  created_at: string;
+}
+
+export interface CostByProfileRow {
+  profile_name: string;
+  sessions_count: number;
+  total_tokens_in: number;
+  total_tokens_out: number;
+  total_usd: number;
+  last_used_at: string | null;
+}
+
+export interface CostByTicketRow {
+  ticket_id: number;
+  sessions_count: number;
+  total_tokens_in: number;
+  total_tokens_out: number;
+  total_usd: number;
+  last_used_at: string | null;
+}
+
+export interface CostBucket {
+  tokens_in: number;
+  tokens_out: number;
+  sessions_count: number;
+  usd: number;
+}
+
+export interface CostTotalsResponse {
+  today: CostBucket;
+  week: CostBucket;
+  lifetime: CostBucket;
+  pricing: {
+    input_per_million: number;
+    output_per_million: number;
+    note: string;
+  };
+}
