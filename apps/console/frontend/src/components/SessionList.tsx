@@ -1,8 +1,9 @@
 /**
- * SessionList — paginated list of all sessions (Task #18 Part B).
+ * SessionList — paginated list of all sessions.
  *
- * Filters: status (active|closed|all), profile_name, ticket_id.
- * Click a row → navigate to /sessions/:id.
+ * Filters: status / profile / ticket id / live-search (id, channel,
+ * binding). Live indicator: any session that received a streaming
+ * chunk in the last 4s gets a pulsing green dot in the row.
  */
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
@@ -10,8 +11,9 @@ import { listProfiles, listSessions } from '../api';
 import { sseBus } from '../lib/sseBus';
 import type { Profile, Session } from '../types';
 
-const REFRESH_MS = 15000;
+const REFRESH_MS = 15_000;
 const PAGE_SIZE = 50;
+const STREAMING_FRESH_MS = 4_000;
 
 export default function SessionList() {
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -23,14 +25,16 @@ export default function SessionList() {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [profileFilter, setProfileFilter] = useState<string>('all');
   const [ticketFilter, setTicketFilter] = useState<string>('');
+  const [search, setSearch] = useState<string>('');
   const [offset, setOffset] = useState<number>(0);
+  const [lastChunkBySession, setLastChunkBySession] = useState<Record<string, number>>({});
 
-  // Load profile list once for the filter dropdown.
+  // Profiles dropdown
   useEffect(() => {
     listProfiles()
       .then((r) => setProfiles(r.profiles))
       .catch(() => {
-        // Non-fatal — filter just won't be populated.
+        /* non-fatal */
       });
   }, []);
 
@@ -60,22 +64,14 @@ export default function SessionList() {
       }
     };
     load();
-    // Polling kept as a backstop. SSE handlers below merge new rows in
-    // immediately so the user sees lifecycle events without waiting.
     const id = setInterval(load, REFRESH_MS);
 
     const offCreated = sseBus.subscribe('session.created', (ev) => {
       const row = ev.payload as unknown as Session;
       if (!row || !row.id) return;
-      // Respect active filters: only insert rows that match.
       if (statusFilter !== 'all' && row.status !== statusFilter) return;
-      if (profileFilter !== 'all' && row.profile_name !== profileFilter)
-        return;
-      if (
-        Number.isFinite(ticketNum as number) &&
-        row.ticket_id !== ticketNum
-      )
-        return;
+      if (profileFilter !== 'all' && row.profile_name !== profileFilter) return;
+      if (Number.isFinite(ticketNum as number) && row.ticket_id !== ticketNum) return;
       setSessions((prev) => {
         if (prev.some((s) => s.id === row.id)) return prev;
         return [row, ...prev].slice(0, PAGE_SIZE);
@@ -86,9 +82,7 @@ export default function SessionList() {
       const p = ev.payload as { session_id?: string };
       if (!p.session_id) return;
       setSessions((prev) =>
-        prev.map((s) =>
-          s.id === p.session_id ? { ...s, status: 'closed' as const } : s
-        )
+        prev.map((s) => (s.id === p.session_id ? { ...s, status: 'closed' as const } : s))
       );
     });
     const offCost = sseBus.subscribe('session.cost_updated', (ev) => {
@@ -110,6 +104,12 @@ export default function SessionList() {
         )
       );
     });
+    const offMsg = sseBus.subscribe('session.message_appended', (ev) => {
+      const p = ev.payload as { session_id?: string; role?: string };
+      if (p.role === 'assistant' && p.session_id) {
+        setLastChunkBySession((prev) => ({ ...prev, [p.session_id!]: Date.now() }));
+      }
+    });
 
     return () => {
       cancelled = true;
@@ -117,8 +117,16 @@ export default function SessionList() {
       offCreated();
       offClosed();
       offCost();
+      offMsg();
     };
   }, [statusFilter, profileFilter, ticketFilter, offset]);
+
+  // Drive the live-dot fade with a 1Hz tick.
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => forceTick((x) => x + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
 
   const totalPages = useMemo(
     () => Math.max(1, Math.ceil(total / PAGE_SIZE)),
@@ -126,167 +134,183 @@ export default function SessionList() {
   );
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
 
+  const q = search.trim().toLowerCase();
+  const filteredRows = q
+    ? sessions.filter(
+        (s) =>
+          s.id.toLowerCase().includes(q) ||
+          (s.channel_id || '').toLowerCase().includes(q) ||
+          (s.binding_kind || '').toLowerCase().includes(q)
+      )
+    : sessions;
+
   return (
     <div>
       <div className="page-header">
         <h2>Sessions</h2>
-        <span className="subtitle">
-          {total} total · refreshes every 15s
-        </span>
+        <span className="subtitle">{total} total · refreshes every 15s</span>
       </div>
 
       {/* Filters */}
-      <div
-        className="card"
-        style={{ marginBottom: 12, display: 'flex', gap: 12, flexWrap: 'wrap' }}
-      >
-        <label style={filterLabelStyle}>
-          Status:&nbsp;
+      <div className="card filters-toolbar" style={{ marginBottom: 12 }}>
+        <div className="filters-row-1">
           <select
             value={statusFilter}
             onChange={(e) => {
               setStatusFilter(e.target.value);
               setOffset(0);
             }}
+            className="filter-select"
           >
-            <option value="all">all</option>
-            <option value="active">active</option>
-            <option value="closed">closed</option>
+            <option value="all">All statuses</option>
+            <option value="active">Active only</option>
+            <option value="closed">Closed only</option>
           </select>
-        </label>
-        <label style={filterLabelStyle}>
-          Profile:&nbsp;
           <select
             value={profileFilter}
             onChange={(e) => {
               setProfileFilter(e.target.value);
               setOffset(0);
             }}
+            className="filter-select"
           >
-            <option value="all">all</option>
+            <option value="all">All profiles</option>
             {profiles.map((p) => (
               <option key={p.name} value={p.name}>
                 {p.name}
               </option>
             ))}
           </select>
-        </label>
-        <label style={filterLabelStyle}>
-          Ticket:&nbsp;
           <input
             type="text"
-            placeholder="#id"
+            placeholder="ticket #id"
             value={ticketFilter}
             onChange={(e) => {
               setTicketFilter(e.target.value);
               setOffset(0);
             }}
-            style={{ width: 80 }}
+            className="filter-input-mini"
+            style={{ width: 100 }}
           />
-        </label>
+          <input
+            type="search"
+            placeholder="Search id / channel / binding…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="filter-search"
+          />
+        </div>
       </div>
 
       {error && <div className="error">{error}</div>}
       {loading && sessions.length === 0 && <p className="loading">Loading sessions…</p>}
 
-      {!loading && sessions.length === 0 && !error && (
+      {!loading && filteredRows.length === 0 && !error && (
         <div className="empty-state">No sessions match these filters.</div>
       )}
 
-      {sessions.length > 0 && (
+      {filteredRows.length > 0 && (
         <div className="card">
-          <h3 style={{ marginTop: 0 }}>
-            Page {currentPage} / {totalPages}
-          </h3>
-          <table style={tableStyle}>
+          <div style={{ display: 'flex', alignItems: 'baseline', marginBottom: 10 }}>
+            <h3 style={{ margin: 0, fontSize: 12 }}>
+              Page {currentPage} / {totalPages}
+            </h3>
+            <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>
+              {filteredRows.length} of {sessions.length} on this page
+              {q && <em> · search active</em>}
+            </span>
+          </div>
+          <table className="data-table">
             <thead>
               <tr>
-                <th style={thStyle}>Session</th>
-                <th style={thStyle}>Profile</th>
-                <th style={thStyle}>Binding</th>
-                <th style={thStyle}>Ticket</th>
-                <th style={thStyle}>Status</th>
-                <th style={{ ...thStyle, textAlign: 'right' }}>Tokens</th>
-                <th style={thStyle}>Created</th>
+                <th>Session</th>
+                <th>Profile</th>
+                <th>Binding</th>
+                <th>Ticket</th>
+                <th>Status</th>
+                <th style={{ textAlign: 'right' }}>Tokens (in / out)</th>
+                <th>Created</th>
               </tr>
             </thead>
             <tbody>
-              {sessions.map((s) => (
-                <tr key={s.id}>
-                  <td style={tdStyle}>
-                    <Link
-                      to={`/sessions/${encodeURIComponent(s.id)}`}
-                      style={{ color: 'var(--text)', textDecoration: 'underline' }}
-                    >
-                      <code style={{ fontSize: 11 }}>{s.id}</code>
-                    </Link>
-                  </td>
-                  <td style={tdStyle}>{s.profile_name}</td>
-                  <td style={tdStyle}>{s.binding_kind}</td>
-                  <td style={tdStyle}>
-                    {s.ticket_id ? `#${s.ticket_id}` : <span style={dimStyle}>—</span>}
-                  </td>
-                  <td style={tdStyle}>
-                    <StatusBadge status={s.status} />
-                  </td>
-                  <td style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace', fontSize: 11 }}>
-                    {(s.cost_tokens_in || 0).toLocaleString()} /{' '}
-                    {(s.cost_tokens_out || 0).toLocaleString()}
-                  </td>
-                  <td style={tdStyle}>{(s.created_at || '').slice(0, 16)}</td>
-                </tr>
-              ))}
+              {filteredRows.map((s) => {
+                const last = lastChunkBySession[s.id] || 0;
+                const isStreaming = last > 0 && Date.now() - last < STREAMING_FRESH_MS;
+                const isTpm =
+                  s.parent_session_id == null && s.profile_name === 'tpm';
+                return (
+                  <tr key={s.id} className={isTpm ? 'data-row-tpm' : ''}>
+                    <td>
+                      <Link
+                        to={`/sessions/${encodeURIComponent(s.id)}`}
+                        className="session-link"
+                      >
+                        <code>{s.id.slice(0, 30)}{s.id.length > 30 ? '…' : ''}</code>
+                      </Link>
+                      {isTpm && <span className="tpm-badge">TPM</span>}
+                      {isStreaming && (
+                        <span
+                          title="streaming live"
+                          style={{
+                            display: 'inline-block',
+                            width: 6,
+                            height: 6,
+                            borderRadius: '50%',
+                            background: 'var(--status-active)',
+                            marginLeft: 6,
+                            verticalAlign: 'middle',
+                            animation: 'streamingPulse 1.2s ease-in-out infinite',
+                          }}
+                        />
+                      )}
+                    </td>
+                    <td>{s.profile_name}</td>
+                    <td className="binding-cell">{s.binding_kind}</td>
+                    <td>
+                      {s.ticket_id ? (
+                        <Link to={`/tickets/${s.ticket_id}`} className="session-link-dim">
+                          #{s.ticket_id}
+                        </Link>
+                      ) : (
+                        <span style={{ color: 'var(--text-muted)' }}>—</span>
+                      )}
+                    </td>
+                    <td>
+                      <span className={`session-status status-${s.status}`}>{s.status}</span>
+                    </td>
+                    <td style={{ textAlign: 'right', fontFamily: 'monospace', fontSize: 11 }}>
+                      {(s.cost_tokens_in || 0).toLocaleString()} /{' '}
+                      {(s.cost_tokens_out || 0).toLocaleString()}
+                    </td>
+                    <td style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                      {(s.created_at || '').slice(0, 16)}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
-          <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
+          <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
             <button
               onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
               disabled={currentPage <= 1}
+              className="btn-secondary btn-sm"
             >
               ← Prev
             </button>
             <button
               onClick={() => setOffset(offset + PAGE_SIZE)}
               disabled={currentPage >= totalPages}
+              className="btn-secondary btn-sm"
             >
               Next →
             </button>
+            <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>
+              showing {offset + 1}–{Math.min(offset + PAGE_SIZE, total)} of {total}
+            </span>
           </div>
         </div>
       )}
     </div>
   );
 }
-
-function StatusBadge({ status }: { status: string }) {
-  const color = status === 'active' ? '#4ade80' : 'var(--text-muted)';
-  return (
-    <span style={{ color, fontWeight: 600, fontSize: 12 }}>{status}</span>
-  );
-}
-
-const filterLabelStyle: React.CSSProperties = {
-  fontSize: 12,
-  color: 'var(--text-dim)',
-};
-const tableStyle: React.CSSProperties = {
-  width: '100%',
-  borderCollapse: 'collapse',
-  fontSize: 13,
-};
-const thStyle: React.CSSProperties = {
-  textAlign: 'left',
-  padding: '6px 8px',
-  borderBottom: '1px solid var(--border)',
-  color: 'var(--text-dim)',
-  fontWeight: 600,
-  fontSize: 11,
-  textTransform: 'uppercase',
-};
-const tdStyle: React.CSSProperties = {
-  padding: '6px 8px',
-  borderBottom: '1px solid var(--border)',
-};
-const dimStyle: React.CSSProperties = {
-  color: 'var(--text-muted)',
-};
