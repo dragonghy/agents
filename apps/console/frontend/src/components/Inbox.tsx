@@ -57,7 +57,6 @@ export default function Inbox() {
   // "Needs attention" signals
   const [blocked, setBlocked] = useState<TicketSummary[]>([]);
   const [humanBlocked, setHumanBlocked] = useState<TicketSummary[]>([]);
-  const [unassignedWip, setUnassignedWip] = useState<TicketSummary[]>([]);
   const [staleTickets, setStaleTickets] = useState<TicketSummary[]>([]);
 
   // Per-session "last activity" — used to sort + show streaming dot.
@@ -101,9 +100,6 @@ export default function Inbox() {
       setBlocked(otherBlocked);
 
       const wipTickets = wipList.tickets || [];
-      setUnassignedWip(
-        wipTickets.filter((tk) => !(tk.assignee || '').trim())
-      );
       // Stale = WIP for >7 days based on the ``date`` (created) column.
       // Imperfect (we don't track last-modified yet) but better than
       // nothing — Human asked for "stale-in-progress" surfacing.
@@ -114,7 +110,7 @@ export default function Inbox() {
             const ts = tk.date ? Date.parse(tk.date.replace(' ', 'T')) : NaN;
             return Number.isFinite(ts) && ts < sevenDaysAgo;
           })
-          .slice(0, 5)
+          .slice(0, 8)
       );
 
       setError(null);
@@ -162,7 +158,7 @@ export default function Inbox() {
   });
 
   const totalDecisions =
-    humanBlocked.length + blocked.length + unassignedWip.length + staleTickets.length;
+    humanBlocked.length + blocked.length + staleTickets.length;
 
   return (
     <div>
@@ -282,23 +278,15 @@ export default function Inbox() {
         )}
       </div>
 
-      {/* ── 3. Stale + Unassigned (lower priority) ─────────────────── */}
-      {(unassignedWip.length > 0 || staleTickets.length > 0) && (
+      {/* ── 3. Stale tickets ───────────────────────────────────────── */}
+      {staleTickets.length > 0 && (
         <div className="card section-card" style={{ marginBottom: 14 }}>
           <SectionHeader
-            title="Loose ends"
-            count={unassignedWip.length + staleTickets.length}
-            help="In-progress tickets that are unassigned or have been WIP for > 7 days"
+            title="Stale"
+            count={staleTickets.length}
+            help="In-progress tickets that haven't moved in > 7 days"
           />
           <ul className="attention-list">
-            {unassignedWip.slice(0, 5).map((tk) => (
-              <AttentionRow
-                key={`u-${tk.id}`}
-                ticket={tk}
-                tag="UNASSIGNED"
-                tagColor="var(--text-dim)"
-              />
-            ))}
             {staleTickets.map((tk) => (
               <AttentionRow
                 key={`s-${tk.id}`}
@@ -427,8 +415,8 @@ function AttentionRow({
           {tag}
         </span>
         <span className="attention-headline">{ticket.headline || '(no headline)'}</span>
-        {ticket.assignee && (
-          <span className="attention-assignee">→ {ticket.assignee}</span>
+        {ticket.workspace_name && (
+          <span className="attention-ws">{ticket.workspace_name}</span>
         )}
       </Link>
     </li>

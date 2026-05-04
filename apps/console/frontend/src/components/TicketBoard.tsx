@@ -28,7 +28,6 @@ const LS_KEYS = {
   mode: 'console.tickets.mode',
   statuses: 'console.tickets.statuses', // comma-sep status numbers
   priorities: 'console.tickets.priorities',
-  assignee: 'console.tickets.assignee',
   tag: 'console.tickets.tag',
 };
 
@@ -82,7 +81,6 @@ export default function TicketBoard() {
   const [workspaceId, setWorkspaceId] = useState<number | null>(readWorkspace);
   const [statuses, setStatuses] = useState<number[]>(readStatuses);
   const [priorities, setPriorities] = useState<string[]>(readPriorities);
-  const [assigneeFilter, setAssigneeFilter] = useState<string>(() => readLS(LS_KEYS.assignee));
   const [tagFilter, setTagFilter] = useState<string>(() => readLS(LS_KEYS.tag));
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [showCreate, setShowCreate] = useState(false);
@@ -133,12 +131,10 @@ export default function TicketBoard() {
   function clearFilters() {
     setStatuses([3, 4, 1]);
     setPriorities(ALL_PRIORITIES);
-    setAssigneeFilter('');
     setTagFilter('');
     setSearchQuery('');
     writeLS(LS_KEYS.statuses, '');
     writeLS(LS_KEYS.priorities, '');
-    writeLS(LS_KEYS.assignee, '');
     writeLS(LS_KEYS.tag, '');
   }
 
@@ -151,7 +147,6 @@ export default function TicketBoard() {
   const isFiltered =
     statuses.length !== 3 ||
     priorities.length !== ALL_PRIORITIES.length ||
-    !!assigneeFilter ||
     !!tagFilter ||
     !!searchQuery;
 
@@ -193,7 +188,7 @@ export default function TicketBoard() {
             type="search"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search headline / id / assignee… (live)"
+            placeholder="Search headline / id / tags… (live)"
             className="filter-search"
           />
 
@@ -234,16 +229,6 @@ export default function TicketBoard() {
 
           <input
             type="search"
-            value={assigneeFilter}
-            onChange={(e) => {
-              setAssigneeFilter(e.target.value);
-              writeLS(LS_KEYS.assignee, e.target.value);
-            }}
-            placeholder="assignee…"
-            className="filter-input-mini"
-          />
-          <input
-            type="search"
             value={tagFilter}
             onChange={(e) => {
               setTagFilter(e.target.value);
@@ -276,12 +261,17 @@ export default function TicketBoard() {
           workspaceId={workspaceId}
           statuses={statuses}
           priorities={priorities}
-          assigneeFilter={assigneeFilter}
           tagFilter={tagFilter}
           searchQuery={searchQuery}
         />
       ) : (
-        <TicketList workspaceId={workspaceId} />
+        <TicketList
+          workspaceId={workspaceId}
+          statuses={statuses}
+          priorities={priorities}
+          search={searchQuery}
+          tagFilter={tagFilter}
+        />
       )}
     </div>
   );
@@ -293,14 +283,12 @@ function BoardMode({
   workspaceId,
   statuses,
   priorities,
-  assigneeFilter,
   tagFilter,
   searchQuery,
 }: {
   workspaceId: number | null;
   statuses: number[];
   priorities: string[];
-  assigneeFilter: string;
   tagFilter: string;
   searchQuery: string;
 }) {
@@ -338,17 +326,14 @@ function BoardMode({
 
   const q = searchQuery.trim().toLowerCase();
   const tagQ = tagFilter.trim().toLowerCase();
-  const assigneeQ = assigneeFilter.trim().toLowerCase();
 
   function passesFilters(t: TicketSummary): boolean {
     if (!priorities.includes(t.priority || 'medium')) return false;
-    if (assigneeQ && !(t.assignee || '').toLowerCase().includes(assigneeQ)) return false;
     if (tagQ && !(t.tags || '').toLowerCase().includes(tagQ)) return false;
     if (q) {
       const hit =
         String(t.id).includes(q) ||
         (t.headline || '').toLowerCase().includes(q) ||
-        (t.assignee || '').toLowerCase().includes(q) ||
         (t.tags || '').toLowerCase().includes(q);
       if (!hit) return false;
     }
@@ -413,18 +398,26 @@ function BoardCard({ ticket, accent }: { ticket: TicketSummary; accent: string }
         {ticket.type && ticket.type !== 'task' && (
           <span className="ticket-type-chip">{ticket.type}</span>
         )}
+        {ticket.workspace_name && (
+          <span className="ticket-card-ws" style={{ marginLeft: 'auto' }}>
+            {ticket.workspace_name}
+          </span>
+        )}
       </div>
       <div className="ticket-card-headline">{ticket.headline || '(no headline)'}</div>
-      <div className="ticket-card-meta">
-        {ticket.assignee ? (
-          <span>→ {ticket.assignee}</span>
-        ) : (
-          <span style={{ color: 'var(--text-muted)' }}>unassigned</span>
-        )}
-        {ticket.workspace_name && (
-          <span className="ticket-card-ws">{ticket.workspace_name}</span>
-        )}
-      </div>
+      {ticket.tags && (
+        <div className="ticket-card-tags">
+          {ticket.tags
+            .split(',')
+            .filter((t) => t.trim() && !t.trim().startsWith('agent:'))
+            .slice(0, 3)
+            .map((t, i) => (
+              <span key={i} className="tag-mini">
+                {t.trim()}
+              </span>
+            ))}
+        </div>
+      )}
     </Link>
   );
 }
@@ -441,7 +434,6 @@ function CreatePanel({
   const [headline, setHeadline] = useState('');
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState('medium');
-  const [assignee, setAssignee] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const navigate = useNavigate();
@@ -455,7 +447,6 @@ function CreatePanel({
         headline: headline.trim(),
         description: description.trim() || undefined,
         priority,
-        assignee: assignee.trim() || undefined,
         workspace_id: workspaceId ?? undefined,
       });
       onCreated(r.ticket.id);
@@ -500,12 +491,6 @@ function CreatePanel({
             </option>
           ))}
         </select>
-        <input
-          value={assignee}
-          onChange={(e) => setAssignee(e.target.value)}
-          placeholder="assignee (optional)"
-          className="filter-input-mini"
-        />
         <button
           onClick={onSubmit}
           disabled={busy || !headline.trim()}

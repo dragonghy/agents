@@ -853,9 +853,12 @@ select.pill-select:hover:not(:disabled) {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.attention-assignee {
-  font-size: 11px;
+.attention-ws {
+  font-size: 10px;
   color: var(--text-muted);
+  background: var(--bg-panel-hover);
+  border-radius: 3px;
+  padding: 1px 6px;
   white-space: nowrap;
 }
 
@@ -1057,6 +1060,95 @@ select.pill-select:hover:not(:disabled) {
   padding: 1px 6px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+}
+
+.ticket-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+}
+.tag-mini {
+  background: var(--bg);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+/* ── List view tree ────────────────────────────────────────────────── */
+
+.project-block-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+.project-block-count {
+  background: var(--bg-panel-hover);
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 0 8px;
+  font-size: 10px;
+  font-weight: 500;
+}
+.ticket-tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.ticket-tree-children {
+  list-style: none;
+  margin: 3px 0 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--text-muted);
+  background: var(--bg);
+  text-decoration: none;
+  color: var(--text);
+  font-size: 13px;
+  border-radius: 0 4px 4px 0;
+  transition: background 0.12s ease;
+}
+.tree-row:hover {
+  background: var(--bg-panel-hover);
+  text-decoration: none;
+}
+.tree-row-id {
+  font-size: 11px;
+  color: var(--text-dim);
+  min-width: 50px;
+}
+.tree-row-status {
+  font-size: 10px;
+  font-weight: 600;
+  min-width: 60px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.tree-row-headline {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Priority chips reused; tweak the urgent variant. */

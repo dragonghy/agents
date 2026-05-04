@@ -52,8 +52,6 @@ export default function TicketDetail() {
   const [headlineDraft, setHeadlineDraft] = useState('');
   const [editingDesc, setEditingDesc] = useState(false);
   const [descDraft, setDescDraft] = useState('');
-  const [editingAssignee, setEditingAssignee] = useState(false);
-  const [assigneeDraft, setAssigneeDraft] = useState('');
 
   // Comment composer
   const [commentDraft, setCommentDraft] = useState('');
@@ -170,20 +168,6 @@ export default function TicketDetail() {
     setEditingDesc(false);
   }
 
-  function startAssigneeEdit() {
-    if (!ticket) return;
-    setAssigneeDraft(ticket.assignee || '');
-    setEditingAssignee(true);
-  }
-  async function saveAssignee() {
-    if (assigneeDraft.trim() === (ticket?.assignee || '')) {
-      setEditingAssignee(false);
-      return;
-    }
-    await patch({ assignee: assigneeDraft.trim() });
-    setEditingAssignee(false);
-  }
-
   if (loading && !ticket) return <p className="loading">Loading ticket…</p>;
   if (error && !ticket) {
     return (
@@ -295,40 +279,6 @@ export default function TicketDetail() {
             }
             muted
           />
-          <div className="pill-group">
-            <span className="pill-label">Assignee</span>
-            {editingAssignee ? (
-              <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                <input
-                  value={assigneeDraft}
-                  onChange={(e) => setAssigneeDraft(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') saveAssignee();
-                    if (e.key === 'Escape') setEditingAssignee(false);
-                  }}
-                  autoFocus
-                  disabled={busy}
-                  placeholder="(empty for unassigned)"
-                  className="inline-input"
-                  style={{ width: 140 }}
-                />
-                <button onClick={saveAssignee} disabled={busy} className="btn-primary btn-sm">
-                  Save
-                </button>
-                <button onClick={() => setEditingAssignee(false)} disabled={busy} className="btn-secondary btn-sm">
-                  ✕
-                </button>
-              </span>
-            ) : (
-              <span
-                onClick={startAssigneeEdit}
-                className="pill-value editable"
-                title="click to edit"
-              >
-                {ticket.assignee || <em style={{ color: 'var(--text-muted)' }}>unassigned</em>}
-              </span>
-            )}
-          </div>
         </div>
 
         {ticket.tags && (
