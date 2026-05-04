@@ -59,7 +59,13 @@ from claude_agent_sdk import (
     query,
 )
 
-from .base import Profile, RenderedMessage, RunResult, SessionMetadata
+from .base import (
+    AssistantChunkCallback,
+    Profile,
+    RenderedMessage,
+    RunResult,
+    SessionMetadata,
+)
 
 if TYPE_CHECKING:
     from agents_mcp.store import AgentStore
@@ -128,6 +134,7 @@ class ClaudeAdapter:
         *,
         mcp_servers: dict[str, Any] | None = None,
         allowed_tools: list[str] | None = None,
+        on_assistant_chunk: AssistantChunkCallback | None = None,
     ) -> RunResult:
         """Execute one Claude turn for the given session.
 
@@ -177,11 +184,31 @@ class ClaudeAdapter:
             if isinstance(event, AssistantMessage):
                 if event.session_id and captured_session_id is None:
                     captured_session_id = event.session_id
+                # Collect TextBlocks for *this* AssistantMessage; this is
+                # what gets streamed to channel consumers as one progress
+                # chunk. The aggregated form (across all messages in the
+                # turn) is still returned in RunResult.assistant_text.
+                message_text_chunks: list[str] = []
                 for block in event.content:
                     if isinstance(block, TextBlock):
-                        assistant_chunks.append(block.text)
+                        message_text_chunks.append(block.text)
                     # ToolUseBlock / ThinkingBlock / etc. are intentionally
                     # ignored at this layer — Task #11+ will surface them.
+                message_text = "".join(message_text_chunks)
+                if message_text:
+                    assistant_chunks.append(message_text)
+                    if on_assistant_chunk is not None:
+                        # Best-effort streaming. A failure in the consumer
+                        # (e.g. Telegram outage) must not abort the SDK
+                        # turn — log and continue. The final aggregate is
+                        # still recoverable from RunResult.assistant_text.
+                        try:
+                            await on_assistant_chunk(message_text)
+                        except Exception:
+                            logger.exception(
+                                "ClaudeAdapter: on_assistant_chunk callback "
+                                "raised; continuing turn"
+                            )
             elif isinstance(event, ResultMessage):
                 if event.session_id and captured_session_id is None:
                     captured_session_id = event.session_id

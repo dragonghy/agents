@@ -765,6 +765,9 @@ class TestEventBusPublishing:
                 await mgr.append_message(row["id"], "hello")
 
             # Expect ordering: user message → assistant message → cost.
+            # Non-streaming adapter (FakeAdapter) takes the aggregate
+            # fallback path: one assistant event with the full text +
+            # final tokens.
             kinds = [k for k, _ in bus.events]
             assert kinds == [
                 "session.message_appended",
@@ -787,6 +790,160 @@ class TestEventBusPublishing:
             # Cumulative — first turn => same as just-added.
             assert cost_payload["cost_tokens_in"] == 11
             assert cost_payload["cost_tokens_out"] == 7
+
+            await store.close()
+
+        run(_t())
+
+    def test_append_streams_per_chunk_when_adapter_invokes_callback(
+        self, db_path, profiles_dir
+    ):
+        """Streaming adapters invoke ``on_assistant_chunk`` once per
+        assistant message inside a turn; SessionManager publishes one
+        ``session.message_appended`` event per chunk (instead of the
+        single aggregate event the fallback path emits) so channel
+        consumers see progress mid-turn.
+        """
+
+        class _StreamingFakeAdapter:
+            def __init__(self, chunks: list[str], tokens_in=20, tokens_out=8):
+                self.chunks = chunks
+                self.tokens_in = tokens_in
+                self.tokens_out = tokens_out
+                self.captured_callback = None
+
+            async def run(
+                self,
+                profile,
+                session_metadata,
+                new_message_text,
+                store,
+                **kwargs,
+            ):
+                cb = kwargs.get("on_assistant_chunk")
+                self.captured_callback = cb
+                # Emulate the SDK's stream of AssistantMessages: invoke
+                # the callback once per chunk before returning the final
+                # aggregated RunResult.
+                if cb is not None:
+                    for chunk in self.chunks:
+                        await cb(chunk)
+                # Mirror real adapter side effects.
+                await store.update_session_native_handle(
+                    session_metadata.session_id, "fake-streaming-handle"
+                )
+                await store.add_session_cost(
+                    session_metadata.session_id,
+                    self.tokens_in,
+                    self.tokens_out,
+                )
+                return RunResult(
+                    assistant_text="".join(self.chunks),
+                    tokens_in=self.tokens_in,
+                    tokens_out=self.tokens_out,
+                    native_handle="fake-streaming-handle",
+                )
+
+        async def _t():
+            store = await _make_store(db_path)
+            _write_profile(profiles_dir, "tpm")
+            bus = _FakeEventBus()
+            mgr = SessionManager(store, profiles_dir, event_bus=bus)
+            row = await mgr.spawn(
+                profile_name="tpm", binding_kind="standalone"
+            )
+            bus.events.clear()
+
+            fake = _StreamingFakeAdapter(
+                chunks=[
+                    "明白，我先找到 create_ticket 的实现：",
+                    "找到了，让我把 workspace 继承补上：",
+                    "已修复，运行测试确认。",
+                ]
+            )
+            with patch(
+                "agents_mcp.orchestration_session_manager.get_adapter",
+                return_value=fake,
+            ):
+                await mgr.append_message(row["id"], "请修复这个 bug")
+
+            # Sequence: user → 3 streaming assistant chunks → cost.
+            # The legacy aggregate event MUST NOT appear (would dup text).
+            kinds = [k for k, _ in bus.events]
+            assert kinds == [
+                "session.message_appended",  # user
+                "session.message_appended",  # chunk 1
+                "session.message_appended",  # chunk 2
+                "session.message_appended",  # chunk 3
+                "session.cost_updated",
+            ], f"unexpected event sequence: {kinds}"
+
+            assert bus.events[0][1]["role"] == "user"
+            assert bus.events[0][1]["text"] == "请修复这个 bug"
+
+            chunk_texts = [bus.events[i][1]["text"] for i in (1, 2, 3)]
+            assert chunk_texts == [
+                "明白，我先找到 create_ticket 的实现：",
+                "找到了，让我把 workspace 继承补上：",
+                "已修复，运行测试确认。",
+            ]
+            for i in (1, 2, 3):
+                assert bus.events[i][1]["role"] == "assistant"
+                # Per-chunk events report tokens=0 (final usage only
+                # arrives at end-of-turn via cost_updated).
+                assert bus.events[i][1]["tokens_in"] == 0
+                assert bus.events[i][1]["tokens_out"] == 0
+
+            cost_payload = bus.events[4][1]
+            assert cost_payload["cost_tokens_in"] == 20
+            assert cost_payload["cost_tokens_out"] == 8
+
+            # Adapter saw the callback (sanity check on plumbing).
+            assert fake.captured_callback is not None
+
+            await store.close()
+
+        run(_t())
+
+    def test_append_falls_back_to_aggregate_when_adapter_does_not_stream(
+        self, db_path, profiles_dir
+    ):
+        """A streaming-aware SessionManager must NOT regress non-streaming
+        adapters — if the adapter never invokes ``on_assistant_chunk``,
+        the aggregate event from RunResult.assistant_text is emitted.
+
+        This is the same behavior covered by
+        ``test_append_publishes_user_then_assistant_then_cost`` but
+        called out explicitly so future refactors that change the
+        fallback wiring fail with a meaningful name.
+        """
+
+        async def _t():
+            store = await _make_store(db_path)
+            _write_profile(profiles_dir, "tpm")
+            bus = _FakeEventBus()
+            mgr = SessionManager(store, profiles_dir, event_bus=bus)
+            row = await mgr.spawn(
+                profile_name="tpm", binding_kind="standalone"
+            )
+            bus.events.clear()
+
+            # Plain _FakeAdapter ignores on_assistant_chunk — that's
+            # exactly the non-streaming case under test.
+            fake = _FakeAdapter(assistant_text="aggregate-only", tokens_in=3)
+            with patch(
+                "agents_mcp.orchestration_session_manager.get_adapter",
+                return_value=fake,
+            ):
+                await mgr.append_message(row["id"], "hi")
+
+            assistant_events = [
+                p for k, p in bus.events
+                if k == "session.message_appended" and p.get("role") == "assistant"
+            ]
+            assert len(assistant_events) == 1, assistant_events
+            assert assistant_events[0]["text"] == "aggregate-only"
+            assert assistant_events[0]["tokens_in"] == 3
 
             await store.close()
 

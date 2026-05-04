@@ -124,14 +124,34 @@ class TestAdapterProtocol:
     def test_run_signature(self):
         sig = inspect.signature(Adapter.run)
         params = list(sig.parameters.values())
-        # self, profile, session_metadata, new_message_text, store
-        assert [p.name for p in params] == [
+        # Required positional params come first, in this order. Additional
+        # keyword-only params (e.g. ``on_assistant_chunk`` for streaming)
+        # are additive and not pinned here — adapter implementations may
+        # introduce their own (e.g. ClaudeAdapter adds ``mcp_servers``,
+        # ``allowed_tools``).
+        positional_names = [
+            p.name
+            for p in params
+            if p.kind in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.POSITIONAL_ONLY,
+            )
+        ]
+        assert positional_names == [
             "self",
             "profile",
             "session_metadata",
             "new_message_text",
             "store",
         ]
+        # The streaming callback is part of the formalized Protocol — pin
+        # its name + keyword-only kind so adapters that opt in stay in
+        # sync with the contract.
+        assert "on_assistant_chunk" in sig.parameters
+        assert (
+            sig.parameters["on_assistant_chunk"].kind
+            == inspect.Parameter.KEYWORD_ONLY
+        )
 
     def test_run_is_async(self):
         # Adapter.run is `async def ...: ...` — the underlying function

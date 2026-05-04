@@ -25,10 +25,21 @@ Design references:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Awaitable, Callable, Optional, Protocol
 
 if TYPE_CHECKING:
     from agents_mcp.store import AgentStore
+
+
+# Streaming callback: called with the visible text of each individual
+# assistant message produced inside one LLM turn. Adapters that support
+# streaming MUST invoke this once per ``AssistantMessage`` (per native
+# transcript record) so the orchestration layer can surface intermediate
+# progress to channel consumers (Telegram, Web Console SSE, etc.).
+# Adapters that don't yet support streaming may simply omit the call —
+# the SessionManager falls back to publishing a single aggregate event
+# from ``RunResult.assistant_text`` after ``run()`` returns.
+AssistantChunkCallback = Callable[[str], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -191,6 +202,8 @@ class Adapter(Protocol):
         session_metadata: SessionMetadata,
         new_message_text: str,
         store: "AgentStore",
+        *,
+        on_assistant_chunk: Optional[AssistantChunkCallback] = None,
     ) -> RunResult:
         """Execute one LLM turn for the given session.
 
@@ -202,6 +215,15 @@ class Adapter(Protocol):
             new_message_text: The user message to append to the conversation.
             store: Async store handle for cost / native_handle persistence
                 side effects.
+            on_assistant_chunk: Optional streaming callback. When provided,
+                the Adapter SHOULD invoke ``await on_assistant_chunk(text)``
+                once per individual assistant message produced during the
+                turn (one ``AssistantMessage`` worth of visible text). This
+                lets channel consumers display progress mid-turn instead of
+                waiting for the final aggregate. Adapters without streaming
+                support may ignore this kwarg — the SessionManager falls
+                back to a single aggregate publish from
+                ``RunResult.assistant_text``.
 
         Returns:
             :class:`RunResult` with assistant text, token counts, and the
@@ -236,6 +258,7 @@ class Adapter(Protocol):
 
 __all__ = [
     "Adapter",
+    "AssistantChunkCallback",
     "Profile",
     "ProfileParseError",
     "RenderedMessage",

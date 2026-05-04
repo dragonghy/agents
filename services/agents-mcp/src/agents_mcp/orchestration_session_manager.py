@@ -360,6 +360,34 @@ class SessionManager:
             },
         )
 
+        # Streaming callback: each call publishes one assistant chunk in
+        # real time so channel consumers (Telegram bot, Web Console SSE)
+        # see progress mid-turn instead of one giant blob at the end.
+        # Adapters that don't yet support streaming (e.g. test fakes)
+        # simply never invoke this; we fall back to a single aggregate
+        # publish from RunResult.assistant_text below.
+        streamed_any = False
+
+        async def _stream_chunk(chunk_text: str) -> None:
+            nonlocal streamed_any
+            streamed_any = True
+            # tokens are aggregated at end-of-turn via cost_updated; we
+            # don't have per-chunk usage data and reporting 0 here would
+            # mislead consumers. Leave them at 0 with a note in the kind.
+            self._publish(
+                EVENT_SESSION_MESSAGE_APPENDED,
+                {
+                    "session_id": session_id,
+                    "role": "assistant",
+                    "text": chunk_text,
+                    "tokens_in": 0,
+                    "tokens_out": 0,
+                    "native_handle": session_row["native_handle"],
+                },
+            )
+
+        adapter_kwargs["on_assistant_chunk"] = _stream_chunk
+
         result = await adapter.run(
             profile, snapshot, message_text, self._store, **adapter_kwargs
         )
@@ -371,17 +399,24 @@ class SessionManager:
         cumulative_in = (post_row or {}).get("cost_tokens_in") or 0
         cumulative_out = (post_row or {}).get("cost_tokens_out") or 0
 
-        self._publish(
-            EVENT_SESSION_MESSAGE_APPENDED,
-            {
-                "session_id": session_id,
-                "role": "assistant",
-                "text": result.assistant_text,
-                "tokens_in": result.tokens_in,
-                "tokens_out": result.tokens_out,
-                "native_handle": result.native_handle,
-            },
-        )
+        # If the adapter streamed at least one chunk, the per-chunk events
+        # already cover the assistant side of this turn — don't re-publish
+        # the aggregate (it would duplicate the visible text on consumers
+        # that concatenate events, like the Telegram bot). If nothing
+        # streamed, emit the legacy single aggregate event so non-
+        # streaming adapters still produce a visible turn.
+        if not streamed_any:
+            self._publish(
+                EVENT_SESSION_MESSAGE_APPENDED,
+                {
+                    "session_id": session_id,
+                    "role": "assistant",
+                    "text": result.assistant_text,
+                    "tokens_in": result.tokens_in,
+                    "tokens_out": result.tokens_out,
+                    "native_handle": result.native_handle,
+                },
+            )
         self._publish(
             EVENT_SESSION_COST_UPDATED,
             {

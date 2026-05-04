@@ -446,7 +446,19 @@ class TestFirstTurn:
 
         run(_t())
 
-    def test_mcp_servers_are_logged_not_wired(self, db_path, caplog):
+    def test_profile_mcp_servers_metadata_does_not_auto_wire(
+        self, db_path, caplog
+    ):
+        """``profile.mcp_servers`` is metadata only (logical-name list).
+
+        The adapter must NOT auto-resolve those names into SDK-side MCP
+        configs — concrete configs arrive only via the explicit
+        ``mcp_servers=`` kwarg from the SessionManager. The deferred-
+        wiring warning that used to fire here was removed in PR #38
+        once Phase 2.5 finalized the wiring contract; we now assert the
+        absence of that warning so a future regression doesn't quietly
+        re-introduce it.
+        """
         async def _t():
             store = await _store(db_path)
             await store.create_session(
@@ -490,15 +502,15 @@ class TestFirstTurn:
                         store=store,
                     )
 
-            # We logged the deferred wiring, but did NOT pass mcp_servers
-            # through (Task #11 will do that).
+            # No mcp_servers kwarg passed → SDK options has empty mcp dict.
             opts = captured["calls"][0]["options"]
             assert opts.mcp_servers == {}
 
-            assert any(
+            # The retired "deferred wiring" warning must NOT reappear.
+            assert not any(
                 "MCP wiring is not yet implemented" in r.message
                 for r in caplog.records
-            ), f"expected MCP-deferred log message; got {[r.message for r in caplog.records]}"
+            ), f"deferred-wiring warning leaked back in: {[r.message for r in caplog.records]}"
 
             await store.close()
 
