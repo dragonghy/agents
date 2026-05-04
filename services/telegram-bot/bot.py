@@ -628,13 +628,23 @@ async def _stream_sse(
 
     Sends ``Last-Event-ID`` on the request so the daemon's replay buffer
     catches up any events missed during the disconnect window.
+
+    Read-side keepalive: the daemon emits ``: keepalive\\n\\n`` every 20s
+    on the SSE channel. We set ``sock_read=60s`` so that if 3 consecutive
+    keepalives go missing (daemon crashed, network dropped, etc.) the
+    underlying socket times out and the generator raises, kicking the
+    outer reconnect loop in :func:`outbound_sse_loop`. Without this
+    timeout, an EOF on the daemon side leaves the socket half-open and
+    ``iter_any()`` waits forever (#43).
     """
     headers = {"Accept": "text/event-stream"}
     if last_event_id is not None and last_event_id > 0:
         headers["Last-Event-ID"] = str(last_event_id)
     url = f"{DAEMON_URL}/api/v1/orchestration/events"
-    # No total timeout — the SSE stream is supposed to live forever.
-    timeout = aiohttp.ClientTimeout(total=None, sock_read=None)
+    # No total timeout — the SSE stream is supposed to live forever —
+    # but DO time out individual reads so a dead daemon triggers a
+    # reconnect within ~60s instead of hanging indefinitely.
+    timeout = aiohttp.ClientTimeout(total=None, sock_read=60.0)
     async with session.get(url, headers=headers, timeout=timeout) as resp:
         if resp.status != 200:
             text = await resp.text()

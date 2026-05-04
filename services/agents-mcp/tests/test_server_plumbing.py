@@ -498,7 +498,19 @@ class TestAddCommentNonBlocking:
         run(_t())
 
     def test_dispatch_runs_in_background(self):
-        """The dispatch hook still fires, just asynchronously."""
+        """The dispatch hook fires from a backgrounded task, not the
+        caller's coroutine.
+
+        Originally this test asserted ``dispatch_mock.await_count == 0``
+        right after the caller returned, but that's racy — ``add_comment``
+        ``await``s ``get_store()`` etc. during normal flow, and the event
+        loop can advance the create_task'd coroutine during those awaits
+        when the dispatch is a zero-cost ``AsyncMock``. We now assert the
+        right invariant: the dispatch coroutine runs in a *separate task*
+        (different from the caller's task), which is the actual
+        guarantee provided by ``asyncio.create_task`` regardless of
+        scheduling timing. Also keeps the post-drain count check.
+        """
         async def _t():
             mock_client = MagicMock()
             mock_client.add_comment = AsyncMock(return_value=42)
@@ -506,7 +518,14 @@ class TestAddCommentNonBlocking:
             mock_store = MagicMock()
             mock_sm = MagicMock(name="session_manager")
 
-            dispatch_mock = AsyncMock(return_value="sess_tpm")
+            caller_task = asyncio.current_task()
+            captured_dispatch_task: list[asyncio.Task] = []
+
+            async def _capturing_dispatch(*args, **kwargs):
+                captured_dispatch_task.append(asyncio.current_task())
+                return "sess_tpm"
+
+            dispatch_mock = AsyncMock(side_effect=_capturing_dispatch)
 
             with patch.object(srv, "get_client", return_value=mock_client), \
                  patch.object(srv, "get_store", AsyncMock(return_value=mock_store)), \
@@ -517,7 +536,6 @@ class TestAddCommentNonBlocking:
                     dispatch_mock,
                  ), \
                  patch.object(srv, "_notify_subscribers", AsyncMock()):
-                # Caller returns immediately…
                 await _raw(srv.add_comment)(
                     module="ticket",
                     module_id=33,
@@ -525,15 +543,17 @@ class TestAddCommentNonBlocking:
                     author="dev-emma",
                     author_session_id="sess_emma",
                 )
-                # …and only after we drain do we see the dispatch ran.
-                assert dispatch_mock.await_count == 0, (
-                    "dispatch should not have run synchronously"
-                )
                 await _drain_background_tasks()
 
             assert dispatch_mock.await_count == 1
             assert dispatch_mock.call_args.kwargs["ticket_id"] == 33
             assert dispatch_mock.call_args.kwargs["comment_id"] == 42
+            # The actual contract: dispatch ran in a different task than
+            # the caller. If add_comment had awaited the dispatch inline,
+            # they'd be the same task — that's the regression we're
+            # guarding against.
+            assert len(captured_dispatch_task) == 1
+            assert captured_dispatch_task[0] is not caller_task
 
         run(_t())
 

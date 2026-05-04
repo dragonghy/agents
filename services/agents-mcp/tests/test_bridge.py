@@ -163,38 +163,6 @@ def test_health_reports_task_db_false_on_failure():
         assert body["task_db"] is False  # caught the exception, did not 500
 
 
-# ── GET /api/v1/human/outbox ───────────────────────────────────────────
-
-
-def test_outbox_returns_messages_and_marks_them_processed():
-    rows = [
-        {"id": 1, "body": "hi", "context_type": "", "direction": "outbound"},
-        {"id": 2, "body": "ok", "context_type": "morning_brief", "direction": "outbound"},
-    ]
-    store = _StubStore(outbox_rows=rows)
-    app, _store, _client = _build_app(store=store)
-    with TestClient(app) as tc:
-        r = tc.get("/api/v1/human/outbox")
-        assert r.status_code == 200
-        body = r.json()
-        assert body["count"] == 2
-        assert len(body["messages"]) == 2
-        assert body["messages"][0]["id"] == 1
-        # Each row was marked processed before returning.
-        assert store.processed_ids == [1, 2]
-
-
-def test_outbox_returns_empty_when_no_messages():
-    app, store, _client = _build_app()  # default outbox_rows=[]
-    with TestClient(app) as tc:
-        r = tc.get("/api/v1/human/outbox")
-        assert r.status_code == 200
-        body = r.json()
-        assert body["count"] == 0
-        assert body["messages"] == []
-        assert store.processed_ids == []
-
-
 # ── GET /api/v1/brief ──────────────────────────────────────────────────
 
 
@@ -216,94 +184,6 @@ def test_brief_returns_markdown_text(monkeypatch):
         assert "Morning Brief" in r.text
 
 
-# ── POST /api/v1/human/messages ────────────────────────────────────────
-
-
-def test_post_human_message_rejects_empty_body():
-    app, _store, _client = _build_app()
-    with TestClient(app) as tc:
-        r = tc.post("/api/v1/human/messages", json={"body": ""})
-        assert r.status_code == 400
-        assert "body" in r.json()["error"].lower()
-
-
-def test_post_human_message_routes_to_admin_p2p():
-    """A normal Human message gets stored as inbound + relayed to admin."""
-    app, store, _client = _build_app()
-    with TestClient(app) as tc:
-        r = tc.post(
-            "/api/v1/human/messages",
-            json={"body": "hello world", "channel": "telegram"},
-        )
-        assert r.status_code == 200
-        body = r.json()
-        assert body["received"] is True
-        assert body["routed"] is True
-        assert isinstance(body["message_id"], int)
-
-    # Inbound row recorded.
-    assert len(store.inserted_human) == 1
-    assert store.inserted_human[0]["direction"] == "inbound"
-    assert store.inserted_human[0]["body"] == "hello world"
-    # P2P forward to admin.
-    assert len(store.inserted_p2p) == 1
-    assert store.inserted_p2p[0]["from_agent"] == "human"
-    assert store.inserted_p2p[0]["to_agent"] == "admin"
-    assert "[Telegram]" in store.inserted_p2p[0]["body"]
-
-
-def test_post_human_message_skips_routing_for_slash_commands():
-    """Slash-command messages are stored but not relayed to admin."""
-    app, store, _client = _build_app()
-    with TestClient(app) as tc:
-        r = tc.post("/api/v1/human/messages", json={"body": "/brief"})
-        assert r.status_code == 200
-        body = r.json()
-        # Stored as inbound, but routed=False because slash commands
-        # are bot-handled and shouldn't ping admin.
-        assert body["received"] is True
-        assert body["routed"] is False
-
-    assert len(store.inserted_human) == 1
-    assert len(store.inserted_p2p) == 0
-
-
-# ── POST /api/v1/human/send ────────────────────────────────────────────
-
-
-def test_post_human_outbound_inserts_outbound_row():
-    app, store, _client = _build_app()
-    with TestClient(app) as tc:
-        r = tc.post(
-            "/api/v1/human/send",
-            json={
-                "body": "hello human",
-                "channel": "telegram",
-                "context_type": "executive_brief",
-                "source_agent_type": "admin",
-            },
-        )
-        assert r.status_code == 200
-        body = r.json()
-        assert body["sent"] is True
-        assert isinstance(body["message_id"], int)
-
-    assert len(store.inserted_human) == 1
-    rec = store.inserted_human[0]
-    assert rec["direction"] == "outbound"
-    assert rec["body"] == "hello human"
-    assert rec["channel"] == "telegram"
-    assert rec["context_type"] == "executive_brief"
-    assert rec["source_agent_type"] == "admin"
-
-
-def test_post_human_outbound_rejects_empty_body():
-    app, _store, _client = _build_app()
-    with TestClient(app) as tc:
-        r = tc.post("/api/v1/human/send", json={"body": ""})
-        assert r.status_code == 400
-
-
 # ── Smoke: create_bridge_router can be imported and called ─────────────
 
 
@@ -318,10 +198,8 @@ def test_bridge_router_factory_is_importable():
     )
     assert isinstance(routes, list)
     paths = {r.path for r in routes}
-    assert paths == {
-        "/v1/human/messages",
-        "/v1/human/outbox",
-        "/v1/human/send",
-        "/v1/brief",
-        "/v1/health",
-    }
+    # Phase 5b cleanup (#27): the three /v1/human/* routes were removed
+    # after Phase 4 retired the v1 Telegram bot. Only the two
+    # consumer-facing endpoints (`/brief` for the bot's slash command,
+    # `/health` for proxy + bot status) remain.
+    assert paths == {"/v1/brief", "/v1/health"}
