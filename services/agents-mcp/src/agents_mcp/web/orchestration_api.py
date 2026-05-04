@@ -750,28 +750,29 @@ def create_orchestration_router(
                     }
                 out = (out_b or b"").decode("utf-8", errors="replace").strip()
                 # The MCP --check convention prints lines starting with
-                # "OK:" or "FAIL:" — we report the FIRST FAIL line, or
-                # OK if all lines start with OK.
+                # "OK:" or "FAIL:" — we report the FIRST FAIL line, else
+                # OK if any line starts with "OK:".
+                lines = [ln.strip() for ln in out.split("\n") if ln.strip()]
                 first_fail = next(
-                    (
-                        line
-                        for line in out.split("\n")
-                        if line.strip().startswith("FAIL:")
-                    ),
+                    (ln for ln in lines if ln.startswith("FAIL:")),
                     None,
                 )
                 if first_fail:
                     return {
                         "name": name,
                         "status": "fail",
-                        "message": first_fail.strip(),
+                        "message": first_fail,
                         "hint": _hint_for(name),
                     }
-                if out.strip().lower().startswith("ok:") or " OK" in out.upper():
+                first_ok = next(
+                    (ln for ln in lines if ln.startswith("OK:")),
+                    None,
+                )
+                if first_ok:
                     return {
                         "name": name,
                         "status": "ok",
-                        "message": out.split("\n")[0].strip()[:120],
+                        "message": first_ok[:160],
                     }
                 return {
                     "name": name,
