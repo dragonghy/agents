@@ -364,8 +364,7 @@ async def cmd_status(chat_id: str, session: aiohttp.ClientSession) -> None:
                 data = await resp.json()
                 msg = (
                     f"System: {'✅ OK' if data.get('status') == 'ok' else '❌ Error'}\n"
-                    f"Task DB: {'✅' if data.get('task_db') else '❌'}\n"
-                    f"TMux: {'✅' if data.get('tmux_active') else '❌'}"
+                    f"Task DB: {'✅' if data.get('task_db') else '❌'}"
                 )
             else:
                 msg = f"Health endpoint returned {resp.status}"

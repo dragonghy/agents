@@ -146,9 +146,11 @@ def test_health_returns_200_with_expected_shape():
         body = r.json()
         assert body["status"] == "ok"
         assert body["task_db"] is True
-        assert body["tmux_session"] == "agents"
-        # tmux_active depends on the dev environment; just assert presence.
-        assert "tmux_active" in body
+        # tmux_active / tmux_session were removed on 2026-05-03 along with
+        # the v1 named-tmux-window agent model. Confirm they don't sneak
+        # back in (anything new should land via a fresh test).
+        assert "tmux_active" not in body
+        assert "tmux_session" not in body
 
 
 def test_health_reports_task_db_false_on_failure():

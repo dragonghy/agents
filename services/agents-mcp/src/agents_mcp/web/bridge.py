@@ -24,7 +24,6 @@ boring, do not add new endpoints.
 """
 
 import logging
-import subprocess
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
@@ -160,9 +159,17 @@ def create_bridge_router(get_client, get_store, get_config, resolve_agents):
         return PlainTextResponse(brief, media_type="text/markdown")
 
     async def health(request: Request) -> JSONResponse:
-        """Lightweight healthcheck used by the Telegram ``/status`` command."""
-        cfg = get_config()
-        tmux_session = cfg.get("tmux_session", "agents")
+        """Lightweight healthcheck used by the Telegram ``/status`` command.
+
+        Reports daemon liveness + task DB reachability. (The legacy
+        ``tmux_active`` / ``tmux_session`` fields were removed on
+        2026-05-03 along with the v1 named-tmux-window agent model;
+        orchestration v1 sessions live inside the daemon process.)
+        """
+        # ``get_config`` is accepted for signature symmetry but no longer
+        # consulted here — kept so future fields (e.g. SSE listener count)
+        # can read config without re-threading the closure.
+        _ = get_config
 
         task_db_ok = False
         try:
@@ -172,21 +179,9 @@ def create_bridge_router(get_client, get_store, get_config, resolve_agents):
         except Exception:
             pass
 
-        tmux_ok = False
-        try:
-            subprocess.check_output(
-                ["tmux", "has-session", "-t", tmux_session],
-                stderr=subprocess.DEVNULL,
-            )
-            tmux_ok = True
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            pass
-
         return JSONResponse({
             "status": "ok",
             "task_db": task_db_ok,
-            "tmux_session": tmux_session,
-            "tmux_active": tmux_ok,
         })
 
     return [
