@@ -11,6 +11,7 @@ import ProfileList from './components/ProfileList';
 import ProfileDetail from './components/ProfileDetail';
 import Settings from './components/Settings';
 import Workspaces from './components/Workspaces';
+import Activity from './components/Activity';
 
 export default function App() {
   const location = useLocation();
@@ -37,6 +38,9 @@ export default function App() {
           </NavLink>
           <NavLink to="/briefs" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
             <span className="nav-icon">📰</span> Briefs
+          </NavLink>
+          <NavLink to="/activity" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
+            <span className="nav-icon">📊</span> Activity
           </NavLink>
           <NavLink to="/cost" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
             <span className="nav-icon">💰</span> Cost
@@ -75,6 +79,7 @@ export default function App() {
           <Route path="/test-harness" element={<SessionTester />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/workspaces" element={<Workspaces />} />
+          <Route path="/activity" element={<Activity />} />
         </Routes>
       </main>
     </div>

@@ -611,6 +611,281 @@ def create_orchestration_router(
             )
         return JSONResponse({"days": rows, "total": len(rows), "window_days": days})
 
+    def _hint_for(name: str) -> str:
+        if name == "imessage_personal":
+            return (
+                "Grant Full Disk Access to the terminal that launched the daemon "
+                "(System Settings → Privacy & Security → Full Disk Access). "
+                "Then quit + reopen the terminal — TCC permissions are read at process spawn."
+            )
+        if name == "wechat_personal":
+            return (
+                "Grant Accessibility + Automation permission to the terminal "
+                "(System Settings → Privacy & Security → Accessibility, then Automation → Terminal/iTerm → System Events). "
+                "Then restart the daemon."
+            )
+        if name == "google_personal":
+            return "Run the OAuth flow once (see google-personal-mcp skill) so credentials get cached."
+        return ""
+
+    async def _async_ok(name: str, message: str) -> dict:
+        return {"name": name, "status": "ok", "message": message}
+
+    async def _async_fail(name: str, message: str, hint: str = "") -> dict:
+        return {"name": name, "status": "fail", "message": message, "hint": hint}
+
+    async def get_mcp_health(request: Request) -> JSONResponse:
+        """``GET /mcp/health`` — run a fast ``--check`` per personal MCP.
+
+        Surfaces macOS permission failures (FDA for iMessage chat.db,
+        Accessibility for WeChat osascript) that otherwise manifest as
+        "the agent has no tools available" with no clear error trail.
+
+        Each entry: ``name``, ``status`` (``ok`` / ``fail`` / ``unknown``),
+        ``message`` (human-readable), ``hint`` (optional fix).
+        """
+        del request
+        import asyncio as _asyncio
+
+        async def _check_one(name: str, cmd: list[str], cwd: str | None = None) -> dict:
+            try:
+                # Strip VIRTUAL_ENV so ``uv run --directory <mcp>`` finds the
+                # right per-MCP venv instead of inheriting the daemon's
+                # services/agents-mcp/.venv. Otherwise uv emits a warning
+                # that we mistakenly parsed as the FIRST line of output.
+                import os as _os
+                env = {k: v for k, v in _os.environ.items() if k != "VIRTUAL_ENV"}
+                proc = await _asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=_asyncio.subprocess.PIPE,
+                    stderr=_asyncio.subprocess.STDOUT,
+                    cwd=cwd,
+                    env=env,
+                )
+                try:
+                    out_b, _ = await _asyncio.wait_for(proc.communicate(), timeout=8)
+                except _asyncio.TimeoutError:
+                    proc.kill()
+                    return {
+                        "name": name,
+                        "status": "fail",
+                        "message": "check timed out (>8s)",
+                        "hint": "Process may be hung waiting for a permission prompt or a dependency",
+                    }
+                out = (out_b or b"").decode("utf-8", errors="replace").strip()
+                # The MCP --check convention prints lines starting with
+                # "OK:" or "FAIL:" — we report the FIRST FAIL line, or
+                # OK if all lines start with OK.
+                first_fail = next(
+                    (
+                        line
+                        for line in out.split("\n")
+                        if line.strip().startswith("FAIL:")
+                    ),
+                    None,
+                )
+                if first_fail:
+                    return {
+                        "name": name,
+                        "status": "fail",
+                        "message": first_fail.strip(),
+                        "hint": _hint_for(name),
+                    }
+                if out.strip().lower().startswith("ok:") or " OK" in out.upper():
+                    return {
+                        "name": name,
+                        "status": "ok",
+                        "message": out.split("\n")[0].strip()[:120],
+                    }
+                return {
+                    "name": name,
+                    "status": "unknown",
+                    "message": (out[:160] or "no output"),
+                }
+            except FileNotFoundError as e:
+                return {
+                    "name": name,
+                    "status": "fail",
+                    "message": f"command not found: {e}",
+                    "hint": "MCP service directory missing — re-run setup",
+                }
+            except Exception as e:
+                return {
+                    "name": name,
+                    "status": "fail",
+                    "message": f"check failed: {e}",
+                }
+
+        from agents_mcp.server import _find_project_root, get_config as _get_cfg
+        import os as _os
+
+        cfg = _get_cfg() or {}
+        host = (cfg.get("agents") or {}).get("assistant-aria") or {}
+        registry: dict[str, dict] = dict(host.get("extra_mcp_servers") or {})
+        project_root = _find_project_root()
+
+        # Each personal MCP has a ``--check`` mode wired in its module
+        # entry-point. Run them in parallel from the project root so the
+        # ``--directory services/<mcp>`` flag resolves correctly.
+        tasks = []
+        if "imessage_personal" in registry:
+            tasks.append(
+                _check_one(
+                    "imessage_personal",
+                    ["uv", "run", "--directory", "services/imessage-mcp", "python", "-m", "imessage_mcp", "--check"],
+                    cwd=project_root,
+                )
+            )
+        if "wechat_personal" in registry:
+            tasks.append(
+                _check_one(
+                    "wechat_personal",
+                    ["uv", "run", "--directory", "services/wechat-mcp", "python", "-m", "wechat_mcp", "--check"],
+                    cwd=project_root,
+                )
+            )
+        if "google_personal" in registry:
+            # google_workspace_mcp doesn't ship a --check; presume OK
+            # if cached creds file exists.
+            home = _os.path.expanduser("~")
+            cred_dir = f"{home}/.google_workspace_mcp/credentials"
+            if _os.path.isdir(cred_dir):
+                tasks.append(_async_ok("google_personal", "credentials cached"))
+            else:
+                tasks.append(
+                    _async_fail(
+                        "google_personal",
+                        "no cached OAuth credentials",
+                        "Run google_workspace_mcp once to complete the OAuth flow; see google-personal-mcp skill",
+                    )
+                )
+
+        if not tasks:
+            return JSONResponse({"checks": []})
+        results = await _asyncio.gather(*tasks)
+        return JSONResponse({"checks": results})
+
+    async def get_activity_feed(request: Request) -> JSONResponse:
+        """``GET /activity?limit=N&before=ISO`` — unified reverse-chrono feed.
+
+        Merges three event streams ordered by timestamp:
+        - ``comment`` — comments on tickets (from ``.agents-tasks.db.comments``)
+        - ``session_created`` — new orchestration sessions
+        - ``session_closed`` — sessions that transitioned to closed
+
+        Each row: ``ts`` (ISO 8601), ``kind``, ``title``, ``subtitle``,
+        ``link`` (router path the UI can drill into), and an optional
+        ``payload`` carrying small ids/labels for filtering.
+
+        Query params:
+            ``limit`` — default 50, max 200
+            ``before`` — ISO timestamp; rows must be older. Used for paging.
+            ``kind`` — comma-separated filter list. Default: all.
+        """
+        try:
+            limit = int(request.query_params.get("limit", 50))
+        except (TypeError, ValueError):
+            limit = 50
+        limit = max(1, min(limit, 200))
+        before = request.query_params.get("before")
+        kinds_q = request.query_params.get("kind") or ""
+        wanted_kinds: set[str] = (
+            {k.strip() for k in kinds_q.split(",") if k.strip()}
+            if kinds_q
+            else set()
+        )
+
+        events: list[dict] = []
+
+        # Comments
+        if not wanted_kinds or "comment" in wanted_kinds:
+            c = await _resolve(task_client)
+            if c is not None:
+                try:
+                    db = await c._get_db()
+                    where = ["module IN ('ticket','tickets')"]
+                    params: list[Any] = []
+                    if before:
+                        where.append("date < ?")
+                        params.append(before)
+                    sql = (
+                        "SELECT id, text, author, date, moduleId "
+                        "FROM comments "
+                        "WHERE " + " AND ".join(where) + " "
+                        "ORDER BY date DESC LIMIT ?"
+                    )
+                    params.append(limit * 2)  # over-fetch; merge truncates
+                    async with db.execute(sql, params) as cur:
+                        rows = await cur.fetchall()
+                    for r in rows:
+                        text = (dict(r).get("text") or "").strip()
+                        events.append({
+                            "ts": dict(r).get("date") or "",
+                            "kind": "comment",
+                            "title": dict(r).get("author") or "(unknown)",
+                            "subtitle": text[:140] + ("…" if len(text) > 140 else ""),
+                            "link": f"/tickets/{dict(r).get('moduleId')}",
+                            "payload": {
+                                "ticket_id": dict(r).get("moduleId"),
+                                "comment_id": dict(r).get("id"),
+                            },
+                        })
+                except Exception:
+                    logger.exception("get_activity_feed: comments query failed")
+
+        # Sessions
+        if not wanted_kinds or "session_created" in wanted_kinds or "session_closed" in wanted_kinds:
+            s = await _resolve(store)
+            if s is not None:
+                try:
+                    rows = await s.list_sessions(status="all")
+                    for sess in rows[: limit * 2]:
+                        cre = sess.get("created_at")
+                        clo = sess.get("closed_at")
+                        sid = sess.get("id") or ""
+                        prof = sess.get("profile_name") or "?"
+                        if cre and (
+                            not before or cre < before
+                        ) and (not wanted_kinds or "session_created" in wanted_kinds):
+                            events.append({
+                                "ts": cre,
+                                "kind": "session_created",
+                                "title": f"spawned {prof}",
+                                "subtitle": (
+                                    sess.get("binding_kind", "") +
+                                    (f" · ticket #{sess['ticket_id']}" if sess.get("ticket_id") else "") +
+                                    (f" · {sess['channel_id']}" if sess.get("channel_id") else "")
+                                ).strip(" ·"),
+                                "link": f"/sessions/{sid}",
+                                "payload": {
+                                    "session_id": sid,
+                                    "profile_name": prof,
+                                    "ticket_id": sess.get("ticket_id"),
+                                },
+                            })
+                        if clo and (
+                            not before or clo < before
+                        ) and (not wanted_kinds or "session_closed" in wanted_kinds):
+                            events.append({
+                                "ts": clo,
+                                "kind": "session_closed",
+                                "title": f"closed {prof}",
+                                "subtitle": f"session {sid[:24]}…",
+                                "link": f"/sessions/{sid}",
+                                "payload": {
+                                    "session_id": sid,
+                                    "profile_name": prof,
+                                },
+                            })
+                except Exception:
+                    logger.exception("get_activity_feed: sessions query failed")
+
+        # Sort + truncate
+        events.sort(key=lambda e: e.get("ts") or "", reverse=True)
+        events = events[:limit]
+
+        return JSONResponse({"events": events, "total": len(events)})
+
     async def get_system_info(request: Request) -> JSONResponse:
         """``GET /system`` — snapshot for the Settings page.
 
@@ -1671,6 +1946,8 @@ def create_orchestration_router(
         Route("/cost/by-ticket", cost_by_ticket, methods=["GET"]),
         Route("/cost/totals", cost_totals, methods=["GET"]),
         Route("/system", get_system_info, methods=["GET"]),
+        Route("/activity", get_activity_feed, methods=["GET"]),
+        Route("/mcp/health", get_mcp_health, methods=["GET"]),
         # Tickets — /tickets/tree must come BEFORE /tickets/{id} so the
         # literal "tree" path doesn't get matched as id.
         Route("/tickets/tree", get_ticket_tree, methods=["GET"]),

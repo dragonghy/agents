@@ -12,11 +12,13 @@
  */
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { getSystemInfo } from '../api';
-import type { SystemInfo } from '../api';
+import { getMCPHealth, getSystemInfo } from '../api';
+import type { MCPHealth, SystemInfo } from '../api';
 
 export default function Settings() {
   const [info, setInfo] = useState<SystemInfo | null>(null);
+  const [health, setHealth] = useState<MCPHealth[]>([]);
+  const [healthLoading, setHealthLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -38,6 +40,23 @@ export default function Settings() {
       cancelled = true;
       clearInterval(id);
     };
+  }, []);
+
+  async function runHealthCheck() {
+    setHealthLoading(true);
+    try {
+      const r = await getMCPHealth();
+      setHealth(r.checks);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setHealthLoading(false);
+    }
+  }
+
+  // Auto-check on first mount.
+  useEffect(() => {
+    runHealthCheck();
   }, []);
 
   if (error) return <div className="error">{error}</div>;
@@ -113,7 +132,17 @@ export default function Settings() {
 
       {/* ── MCP servers ── */}
       <div className="card section-card" style={{ marginBottom: 14 }}>
-        <h3 style={{ marginTop: 0 }}>MCP servers</h3>
+        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+          <h3 style={{ margin: 0 }}>MCP servers</h3>
+          <button
+            onClick={runHealthCheck}
+            disabled={healthLoading}
+            className="btn-secondary btn-sm"
+            style={{ marginLeft: 'auto' }}
+          >
+            {healthLoading ? 'Checking…' : 'Re-check health'}
+          </button>
+        </div>
         {info.mcp_servers.length === 0 ? (
           <div className="empty-state">No MCP servers configured.</div>
         ) : (
@@ -122,34 +151,61 @@ export default function Settings() {
               <tr>
                 <th>Name</th>
                 <th>Scope</th>
+                <th>Status</th>
                 <th>Command</th>
               </tr>
             </thead>
             <tbody>
-              {info.mcp_servers.map((m) => (
-                <tr key={`${m.scope}-${m.name}`}>
-                  <td>
-                    <code>{m.name}</code>
-                  </td>
-                  <td>
-                    <span
-                      className={`session-status status-${m.scope === 'personal' ? 'active' : 'closed'}`}
-                    >
-                      {m.scope}
-                    </span>
-                  </td>
-                  <td style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--text-dim)' }}>
-                    {m.command || '—'}
-                  </td>
-                </tr>
-              ))}
+              {info.mcp_servers.map((m) => {
+                const h = health.find((x) => x.name === m.name);
+                return (
+                  <tr key={`${m.scope}-${m.name}`}>
+                    <td>
+                      <code>{m.name}</code>
+                    </td>
+                    <td>
+                      <span
+                        className={`session-status status-${m.scope === 'personal' ? 'active' : 'closed'}`}
+                      >
+                        {m.scope}
+                      </span>
+                    </td>
+                    <td>
+                      <HealthBadge health={h} />
+                    </td>
+                    <td style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--text-dim)' }}>
+                      {m.command || '—'}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}
+
+        {/* Inline FAIL details for any unhealthy MCPs */}
+        {health.some((h) => h.status === 'fail') && (
+          <div className="mcp-fails">
+            {health
+              .filter((h) => h.status === 'fail')
+              .map((h) => (
+                <div key={h.name} className="mcp-fail-detail">
+                  <div className="mcp-fail-name">
+                    <strong>{h.name}</strong> — failed
+                  </div>
+                  <div className="mcp-fail-msg">{h.message}</div>
+                  {h.hint && <div className="mcp-fail-hint">💡 {h.hint}</div>}
+                </div>
+              ))}
+          </div>
+        )}
+
         <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>
           <strong>Personal</strong> MCPs are scoped to the housekeeper profile.{' '}
           <strong>Global</strong> MCPs are available to every agent. Edit{' '}
-          <code>agents.yaml</code> + restart daemon to change.
+          <code>agents.yaml</code> + restart daemon to change.{' '}
+          <strong>Health checks</strong> only run for personal MCPs (each ships
+          a <code>--check</code> mode).
         </div>
       </div>
 
@@ -188,6 +244,34 @@ export default function Settings() {
         </div>
       </div>
     </div>
+  );
+}
+
+function HealthBadge({ health }: { health?: MCPHealth }) {
+  if (!health) {
+    return <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>—</span>;
+  }
+  const colors: Record<MCPHealth['status'], string> = {
+    ok: 'var(--status-active)',
+    fail: 'var(--status-blocked)',
+    unknown: 'var(--text-muted)',
+  };
+  const labels: Record<MCPHealth['status'], string> = {
+    ok: '✓ ok',
+    fail: '✗ fail',
+    unknown: '? unknown',
+  };
+  return (
+    <span
+      style={{
+        color: colors[health.status],
+        fontWeight: 600,
+        fontSize: 12,
+      }}
+      title={health.message}
+    >
+      {labels[health.status]}
+    </span>
   );
 }
 

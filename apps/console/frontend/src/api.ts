@@ -201,6 +201,43 @@ export async function getSystemInfo() {
   return get<SystemInfo>('/api/v1/orchestration/system');
 }
 
+export type ActivityKind = 'comment' | 'session_created' | 'session_closed';
+
+export interface ActivityEvent {
+  ts: string;
+  kind: ActivityKind;
+  title: string;
+  subtitle: string;
+  link: string;
+  payload: Record<string, unknown>;
+}
+
+export interface MCPHealth {
+  name: string;
+  status: 'ok' | 'fail' | 'unknown';
+  message: string;
+  hint?: string;
+}
+
+export async function getMCPHealth() {
+  return get<{ checks: MCPHealth[] }>('/api/v1/orchestration/mcp/health');
+}
+
+export async function getActivityFeed(opts: {
+  limit?: number;
+  before?: string;
+  kinds?: ActivityKind[];
+} = {}) {
+  const qp = new URLSearchParams();
+  if (opts.limit !== undefined) qp.set('limit', String(opts.limit));
+  if (opts.before) qp.set('before', opts.before);
+  if (opts.kinds && opts.kinds.length > 0) qp.set('kind', opts.kinds.join(','));
+  const qs = qp.toString() ? `?${qp.toString()}` : '';
+  return get<{ events: ActivityEvent[]; total: number }>(
+    `/api/v1/orchestration/activity${qs}`,
+  );
+}
+
 // ── Session list + history (Task #18 Part B) ──
 
 export async function listSessions(opts: {
