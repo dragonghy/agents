@@ -1397,6 +1397,35 @@ class AgentStore:
             await self._db.commit()
         return updated
 
+    async def update_session_profile(
+        self, session_id: str, profile_name: str, runner_type: str
+    ) -> bool:
+        """Swap a session's profile + runner_type in place.
+
+        Used by Telegram ``/profile <name>`` and the Web UI's profile
+        picker on an active session. The next ``append_message`` will
+        re-load ``profile.md`` and use that system_prompt + mcp_servers,
+        while Claude SDK's ``resume`` mechanic preserves the JSONL
+        transcript (no history loss).
+
+        Caveats the caller should communicate to the user:
+        - The new profile's system_prompt diverges from what's already
+          in the JSONL — the model will have a "split personality"
+          moment until the next clean topic.
+        - The new profile's MCP server list (and tool allow-list) replace
+          the old set on the next turn.
+
+        Returns True if a row was updated.
+        """
+        async with self._db.execute(
+            "UPDATE session SET profile_name = ?, runner_type = ? WHERE id = ?",
+            (profile_name, runner_type, session_id),
+        ) as cursor:
+            updated = cursor.rowcount > 0
+        if updated:
+            await self._db.commit()
+        return updated
+
     async def add_session_cost(
         self, session_id: str, tokens_in: int, tokens_out: int
     ) -> bool:

@@ -634,6 +634,82 @@ def create_orchestration_router(
     async def _async_fail(name: str, message: str, hint: str = "") -> dict:
         return {"name": name, "status": "fail", "message": message, "hint": hint}
 
+    async def patch_session(request: Request) -> JSONResponse:
+        """``PATCH /sessions/{id}`` — swap an active session's profile in place.
+
+        Body: ``{"profile_name": "<name>"}``.
+
+        The next turn will load the new profile.md (system_prompt +
+        mcp_servers + skills) and the SDK's ``resume`` keeps the existing
+        JSONL transcript so conversation history isn't lost. Useful for
+        ``/profile housekeeper`` from Telegram — same chat, same
+        conversation context, but routed to a specialist.
+
+        Validates: target profile exists in the registry, session is
+        not closed.
+        """
+        session_id = request.path_params["id"]
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(
+                {"error": "request body must be valid JSON"}, status_code=400
+            )
+        if not isinstance(body, dict):
+            return JSONResponse(
+                {"error": "body must be a JSON object"}, status_code=400
+            )
+        new_profile = body.get("profile_name")
+        if not isinstance(new_profile, str) or not new_profile.strip():
+            return JSONResponse(
+                {"error": "profile_name is required (non-empty string)"},
+                status_code=400,
+            )
+        new_profile = new_profile.strip()
+
+        s = await _resolve(store)
+        if s is None:
+            return JSONResponse(
+                {"error": "store not configured"}, status_code=500
+            )
+        # Look up session
+        row = await s.get_session(session_id)
+        if row is None:
+            return JSONResponse(
+                {"error": f"session not found: {session_id}"}, status_code=404
+            )
+        if row.get("status") == "closed":
+            return JSONResponse(
+                {"error": "session is closed; spawn a new one"},
+                status_code=400,
+            )
+        # Validate target profile is in the registry
+        try:
+            registry = await s.list_profile_registry()
+        except Exception:
+            registry = []
+        target = next(
+            (p for p in registry if p.get("name") == new_profile), None
+        )
+        if target is None:
+            return JSONResponse(
+                {
+                    "error": f"unknown profile: {new_profile!r}",
+                    "available": [p.get("name") for p in registry if p.get("name")],
+                },
+                status_code=404,
+            )
+        new_runner = target.get("runner_type") or row.get("runner_type") or ""
+        ok = await s.update_session_profile(session_id, new_profile, new_runner)
+        if not ok:
+            return JSONResponse(
+                {"error": "update_session_profile returned no row"},
+                status_code=500,
+            )
+        # Return the refreshed session row.
+        refreshed = await s.get_session(session_id)
+        return JSONResponse({"ok": True, "session": refreshed})
+
     async def get_mcp_health(request: Request) -> JSONResponse:
         """``GET /mcp/health`` — run a fast ``--check`` per personal MCP.
 
@@ -1940,6 +2016,7 @@ def create_orchestration_router(
         Route("/sessions/{id}/close", close_session, methods=["POST"]),
         Route("/sessions/{id}/history", get_session_history, methods=["GET"]),
         Route("/sessions/{id}", get_session, methods=["GET"]),
+        Route("/sessions/{id}", patch_session, methods=["PATCH"]),
         Route("/cost/by-session", cost_by_session, methods=["GET"]),
         Route("/cost/by-profile", cost_by_profile, methods=["GET"]),
         Route("/cost/by-day", cost_by_day, methods=["GET"]),

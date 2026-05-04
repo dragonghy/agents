@@ -154,6 +154,40 @@ class TestSessionMutations:
 
         run(_t())
 
+    def test_update_session_profile_swaps_in_place(self, db_path):
+        """Switching a session's profile keeps id + native_handle but
+        updates profile_name + runner_type. Used by Telegram /profile
+        in-place switch and the Web UI profile picker.
+        """
+
+        async def _t():
+            s = await _make_store(db_path)
+            await s.create_session(
+                session_id="sess_p",
+                profile_name="secretary",
+                binding_kind="human-channel",
+                channel_id="telegram:123",
+                runner_type="claude-sonnet-4.6",
+                native_handle="sdk-handle-xyz",
+            )
+            assert await s.update_session_profile(
+                "sess_p", "housekeeper", "claude-sonnet-4.7"
+            ) is True
+            row = await s.get_session("sess_p")
+            assert row["profile_name"] == "housekeeper"
+            assert row["runner_type"] == "claude-sonnet-4.7"
+            # id + native_handle preserved (the SDK resume mechanic
+            # depends on these staying stable)
+            assert row["id"] == "sess_p"
+            assert row["native_handle"] == "sdk-handle-xyz"
+            assert row["status"] == "active"
+
+            # Missing session → no-op false
+            assert await s.update_session_profile("nope", "tpm", "x") is False
+            await s.close()
+
+        run(_t())
+
     def test_add_session_cost_accumulates(self, db_path):
         async def _t():
             s = await _make_store(db_path)

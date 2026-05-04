@@ -419,28 +419,87 @@ async def cmd_new(chat_id: str, session: aiohttp.ClientSession) -> None:
         )
 
 
+async def patch_session_profile(
+    session_id: str,
+    profile_name: str,
+    session: aiohttp.ClientSession,
+) -> Optional[dict]:
+    """PATCH /sessions/{id} to swap profile in place. Returns refreshed
+    session row, or None on failure (logged with detail).
+    """
+    url = f"{DAEMON_URL}/api/v1/orchestration/sessions/{session_id}"
+    try:
+        async with session.patch(url, json={"profile_name": profile_name}) as resp:
+            if resp.status == 200:
+                body = await resp.json()
+                return body.get("session")
+            text = await resp.text()
+            logger.error(
+                f"patch_session_profile {session_id} → {profile_name}: "
+                f"{resp.status} {text[:200]}"
+            )
+            return None
+    except aiohttp.ClientError as e:
+        logger.error(f"patch_session_profile transport error: {e}")
+        return None
+
+
 async def cmd_profile(
     chat_id: str,
     arg: str,
     session: aiohttp.ClientSession,
 ) -> None:
-    """Switch to a different Profile — close current, spawn new with given name."""
+    """Switch the active session's Profile in place.
+
+    Preserves the session id + JSONL conversation history; the next turn
+    loads the new profile.md (system_prompt + mcp_servers + skills) via
+    Claude SDK's ``resume`` mechanic.
+
+    If there's no active session yet, falls back to spawning a fresh one
+    (the legacy behaviour — useful for first message in a new chat).
+    """
     profile = arg.strip()
     if not profile:
         await send_telegram(
             chat_id,
-            "Usage: `/profile <name>` (e.g. `/profile secretary`)",
+            "Usage: `/profile <name>` (e.g. `/profile housekeeper`)",
             session,
         )
         return
     active = await find_active_session(chat_id, session)
     if active and active.get("id"):
-        await close_session(active["id"], session)
+        sid = active["id"]
+        # If they asked for the profile that's already active, no-op.
+        cur = active.get("profile_name") or ""
+        if cur == profile:
+            await send_telegram(
+                chat_id,
+                f"Already on *{profile}* (session `{sid}`).",
+                session,
+            )
+            return
+        refreshed = await patch_session_profile(sid, profile, session)
+        if refreshed:
+            await send_telegram(
+                chat_id,
+                f"Switched session `{sid}` from *{cur}* to *{profile}* "
+                f"— history preserved.",
+                session,
+            )
+        else:
+            await send_telegram(
+                chat_id,
+                f"Failed to switch profile to {profile} — check daemon log "
+                f"or try a fresh session via /new.",
+                session,
+            )
+        return
+    # No active session — spawn fresh.
     new_row = await spawn_session(chat_id, profile, session)
     if new_row:
         await send_telegram(
             chat_id,
-            f"Switched to *{profile}* (session `{new_row.get('id', '?')}`).",
+            f"Started a new *{profile}* session (`{new_row.get('id', '?')}`).",
             session,
         )
     else:
