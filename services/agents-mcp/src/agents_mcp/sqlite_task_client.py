@@ -393,6 +393,17 @@ class SQLiteTaskClient:
         """List tickets with summary fields and pagination.
 
         Args:
+            project_id: Filter by Leantime ``projectId``. ``None`` means no
+                project filter (returns tickets across all projects). Used
+                rarely now — workspace_id is the primary scoping after the
+                workspace migration (ticket #490). Note that despite
+                ``self.project_id`` defaulting to 3 for backward-compat at
+                construction time, this filter is **only** applied when
+                callers pass an explicit non-``None`` value: a None-default
+                used to silently force ``projectId = 3`` and produced empty
+                results when combined with a non-Work workspace_id (e.g.
+                Personal/SnowFlower tickets had projectId != 3, so the
+                AND-clause excluded them all).
             ticket_type: Filter by type (e.g. 'task', 'project', 'milestone').
                         Use 'task' to exclude subtasks/projects/milestones.
             parent_id: Filter by dependingTicketId (children of a parent).
@@ -403,10 +414,18 @@ class SQLiteTaskClient:
             {"tickets": [...], "total": N, "offset": N, "limit": N}
         """
         db = await self._get_db()
-        pid = project_id or self.project_id
 
-        conditions = ["projectId = ?"]
-        params: list[Any] = [pid]
+        conditions: list[str] = []
+        params: list[Any] = []
+
+        # Project filter — explicit-only. Pre-workspace-migration this used to
+        # coalesce to ``self.project_id`` and silently scope every query to
+        # one Leantime project, which broke workspace-only filters once
+        # tickets started living across multiple Leantime projects. Now you
+        # opt in by passing ``project_id=<int>``; otherwise no filter.
+        if project_id is not None:
+            conditions.append("projectId = ?")
+            params.append(int(project_id))
 
         # Workspace filter (ticket #490). When None we deliberately don't add a
         # WHERE clause so existing callers (dispatcher, brief, pr_monitor) that
@@ -454,7 +473,11 @@ class SQLiteTaskClient:
             conditions.append("(start_time IS NULL OR start_time = '' OR start_time <= ?)")
             params.append(now)
 
-        where = " AND ".join(conditions)
+        # ``include_future=False`` (the default) always appends one condition
+        # so this list is normally non-empty; the ``or "1=1"`` guards the
+        # otherwise-impossible "include_future=True with no other filters"
+        # path so we still produce a valid SELECT.
+        where = " AND ".join(conditions) or "1=1"
         query = f"SELECT * FROM tickets WHERE {where} ORDER BY id DESC"
 
         async with db.execute(query, params) as cur:

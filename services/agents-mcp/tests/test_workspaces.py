@@ -331,6 +331,57 @@ class TestListTicketsWorkspaceFilter:
 
         run(_test())
 
+    def test_list_tickets_workspace_works_when_projectId_differs(self, db_path):
+        """Regression: workspace filter must work for tickets whose projectId
+        does NOT match ``self.project_id`` (the legacy Leantime default).
+
+        Pre-fix bug: ``list_tickets`` coerced ``project_id=None`` to
+        ``self.project_id`` (default 3) and AND-ed it with the workspace
+        filter, silently excluding every ticket whose Leantime ``projectId``
+        column wasn't 3. Symptom: in the live console, switching the
+        workspace dropdown to Personal returned "0 tickets" even though
+        Personal tickets existed — they just had ``projectId != 3``.
+
+        This test inserts tickets with ``projectId=99`` (deliberately not
+        the client's default) into Workspaces 1 and 2, then asserts
+        workspace filtering still finds them.
+        """
+        async def _test():
+            client = SQLiteTaskClient(db_path)
+            # Insert directly so we can control projectId precisely.
+            db = await client._get_db()
+            await db.execute(
+                "INSERT INTO tickets (headline, type, status, projectId, workspace_id) "
+                "VALUES (?, 'task', 3, 99, ?)",
+                ("alien-work", DEFAULT_WORK_WORKSPACE_ID),
+            )
+            await db.execute(
+                "INSERT INTO tickets (headline, type, status, projectId, workspace_id) "
+                "VALUES (?, 'task', 3, 99, ?)",
+                ("alien-personal", DEFAULT_PERSONAL_WORKSPACE_ID),
+            )
+            await db.commit()
+
+            # Filter to Personal — the buggy code would return 0 because
+            # implicit projectId=3 AND workspace_id=2 = empty.
+            r = await client.list_tickets(workspace_id=DEFAULT_PERSONAL_WORKSPACE_ID)
+            headlines = [t["headline"] for t in r["tickets"]]
+            assert "alien-personal" in headlines, (
+                f"workspace filter dropped a Personal-workspace ticket "
+                f"because its projectId=99 != self.project_id=3; got {headlines}"
+            )
+            assert "alien-work" not in headlines
+
+            # Filter to Work
+            r = await client.list_tickets(workspace_id=DEFAULT_WORK_WORKSPACE_ID)
+            headlines = [t["headline"] for t in r["tickets"]]
+            assert "alien-work" in headlines
+            assert "alien-personal" not in headlines
+
+            await client.close()
+
+        run(_test())
+
     def test_search_tickets_workspace_filter(self, db_path):
         async def _test():
             client = SQLiteTaskClient(db_path)
