@@ -652,18 +652,34 @@ class TestRenderJsonlRecord:
         assert m.role == "assistant"
         assert m.text == "yo"
 
-    def test_assistant_tool_only_returns_placeholder(self):
+    def test_assistant_tool_only_surfaces_tool_calls(self):
+        """Tool-only assistant turns now keep ``text=""`` and surface
+        the calls structurally on ``tool_calls`` (the legacy
+        ``"(tool calls / thinking only — no visible text)"`` placeholder
+        was retired 2026-05-04 — UIs should render ``tool_calls`` directly).
+        """
         rec = {
             "type": "assistant",
             "message": {
                 "role": "assistant",
-                "content": [{"type": "tool_use", "name": "Bash", "input": {}}],
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tu_1",
+                        "name": "Bash",
+                        "input": {"command": "ls"},
+                    }
+                ],
             },
         }
         m = _render_jsonl_record(rec)
         assert m is not None
         assert m.role == "assistant"
-        assert "tool calls" in m.text.lower()
+        assert m.text == ""
+        assert len(m.tool_calls) == 1
+        assert m.tool_calls[0].name == "Bash"
+        assert m.tool_calls[0].input == {"command": "ls"}
+        assert m.tool_calls[0].id == "tu_1"
 
     def test_user_empty_returns_none(self):
         rec = {
@@ -765,6 +781,121 @@ class TestRenderHistory:
             assert out[0].timestamp == "t0"
             assert out[1].role == "assistant"
             assert out[1].text == "hello"
+            await s.close()
+
+        run(_t())
+
+    def test_tool_use_paired_with_tool_result(
+        self, db_path, tmp_path, monkeypatch
+    ):
+        """Tool calls + their results in the same JSONL stream pair up.
+
+        Regression for the "(tool calls / thinking only — no visible
+        text)" placeholder bug — UI users reported they couldn't see
+        what the agent did mid-conversation. The adapter now surfaces
+        ``tool_use`` blocks structurally on the assistant message and
+        pairs in the matching ``tool_result`` content.
+        """
+
+        async def _t():
+            s = await _store(db_path)
+            await s.create_session(
+                session_id="sess_tools",
+                profile_name="secretary",
+                binding_kind="standalone",
+                runner_type="claude-sonnet-4.7",
+                native_handle="native-tools",
+            )
+
+            projects = tmp_path / "claude_projects"
+            project_dir = projects / "-some-cwd"
+            project_dir.mkdir(parents=True)
+            jsonl = project_dir / "native-tools.jsonl"
+            import json as _json
+
+            jsonl.write_text(
+                "\n".join(
+                    [
+                        # Assistant turn: text + tool_use
+                        _json.dumps(
+                            {
+                                "type": "assistant",
+                                "message": {
+                                    "role": "assistant",
+                                    "content": [
+                                        {"type": "text", "text": "Let me check."},
+                                        {
+                                            "type": "tool_use",
+                                            "id": "tu_a",
+                                            "name": "Bash",
+                                            "input": {"command": "ls"},
+                                        },
+                                    ],
+                                },
+                                "timestamp": "t0",
+                            }
+                        ),
+                        # User turn carrying tool_result for tu_a
+                        _json.dumps(
+                            {
+                                "type": "user",
+                                "message": {
+                                    "role": "user",
+                                    "content": [
+                                        {
+                                            "type": "tool_result",
+                                            "tool_use_id": "tu_a",
+                                            "content": "file1.txt\nfile2.txt",
+                                            "is_error": False,
+                                        }
+                                    ],
+                                },
+                                "timestamp": "t1",
+                            }
+                        ),
+                        # Assistant turn: text only (no tools)
+                        _json.dumps(
+                            {
+                                "type": "assistant",
+                                "message": {
+                                    "role": "assistant",
+                                    "content": [{"type": "text", "text": "Done."}],
+                                },
+                                "timestamp": "t2",
+                            }
+                        ),
+                    ]
+                )
+                + "\n"
+            )
+
+            monkeypatch.setenv("HOME", str(tmp_path))
+            (tmp_path / ".claude").mkdir(exist_ok=True)
+            (tmp_path / ".claude" / "projects").symlink_to(projects)
+
+            adapter = ClaudeAdapter()
+            out = await adapter.render_history("sess_tools", s)
+            # 2 assistant messages emitted (the user-only-tool_result
+            # turn doesn't emit its own message — it patches into the
+            # earlier assistant message's tool_calls).
+            assert len(out) == 2
+
+            first = out[0]
+            assert first.role == "assistant"
+            assert first.text == "Let me check."
+            assert len(first.tool_calls) == 1
+            tc = first.tool_calls[0]
+            assert tc.id == "tu_a"
+            assert tc.name == "Bash"
+            assert tc.input == {"command": "ls"}
+            # Result was paired in from the later user turn.
+            assert tc.result == "file1.txt\nfile2.txt"
+            assert tc.is_error is False
+
+            second = out[1]
+            assert second.text == "Done."
+            assert second.tool_calls == ()
+
             await s.close()
 
         run(_t())

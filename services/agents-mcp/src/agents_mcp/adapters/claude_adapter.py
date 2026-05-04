@@ -49,7 +49,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -65,6 +65,7 @@ from .base import (
     RenderedMessage,
     RunResult,
     SessionMetadata,
+    ToolCall,
 )
 
 if TYPE_CHECKING:
@@ -264,11 +265,14 @@ class ClaudeAdapter:
            session_id, which is the JSONL filename stem).
         2. Glob ``~/.claude/projects/*/<native_handle>.jsonl`` to locate
            the file (cwd at session start is unknown without storing it).
-        3. Walk the JSONL line-by-line, extracting visible text from
-           ``user`` and ``assistant`` records. Skip ``thinking`` blocks
-           and ``tool_use``/``tool_result`` blocks (they're operationally
-           noisy for human display; leave them for a future "raw view"
-           toggle).
+        3. Walk the JSONL line-by-line:
+           - ``user`` text → ``RenderedMessage(role="user")``
+           - ``assistant`` text → ``RenderedMessage(role="assistant")``
+           - ``assistant`` ``tool_use`` blocks → attached to the surrounding
+             assistant message as :class:`ToolCall` entries
+           - ``user`` ``tool_result`` blocks → paired back into the matching
+             ``ToolCall.result`` by ``tool_use_id``
+           - ``thinking`` blocks → filtered (noise)
         4. Return the messages oldest-first.
 
         Returns an empty list if the native handle is missing (session
@@ -295,6 +299,11 @@ class ClaudeAdapter:
 
         jsonl_path = matches[0]
         messages: list[RenderedMessage] = []
+        # Map of tool_use_id → (msg_index, tool_call_index) so we can
+        # patch in ``result`` / ``is_error`` when the matching
+        # tool_result block is found later in the stream. We rebuild the
+        # message immutably (RenderedMessage is frozen) when patching.
+        tool_use_index: dict[str, tuple[int, int]] = {}
         try:
             with jsonl_path.open("r", encoding="utf-8") as f:
                 for line in f:
@@ -307,7 +316,14 @@ class ClaudeAdapter:
                         continue
                     rendered = _render_jsonl_record(record)
                     if rendered is not None:
+                        # Index every tool_use we just emitted so the
+                        # tool_result pairing pass below can find them.
+                        for tc_idx, tc in enumerate(rendered.tool_calls):
+                            tool_use_index[tc.id] = (len(messages), tc_idx)
                         messages.append(rendered)
+                    # Pair tool_result blocks (regardless of whether the
+                    # surrounding user record produced a visible message).
+                    _pair_tool_results(record, messages, tool_use_index)
         except OSError as e:
             logger.warning(
                 "ClaudeAdapter.render_history: failed to read %s: %s",
@@ -341,11 +357,103 @@ def _extract_visible_text(content: Any) -> str:
     return ""
 
 
+def _extract_tool_calls(content: Any) -> tuple[ToolCall, ...]:
+    """Pull tool_use blocks out of an assistant content payload.
+
+    Returns ToolCall entries with ``result=None`` / ``is_error=None``;
+    the result is paired in by :func:`_pair_tool_results` when the
+    matching ``tool_result`` block lands later in the JSONL.
+    """
+    if not isinstance(content, list):
+        return ()
+    calls: list[ToolCall] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") != "tool_use":
+            continue
+        tu_id = block.get("id") or ""
+        name = block.get("name") or ""
+        raw_input = block.get("input") or {}
+        # Defensive: some SDK paths emit input as a JSON-encoded string
+        # rather than a dict. Normalize so the UI sees a real object.
+        if isinstance(raw_input, str):
+            try:
+                raw_input = json.loads(raw_input)
+            except (json.JSONDecodeError, ValueError):
+                raw_input = {"_raw": raw_input}
+        if not isinstance(raw_input, dict):
+            raw_input = {"_value": raw_input}
+        calls.append(ToolCall(id=str(tu_id), name=str(name), input=raw_input))
+    return tuple(calls)
+
+
+def _pair_tool_results(
+    record: dict,
+    messages: list[RenderedMessage],
+    tool_use_index: dict[str, tuple[int, int]],
+) -> None:
+    """If ``record`` is a user turn carrying tool_result blocks, write
+    each block's payload back into the matching ``ToolCall`` on the
+    earlier assistant message identified by ``tool_use_index``.
+
+    No-op on records that aren't user turns or have no tool_result
+    blocks. Mutates ``messages`` in place by replacing entries (the
+    underlying RenderedMessage is frozen).
+    """
+    if record.get("type") != "user":
+        return
+    msg = record.get("message")
+    if not isinstance(msg, dict):
+        return
+    content = msg.get("content")
+    if not isinstance(content, list):
+        return
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") != "tool_result":
+            continue
+        tu_id = block.get("tool_use_id")
+        if not tu_id or tu_id not in tool_use_index:
+            continue
+        msg_idx, tc_idx = tool_use_index[tu_id]
+        target = messages[msg_idx]
+        old_calls = list(target.tool_calls)
+        if tc_idx >= len(old_calls):
+            continue
+        old = old_calls[tc_idx]
+        # Result content shape varies — string for plain output, list
+        # of {type, text} for tool-with-formatted-output. Pass through
+        # verbatim; the UI knows how to render either.
+        result_payload: Any = block.get("content")
+        is_error: Optional[bool] = block.get("is_error")
+        old_calls[tc_idx] = ToolCall(
+            id=old.id,
+            name=old.name,
+            input=old.input,
+            result=result_payload,
+            is_error=bool(is_error) if is_error is not None else None,
+        )
+        messages[msg_idx] = RenderedMessage(
+            role=target.role,
+            text=target.text,
+            timestamp=target.timestamp,
+            tool_calls=tuple(old_calls),
+        )
+
+
 def _render_jsonl_record(record: dict) -> RenderedMessage | None:
     """Convert a single JSONL record into a :class:`RenderedMessage`, or None.
 
     Skips meta records (``queue-operation``, ``compact_boundary``,
-    ``system``) and any record whose visible text is empty.
+    ``system``) and any record whose visible text is empty AND has no
+    tool calls.
+
+    Tool calls (``tool_use`` blocks) on assistant messages are now
+    surfaced structurally on the message via ``tool_calls`` instead of
+    the legacy "(tool calls / thinking only — no visible text)"
+    placeholder.
     """
     rec_type = record.get("type")
     if rec_type not in ("user", "assistant"):
@@ -359,22 +467,18 @@ def _render_jsonl_record(record: dict) -> RenderedMessage | None:
         return None
 
     text = _extract_visible_text(msg.get("content"))
-    if not text:
-        # Assistant turns that were nothing but thinking/tool_use lose
-        # all visible text; surface a placeholder so the UI doesn't
-        # silently swallow the turn entirely.
-        if role == "assistant":
-            return RenderedMessage(
-                role="assistant",
-                text="(tool calls / thinking only — no visible text)",
-                timestamp=record.get("timestamp", ""),
-            )
+    tool_calls: tuple[ToolCall, ...] = ()
+    if role == "assistant":
+        tool_calls = _extract_tool_calls(msg.get("content"))
+
+    if not text and not tool_calls:
         return None
 
     return RenderedMessage(
         role=role,
         text=text,
         timestamp=record.get("timestamp", ""),
+        tool_calls=tool_calls,
     )
 
 

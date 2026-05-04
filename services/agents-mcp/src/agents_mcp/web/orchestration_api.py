@@ -455,7 +455,9 @@ def create_orchestration_router(
 
         Routes to ``Adapter.render_history(session_id, store)`` based on
         the session's ``runner_type``. Returns ``{messages: [...]}`` with
-        each message having ``role`` / ``text`` / ``timestamp``.
+        each message having ``role`` / ``text`` / ``timestamp`` and an
+        optional ``tool_calls`` array (each entry: ``id``, ``name``,
+        ``input``, ``result``, ``is_error``).
         """
         session_id = request.path_params["id"]
         s = await _resolve(store)
@@ -483,10 +485,27 @@ def create_orchestration_router(
                 {"error": "render_history failed", "detail": str(e)},
                 status_code=500,
             )
-        out = [
-            {"role": m.role, "text": m.text, "timestamp": m.timestamp}
-            for m in rendered
-        ]
+
+        def _serialize_msg(m) -> dict:
+            entry = {
+                "role": m.role,
+                "text": m.text,
+                "timestamp": m.timestamp,
+            }
+            if m.tool_calls:
+                entry["tool_calls"] = [
+                    {
+                        "id": tc.id,
+                        "name": tc.name,
+                        "input": tc.input,
+                        "result": tc.result,
+                        "is_error": tc.is_error,
+                    }
+                    for tc in m.tool_calls
+                ]
+            return entry
+
+        out = [_serialize_msg(m) for m in rendered]
         return JSONResponse({"messages": out, "total": len(out)})
 
     # ── Cost endpoints (Task #18 Part A) ──────────────────────────────────

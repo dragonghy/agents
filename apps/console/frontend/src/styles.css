@@ -288,3 +288,229 @@ a:hover { text-decoration: underline; }
   margin-top: 12px;
   font-style: italic;
 }
+
+/* ── Buttons ───────────────────────────────────────────────────────── */
+
+button.btn-primary,
+button.btn-secondary {
+  font-family: inherit;
+  font-size: 13px;
+  padding: 6px 14px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+button.btn-primary {
+  background: var(--accent);
+  color: #06090f;
+  border: 1px solid var(--accent);
+  font-weight: 500;
+}
+button.btn-primary:hover:not(:disabled) {
+  background: #7ab9fb;
+}
+button.btn-primary:disabled {
+  background: var(--bg-panel-hover);
+  color: var(--text-muted);
+  border-color: var(--border);
+  cursor: not-allowed;
+}
+button.btn-secondary {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+}
+button.btn-secondary:hover:not(:disabled) {
+  background: var(--bg-panel-hover);
+  color: var(--text);
+}
+button.btn-secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Conversation bubbles ──────────────────────────────────────────── */
+
+.conversation-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 600px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.bubble {
+  border-radius: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.bubble-user {
+  background: rgba(96, 165, 250, 0.06);
+  border-color: rgba(96, 165, 250, 0.25);
+}
+
+.bubble-assistant {
+  background: var(--bg-panel);
+}
+
+.bubble-meta {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+}
+.bubble-role {
+  font-weight: 600;
+}
+.bubble-time {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10px;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.bubble-text {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+/* ── Tool call panels ──────────────────────────────────────────────── */
+
+.tool-calls-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.tool-panel {
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.tool-panel-error {
+  border-color: rgba(248, 113, 113, 0.4);
+}
+
+.tool-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text-dim);
+  text-align: left;
+}
+.tool-panel-header:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+.tool-chevron {
+  font-size: 9px;
+  color: var(--text-muted);
+  width: 10px;
+}
+.tool-name {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  color: var(--accent);
+  font-weight: 500;
+}
+.tool-summary {
+  flex: 1;
+  color: var(--text-muted);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tool-status {
+  font-size: 11px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  color: var(--text-muted);
+}
+.tool-panel-error .tool-status {
+  color: var(--status-blocked);
+}
+
+.tool-panel-body {
+  border-top: 1px solid var(--border);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tool-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tool-block-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.tool-pre {
+  background: #06090f;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  margin: 0;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.tool-pending {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* ── Composer ──────────────────────────────────────────────────────── */
+
+.composer-textarea {
+  width: 100%;
+  padding: 10px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 13px;
+  resize: vertical;
+  line-height: 1.5;
+  transition: border-color 0.12s ease;
+}
+.composer-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.composer-textarea:disabled {
+  opacity: 0.6;
+}
+
+/* ── Streaming pulse ───────────────────────────────────────────────── */
+
+@keyframes streamingPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.78); }
+}

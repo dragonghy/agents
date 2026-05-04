@@ -124,27 +124,65 @@ class SessionMetadata:
 
 
 @dataclass(frozen=True)
+class ToolCall:
+    """One tool invocation rendered for UI display.
+
+    Attributes:
+        id: Adapter-native id (Claude's ``tool_use.id``). Used to pair
+            with the matching ``ToolResult`` when both are present.
+        name: Tool name as the model called it (e.g. ``"Bash"``,
+            ``"Edit"``, or ``"mcp__agents__add_comment"``).
+        input: Arguments the model passed to the tool. Free-form dict
+            from the SDK; UI shows it as collapsible JSON.
+        result: The matched ``tool_result`` payload, if present in the
+            same JSONL transcript. ``None`` when the tool call hasn't
+            returned yet (active session) or the SDK didn't emit one.
+        is_error: Mirrors ``tool_result.is_error`` when known. ``None``
+            when no result is bound.
+    """
+
+    id: str
+    name: str
+    input: dict[str, object] = field(default_factory=dict)
+    result: object = None  # str | dict | list | None — kept loose for SDK quirks
+    is_error: Optional[bool] = None
+
+
+@dataclass(frozen=True)
 class RenderedMessage:
     """A single rendered conversation turn for UI display.
 
     Adapters expose conversation history through
     :meth:`Adapter.render_history`; each emitted item is one of these.
-    Tool calls / tool results / thinking blocks are intentionally NOT
-    surfaced as separate roles — they're either folded into the assistant
-    text (when meaningful) or skipped (thinking blocks).
+
+    Tool calls used to be filtered out (rendered as a single
+    "(tool calls / thinking only — no visible text)" placeholder per
+    assistant turn) — that made it impossible to see what an agent
+    actually did mid-conversation. As of 2026-05-04 we surface tool
+    calls structurally on the message via :attr:`tool_calls` so the UI
+    can render them inline with collapsible panels for input/output.
+
+    Thinking blocks remain filtered (they're not load-bearing for human
+    display and they're noisy).
 
     Attributes:
-        role: ``"user"`` or ``"assistant"``. Other roles (system, tool)
-            are filtered out before rendering.
-        text: Concatenated visible text for this turn. May be empty for
-            assistant turns that contained only tool calls.
+        role: ``"user"``, ``"assistant"``, or ``"tool"`` (free-floating
+            tool_result blocks that arrived without a paired tool_use).
+        text: Visible plain text for this turn. Empty for tool-only
+            assistant turns; UI must check :attr:`tool_calls` before
+            falling back to a placeholder.
         timestamp: ISO 8601 timestamp from the adapter's native store, or
             empty string if the adapter can't recover it.
+        tool_calls: Tool invocations attached to this message (in source
+            order). Empty for plain text turns. Each entry's ``result``
+            is best-effort: paired by id from later ``tool_result``
+            blocks in the same transcript when possible.
     """
 
     role: str
     text: str
     timestamp: str = ""
+    tool_calls: tuple["ToolCall", ...] = field(default_factory=tuple)
 
 
 @dataclass
@@ -264,4 +302,5 @@ __all__ = [
     "RenderedMessage",
     "RunResult",
     "SessionMetadata",
+    "ToolCall",
 ]

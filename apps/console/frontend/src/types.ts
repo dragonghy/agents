@@ -136,10 +136,27 @@ export interface CostTotalsResponse {
 
 // ── Sessions list + history (Task #18 Part B) ──
 
+export interface RenderedToolCall {
+  id: string;
+  name: string;
+  /** Free-form input arguments the model passed to the tool. */
+  input: Record<string, unknown>;
+  /**
+   * The matched tool_result payload, when present. May be a plain
+   * string (most common), a list of `{type, text}` blocks, or null
+   * when the tool call hasn't returned yet.
+   */
+  result: unknown;
+  /** Mirrors tool_result.is_error when known; null when no result. */
+  is_error: boolean | null;
+}
+
 export interface RenderedHistoryMessage {
   role: 'user' | 'assistant';
   text: string;
   timestamp: string;
+  /** Tool invocations attached to this message. Empty for plain text turns. */
+  tool_calls?: RenderedToolCall[];
 }
 
 export interface SessionHistoryResponse {
