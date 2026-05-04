@@ -25,7 +25,9 @@ Setup:
   1. Create a bot via @BotFather; save the token to .env as TELEGRAM_BOT_TOKEN.
   2. Get your Telegram user id (send /start to @userinfobot); save as
      TELEGRAM_HUMAN_CHAT_ID in .env (legacy alias) — this also becomes the
-     allow-listed chat the bot will respond to.
+     allow-listed chat the bot will respond to. Multiple ids can be
+     comma-separated (e.g. ``"7443699578,-5200664377"``) to allow-list a
+     mix of private chats and groups; group chat ids are negative.
   3. Run: uv run python bot.py
 """
 
@@ -51,7 +53,17 @@ logger = logging.getLogger(__name__)
 # ── Configuration ────────────────────────────────────────────────────────
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-HUMAN_CHAT_ID = os.environ.get("TELEGRAM_HUMAN_CHAT_ID", "")
+# TELEGRAM_HUMAN_CHAT_ID accepts a single id or a comma-separated list. Group
+# chat ids are negative; private chat ids are positive. ALLOWED_CHAT_IDS is the
+# parsed set used for membership checks; HUMAN_CHAT_ID retains the first id
+# (the canonical "Human" private chat) for outbound morning-brief-style use.
+_ALLOWED_RAW = os.environ.get("TELEGRAM_HUMAN_CHAT_ID", "")
+ALLOWED_CHAT_IDS = {
+    s.strip() for s in _ALLOWED_RAW.split(",") if s.strip()
+}
+HUMAN_CHAT_ID = next(
+    (s.strip() for s in _ALLOWED_RAW.split(",") if s.strip()), ""
+)
 DAEMON_URL = os.environ.get("DAEMON_URL", "http://127.0.0.1:8765").rstrip("/")
 DEFAULT_PROFILE = os.environ.get("DEFAULT_PROFILE", "secretary")
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
@@ -539,7 +551,7 @@ async def handle_updates(session: aiohttp.ClientSession) -> None:
 
                 # Allow-list the configured chat. Multiple chats / users are
                 # a future extension; v1 is single-tenant.
-                if HUMAN_CHAT_ID and chat_id != HUMAN_CHAT_ID:
+                if ALLOWED_CHAT_IDS and chat_id not in ALLOWED_CHAT_IDS:
                     logger.warning(f"Ignoring message from unknown chat: {chat_id}")
                     continue
                 if not chat_id or not text:
@@ -695,7 +707,7 @@ async def outbound_sse_loop(session: aiohttp.ClientSession) -> None:
                 chat_id = _chat_id_from_channel_id(channel_id)
                 if not chat_id:
                     continue
-                if HUMAN_CHAT_ID and chat_id != HUMAN_CHAT_ID:
+                if ALLOWED_CHAT_IDS and chat_id not in ALLOWED_CHAT_IDS:
                     # Some other tenant's chat — don't relay.
                     logger.debug(
                         f"SSE: skipping non-allowlisted chat {chat_id}"
@@ -731,10 +743,16 @@ async def main_async() -> None:
     if not BOT_TOKEN:
         logger.error("TELEGRAM_BOT_TOKEN not set. Get one from @BotFather.")
         sys.exit(1)
-    if not HUMAN_CHAT_ID:
+    if not ALLOWED_CHAT_IDS:
         logger.warning(
             "TELEGRAM_HUMAN_CHAT_ID not set — bot will accept messages from "
-            "any chat. Set it in .env to allow-list a single Human."
+            "any chat. Set it in .env to allow-list one or more chats "
+            "(comma-separated; group ids are negative)."
+        )
+    else:
+        logger.info(
+            f"Allow-listed chat ids: {sorted(ALLOWED_CHAT_IDS)} "
+            f"(canonical Human chat: {HUMAN_CHAT_ID})"
         )
 
     logger.info(
