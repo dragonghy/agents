@@ -624,15 +624,105 @@ select.pill-select:hover:not(:disabled) {
 /* ── Description block ─────────────────────────────────────────────── */
 
 .ticket-description {
-  white-space: pre-wrap;
-  word-wrap: break-word;
   font-size: 13px;
   line-height: 1.6;
   color: var(--text);
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 14px 16px;
+  padding: 14px 18px;
+}
+
+/* ── Markdown ──────────────────────────────────────────────────────── */
+
+.md-block, .md-inline {
+  word-wrap: break-word;
+}
+.md-block > *:first-child { margin-top: 0; }
+.md-block > *:last-child { margin-bottom: 0; }
+.md-block p { margin: 0 0 10px 0; line-height: 1.6; }
+.md-block h1, .md-block h2, .md-block h3, .md-block h4 {
+  margin: 14px 0 8px 0;
+  font-weight: 600;
+}
+.md-block h1 { font-size: 18px; }
+.md-block h2 { font-size: 16px; }
+.md-block h3 { font-size: 14px; }
+.md-block h4 { font-size: 13px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; }
+.md-block ul, .md-block ol {
+  margin: 0 0 10px 0;
+  padding-left: 22px;
+  line-height: 1.6;
+}
+.md-block li { margin-bottom: 4px; }
+.md-block li > p { margin: 0; } /* tight task lists */
+.md-block blockquote {
+  margin: 10px 0;
+  padding: 4px 14px;
+  border-left: 3px solid var(--border);
+  color: var(--text-dim);
+}
+.md-block hr {
+  border: none;
+  border-top: 1px dashed var(--border);
+  margin: 14px 0;
+}
+.md-block table {
+  border-collapse: collapse;
+  margin: 10px 0;
+  font-size: 12px;
+}
+.md-block th, .md-block td {
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  text-align: left;
+}
+.md-block th {
+  background: var(--bg-panel-hover);
+  font-weight: 600;
+}
+.md-block a, .md-inline a {
+  color: var(--accent);
+}
+.md-inline-code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  background: var(--bg-panel-hover);
+  border-radius: 3px;
+  padding: 1px 5px;
+  color: var(--accent);
+}
+.md-block pre {
+  margin: 10px 0;
+  background: #06090f;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.md-block pre code {
+  background: transparent;
+  padding: 0;
+  color: var(--text);
+}
+.md-inline p { margin: 0 0 6px 0; }
+.md-inline p:last-child { margin-bottom: 0; }
+
+.md-ticket-ref {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.95em;
+  color: var(--accent);
+  background: rgba(96, 165, 250, 0.08);
+  border-radius: 3px;
+  padding: 0 4px;
+  text-decoration: none;
+}
+.md-ticket-ref:hover {
+  background: rgba(96, 165, 250, 0.18);
+  text-decoration: none;
 }
 
 /* ── Data tables (consistent across pages) ─────────────────────────── */

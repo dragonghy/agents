@@ -21,6 +21,7 @@ import {
   patchTicket,
 } from '../api';
 import { sseBus } from '../lib/sseBus';
+import Markdown from '../lib/markdown';
 import type {
   Session,
   TicketComment,
@@ -334,7 +335,9 @@ export default function TicketDetail() {
             </div>
           </div>
         ) : ticket.description ? (
-          <div className="ticket-description">{ticket.description}</div>
+          <div className="ticket-description">
+            <Markdown source={ticket.description} variant="block" />
+          </div>
         ) : (
           <div className="empty-state" style={{ padding: 16 }}>
             <em>No description.</em>{' '}
@@ -438,7 +441,9 @@ export default function TicketDetail() {
                   <span className="comment-author">{c.author || 'unknown'}</span>
                   <span className="comment-time">{(c.date || '').slice(0, 19)}</span>
                 </div>
-                <div className="comment-body">{c.text}</div>
+                <div className="comment-body">
+                  <Markdown source={c.text} variant="inline" />
+                </div>
               </div>
             ))}
           </div>
