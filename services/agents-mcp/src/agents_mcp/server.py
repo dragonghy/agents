@@ -79,17 +79,29 @@ def _find_project_root() -> str:
     Checks the package's own location first (server.py is at
     services/agents-mcp/src/agents_mcp/server.py, so root is 4 levels up),
     then walks up from CWD.
+
+    Markers, in order: ``agents.yaml`` (canonical config; always present
+    in a real install), then ``profiles/`` (orchestration v1 profiles dir;
+    present after Phase 1). The legacy ``setup-agents.py`` marker was
+    removed in PR #33 (Phase 5a v1 infrastructure cleanup) so we no longer
+    rely on it.
     """
+
+    def _is_project_root(p: str) -> bool:
+        return os.path.isfile(os.path.join(p, "agents.yaml")) or os.path.isdir(
+            os.path.join(p, "profiles")
+        )
+
     # Try from this file's location: root is 4 levels up
     pkg_dir = os.path.dirname(os.path.abspath(__file__))
     candidate = os.path.normpath(os.path.join(pkg_dir, "..", "..", "..", ".."))
-    if os.path.isfile(os.path.join(candidate, "setup-agents.py")):
+    if _is_project_root(candidate):
         return candidate
 
     # Walk up from CWD
     d = os.path.abspath(".")
     for _ in range(10):
-        if os.path.isfile(os.path.join(d, "setup-agents.py")):
+        if _is_project_root(d):
             return d
         parent = os.path.dirname(d)
         if parent == d:
