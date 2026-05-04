@@ -477,3 +477,232 @@ class TestMarkTicketStatus:
             assert "Leantime unreachable" in content[0]["text"]
 
         run(_t())
+
+
+# ─── mark_ticket_status → TPM auto-close integration ───────────────────────
+#
+# Regression for ticket #35 / dogfood findings #24: when the TPM closes
+# its own ticket via ``mark_ticket_status`` (status=0 or status=-1), the
+# TPM session itself must transition to ``status='closed'`` in SQLite.
+# Before the fix, the tool wrote directly through ``task_client.update_ticket``
+# and never triggered the ``maybe_close_tpm_for_status_change`` hook, so
+# the TPM session row stayed ``active`` forever.
+#
+# These tests use a real :class:`AgentStore` (so we can observe the row
+# transition) but keep ``task_client`` mocked because we only care about
+# the close hook here, not the ticket-row write.
+
+
+class TestMarkTicketStatusAutoCloseTpm:
+    """Verify ``mark_ticket_status`` triggers the TPM auto-close hook.
+
+    We use a real :class:`AgentStore` (via ``tmp_path``) so the close
+    hook has something concrete to mutate, but keep ``task_client``
+    mocked because the ticket-row write is not what we're testing here.
+    Sessions are inserted directly via ``store.create_session`` rather
+    than through ``SessionManager.spawn`` to avoid having to maintain a
+    synthetic profile.md on disk — the close hook only cares about the
+    row shape (``profile_name='tpm'``, ``binding_kind='ticket-subagent'``,
+    ``parent_session_id IS NULL``, ``status='active'``).
+    """
+
+    def test_status_zero_closes_active_tpm_session(self, tmp_path):
+        async def _t():
+            from agents_mcp.store import AgentStore
+
+            db_path = str(tmp_path / "test-mark-status-close-tpm.db")
+            store = AgentStore(db_path)
+            await store.initialize()
+
+            # Seed an active TPM session row bound to ticket 42.
+            tpm_session_id = "sess_tpm_close_42"
+            await store.create_session(
+                session_id=tpm_session_id,
+                profile_name="tpm",
+                binding_kind="ticket-subagent",
+                runner_type="claude-sonnet-4.6",
+                ticket_id=42,
+                parent_session_id=None,
+            )
+
+            # Build the tool server with the REAL store so the close hook
+            # has something to look up + mutate.
+            sm = _FakeSessionManager()
+            tc = _FakeTaskClient()
+            cfg = build_tpm_tool_server(
+                session_manager=sm,
+                store=store,
+                task_client=tc,
+                parent_session_id=tpm_session_id,
+                bound_ticket_id=42,
+            )
+
+            # Sanity: the row is active before we call the tool.
+            before = await store.get_session(tpm_session_id)
+            assert before["status"] == "active"
+
+            content, is_error = await _call_tool(
+                cfg,
+                "mark_ticket_status",
+                {"ticket_id": 42, "status": 0},
+            )
+            assert is_error is False, content
+
+            # Tight timeout — close is synchronous in-process, so it must
+            # already be closed by the time the tool returns.
+            after = await store.get_session(tpm_session_id)
+            assert after["status"] == "closed", (
+                f"TPM session should be closed after mark_ticket_status "
+                f"transitioned ticket to Done; got {after['status']!r}"
+            )
+
+            # And the ticket update itself should have gone through.
+            assert tc.update_ticket_calls == [
+                {"ticket_id": 42, "status": 0}
+            ]
+
+            await store.close()
+
+        run(_t())
+
+    def test_status_archived_closes_active_tpm_session(self, tmp_path):
+        async def _t():
+            from agents_mcp.store import AgentStore
+
+            db_path = str(tmp_path / "test-mark-status-archive-tpm.db")
+            store = AgentStore(db_path)
+            await store.initialize()
+
+            tpm_session_id = "sess_tpm_archive_99"
+            await store.create_session(
+                session_id=tpm_session_id,
+                profile_name="tpm",
+                binding_kind="ticket-subagent",
+                runner_type="claude-sonnet-4.6",
+                ticket_id=99,
+                parent_session_id=None,
+            )
+
+            sm = _FakeSessionManager()
+            tc = _FakeTaskClient()
+            cfg = build_tpm_tool_server(
+                session_manager=sm,
+                store=store,
+                task_client=tc,
+                parent_session_id=tpm_session_id,
+                bound_ticket_id=99,
+            )
+
+            _, is_error = await _call_tool(
+                cfg,
+                "mark_ticket_status",
+                {"ticket_id": 99, "status": -1},
+            )
+            assert is_error is False
+
+            row = await store.get_session(tpm_session_id)
+            assert row["status"] == "closed"
+
+            await store.close()
+
+        run(_t())
+
+    def test_status_blocked_keeps_tpm_active(self, tmp_path):
+        """Status 1 (Blocked) is non-terminal — TPM must stay alive."""
+
+        async def _t():
+            from agents_mcp.store import AgentStore
+
+            db_path = str(tmp_path / "test-mark-status-blocked-tpm.db")
+            store = AgentStore(db_path)
+            await store.initialize()
+
+            tpm_session_id = "sess_tpm_blocked_7"
+            await store.create_session(
+                session_id=tpm_session_id,
+                profile_name="tpm",
+                binding_kind="ticket-subagent",
+                runner_type="claude-sonnet-4.6",
+                ticket_id=7,
+                parent_session_id=None,
+            )
+
+            sm = _FakeSessionManager()
+            tc = _FakeTaskClient()
+            cfg = build_tpm_tool_server(
+                session_manager=sm,
+                store=store,
+                task_client=tc,
+                parent_session_id=tpm_session_id,
+                bound_ticket_id=7,
+            )
+
+            _, is_error = await _call_tool(
+                cfg,
+                "mark_ticket_status",
+                {"ticket_id": 7, "status": 1},
+            )
+            assert is_error is False
+
+            row = await store.get_session(tpm_session_id)
+            assert row["status"] == "active"
+
+            await store.close()
+
+        run(_t())
+
+    def test_close_hook_failure_does_not_poison_tool_return(self, tmp_path):
+        """If the hook explodes, the tool still reports success.
+
+        Rationale: ``task_client.update_ticket`` already succeeded, so the
+        ticket IS at status=0 in SQLite. Reporting an error to the TPM
+        would be misleading + would tempt it to retry, double-writing.
+        The hook is best-effort by design.
+        """
+
+        async def _t():
+            from agents_mcp.store import AgentStore
+
+            db_path = str(tmp_path / "test-mark-status-hook-fail.db")
+            store = AgentStore(db_path)
+            await store.initialize()
+
+            sm = _FakeSessionManager()
+            tc = _FakeTaskClient()
+
+            class _BrokenStore:
+                """Wraps the real store and raises on the close lookup."""
+
+                def __init__(self, real):
+                    self._real = real
+
+                async def get_active_tpm_for_ticket(self, ticket_id):
+                    raise RuntimeError("simulated DB failure")
+
+                def __getattr__(self, name):
+                    return getattr(self._real, name)
+
+            cfg = build_tpm_tool_server(
+                session_manager=sm,
+                store=_BrokenStore(store),
+                task_client=tc,
+                parent_session_id="sess_tpm_1",
+                bound_ticket_id=42,
+            )
+
+            content, is_error = await _call_tool(
+                cfg,
+                "mark_ticket_status",
+                {"ticket_id": 42, "status": 0},
+            )
+            assert is_error is False, content
+            payload = json.loads(content[0]["text"])
+            assert payload["ok"] is True
+            # Update went through despite the hook failure.
+            assert tc.update_ticket_calls == [
+                {"ticket_id": 42, "status": 0}
+            ]
+
+            await store.close()
+
+        run(_t())
