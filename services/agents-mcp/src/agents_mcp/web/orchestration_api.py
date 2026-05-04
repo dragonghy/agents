@@ -26,6 +26,8 @@ Tickets (Task #20 — UI rework):
 - ``GET   /tickets/{id}/comments``         — comments
 - ``GET   /tickets/{id}/sessions``         — sessions bound to this ticket
 - ``PATCH /tickets/{id}``                  — minimal status / priority / headline edit
+- ``POST  /tickets``                       — create a ticket (Task #34)
+- ``POST  /tickets/{id}/comments``         — append a comment (Task #34)
 
 The factory :func:`create_orchestration_router` returns a list of
 :class:`starlette.routing.Route` objects (matching the bridge's
@@ -993,6 +995,295 @@ def create_orchestration_router(
         ws_index = await _resolve_workspaces_index()
         return JSONResponse({"ok": True, "ticket": _summarize_ticket(row, ws_index)})
 
+    async def create_ticket_endpoint(request: Request) -> JSONResponse:
+        """``POST /tickets`` — create a new task ticket.
+
+        Body fields:
+            ``headline`` (str, required): ticket title.
+            ``description`` (str, optional): long-form body.
+            ``assignee`` (str, optional): agent name (e.g. ``"dev"``); written
+                to both the native ``assignee`` column and the
+                ``agent:<name>`` tag for backward compatibility.
+            ``tags`` (str | list[str], optional): tag string. List forms are
+                joined with ``,`` to match the SQLite column shape.
+            ``priority`` (str | int, optional): priority label. Coerced to
+                string for the underlying TEXT column.
+            ``parent_id`` (int, optional): parent ticket id (becomes the
+                ``dependingTicketId``). 404 if the parent doesn't exist.
+
+        Returns the newly inserted ticket row (with workspace_name resolved)
+        and HTTP 201 on success.
+        """
+        c = await _resolve(task_client)
+        if c is None:
+            return JSONResponse(
+                {"error": "task_client not configured"}, status_code=500
+            )
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(
+                {"error": "request body must be valid JSON"}, status_code=400
+            )
+        if not isinstance(body, dict):
+            return JSONResponse(
+                {"error": "request body must be a JSON object"}, status_code=400
+            )
+
+        headline = body.get("headline")
+        if not headline or not isinstance(headline, str):
+            return JSONResponse(
+                {"error": "headline (non-empty string) is required"},
+                status_code=400,
+            )
+
+        kwargs: dict[str, Any] = {}
+        if "description" in body and body["description"] is not None:
+            if not isinstance(body["description"], str):
+                return JSONResponse(
+                    {"error": "description must be a string"}, status_code=400
+                )
+            kwargs["description"] = body["description"]
+        if "priority" in body and body["priority"] is not None:
+            # Coerce int / str → str (the column is TEXT; the brief allowed int).
+            if isinstance(body["priority"], (str, int)):
+                kwargs["priority"] = str(body["priority"])
+            else:
+                return JSONResponse(
+                    {"error": "priority must be a string or integer"},
+                    status_code=400,
+                )
+
+        # tags can be a list[str] (per brief) or a raw comma-joined string.
+        tags: Optional[str] = None
+        if "tags" in body and body["tags"] is not None:
+            raw_tags = body["tags"]
+            if isinstance(raw_tags, list):
+                if not all(isinstance(t, str) for t in raw_tags):
+                    return JSONResponse(
+                        {"error": "tags list must contain strings only"},
+                        status_code=400,
+                    )
+                tags = ",".join(raw_tags)
+            elif isinstance(raw_tags, str):
+                tags = raw_tags
+            else:
+                return JSONResponse(
+                    {"error": "tags must be a string or list of strings"},
+                    status_code=400,
+                )
+
+        assignee: Optional[str] = None
+        if "assignee" in body and body["assignee"] is not None:
+            if not isinstance(body["assignee"], str):
+                return JSONResponse(
+                    {"error": "assignee must be a string"}, status_code=400
+                )
+            assignee = body["assignee"]
+
+        # parent_id → dependingTicketId. Validate existence to give a
+        # meaningful 404 instead of an opaque foreign-key surprise later.
+        if "parent_id" in body and body["parent_id"] is not None:
+            try:
+                parent_id = int(body["parent_id"])
+            except (TypeError, ValueError):
+                return JSONResponse(
+                    {"error": "parent_id must be an integer"}, status_code=400
+                )
+            try:
+                parent_row = await c.get_ticket(parent_id, prune=True)
+            except Exception:
+                logger.exception(
+                    "create_ticket: parent lookup failed for #%s", parent_id
+                )
+                parent_row = None
+            if not parent_row:
+                return JSONResponse(
+                    {"error": f"parent ticket not found: {parent_id}"},
+                    status_code=404,
+                )
+            kwargs["dependingTicketId"] = parent_id
+
+        try:
+            new_id = await c.create_ticket(
+                headline=headline,
+                tags=tags,
+                assignee=assignee,
+                **kwargs,
+            )
+        except Exception as e:
+            logger.exception("create_ticket: insert failed")
+            return JSONResponse(
+                {"error": "create_ticket failed", "detail": str(e)},
+                status_code=500,
+            )
+
+        # Re-fetch so the response mirrors GET /tickets/{id} shape (incl. id).
+        try:
+            row = await c.get_ticket(int(new_id), prune=False)
+        except Exception:
+            row = None
+        if not row:
+            # Last-ditch: at least return the id so callers can recover.
+            return JSONResponse({"id": int(new_id)}, status_code=201)
+
+        ws_index = await _resolve_workspaces_index()
+        return JSONResponse(
+            _summarize_ticket(row, ws_index), status_code=201
+        )
+
+    async def create_comment_endpoint(request: Request) -> JSONResponse:
+        """``POST /tickets/{id}/comments`` — append a comment to a ticket.
+
+        Body fields:
+            ``body`` (str, required): the comment text.
+            ``author`` (str, optional): agent id of the comment author
+                (e.g. ``"dev"``). Empty / missing means Human-authored.
+
+        Mirrors the MCP ``add_comment`` tool: after insert, fires the
+        orchestration v1 TPM comment-dispatch hook so an active TPM session
+        for the ticket sees the new comment, identical to the MCP path.
+        Returns the newly inserted comment row + HTTP 201.
+
+        404 if the ticket does not exist.
+        """
+        c = await _resolve(task_client)
+        if c is None:
+            return JSONResponse(
+                {"error": "task_client not configured"}, status_code=500
+            )
+        try:
+            ticket_id = int(request.path_params["id"])
+        except (KeyError, TypeError, ValueError):
+            return JSONResponse(
+                {"error": "ticket id must be an integer"}, status_code=400
+            )
+        try:
+            payload = await request.json()
+        except Exception:
+            return JSONResponse(
+                {"error": "request body must be valid JSON"}, status_code=400
+            )
+        if not isinstance(payload, dict):
+            return JSONResponse(
+                {"error": "request body must be a JSON object"}, status_code=400
+            )
+
+        comment_body = payload.get("body")
+        if not comment_body or not isinstance(comment_body, str):
+            return JSONResponse(
+                {"error": "body (non-empty string) is required"},
+                status_code=400,
+            )
+
+        author: Optional[str] = None
+        if "author" in payload and payload["author"] is not None:
+            if not isinstance(payload["author"], str):
+                return JSONResponse(
+                    {"error": "author must be a string"}, status_code=400
+                )
+            author = payload["author"]
+
+        # 404 cleanly when the ticket doesn't exist, instead of inserting a
+        # comment that points at nothing.
+        try:
+            existing = await c.get_ticket(ticket_id, prune=True)
+        except Exception:
+            logger.exception(
+                "create_comment: ticket lookup failed for #%s", ticket_id
+            )
+            existing = None
+        if not existing:
+            return JSONResponse(
+                {"error": f"ticket not found: {ticket_id}"}, status_code=404
+            )
+
+        try:
+            comment_id = await c.add_comment(
+                "ticket", ticket_id, comment_body, author=author
+            )
+        except Exception as e:
+            logger.exception(
+                "create_comment: add_comment failed for #%s", ticket_id
+            )
+            return JSONResponse(
+                {"error": "add_comment failed", "detail": str(e)},
+                status_code=500,
+            )
+
+        # Mirror MCP add_comment: forward to active TPM session if any.
+        # Best effort — never fail the HTTP response on dispatch error.
+        sm = await _resolve(session_manager)
+        s = await _resolve(store)
+        if sm is not None and s is not None:
+            try:
+                from ..orchestration_comment_dispatch import (
+                    dispatch_comment_to_tpm,
+                )
+
+                cid = (
+                    int(comment_id)
+                    if isinstance(comment_id, int)
+                    else (
+                        int(comment_id.get("id", 0))
+                        if isinstance(comment_id, dict)
+                        else 0
+                    )
+                )
+                await dispatch_comment_to_tpm(
+                    sm,
+                    s,
+                    ticket_id=ticket_id,
+                    comment_id=cid,
+                    comment_body=comment_body,
+                    author_session_id=None,
+                )
+            except Exception:
+                logger.exception(
+                    "TPM comment dispatch failed for ticket %s "
+                    "(POST endpoint)",
+                    ticket_id,
+                )
+
+        # Compose the response. Re-fetch via get_comments so we return the
+        # row exactly as it lives in storage (including any default fields
+        # SQLite filled in like ``date``).
+        new_id = (
+            int(comment_id)
+            if isinstance(comment_id, int)
+            else (
+                int(comment_id.get("id", 0))
+                if isinstance(comment_id, dict)
+                else 0
+            )
+        )
+        try:
+            comments_payload = await c.get_comments(
+                "ticket", ticket_id, limit=0, offset=0
+            )
+            new_row = next(
+                (
+                    cm
+                    for cm in (comments_payload.get("comments") or [])
+                    if int(cm.get("id") or -1) == new_id
+                ),
+                None,
+            )
+        except Exception:
+            new_row = None
+
+        if new_row is None:
+            # Fall back to a synthesized row so callers always see {id, body}.
+            new_row = {
+                "id": new_id,
+                "ticket_id": ticket_id,
+                "moduleId": ticket_id,
+                "body": comment_body,
+                "text": comment_body,
+                "author": author or "",
+            }
+        return JSONResponse(new_row, status_code=201)
+
     async def get_ticket_tree(request: Request) -> JSONResponse:
         """``GET /tickets/tree`` — Workspace > Project > umbrella > children.
 
@@ -1223,7 +1514,17 @@ def create_orchestration_router(
         # literal "tree" path doesn't get matched as id.
         Route("/tickets/tree", get_ticket_tree, methods=["GET"]),
         Route("/tickets", list_tickets, methods=["GET"]),
-        Route("/tickets/{id}/comments", get_ticket_comments, methods=["GET"]),
+        Route("/tickets", create_ticket_endpoint, methods=["POST"]),
+        Route(
+            "/tickets/{id}/comments",
+            get_ticket_comments,
+            methods=["GET"],
+        ),
+        Route(
+            "/tickets/{id}/comments",
+            create_comment_endpoint,
+            methods=["POST"],
+        ),
         Route("/tickets/{id}/sessions", get_ticket_sessions, methods=["GET"]),
         Route("/tickets/{id}", get_ticket, methods=["GET"]),
         Route("/tickets/{id}", patch_ticket, methods=["PATCH"]),
