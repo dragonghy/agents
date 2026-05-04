@@ -1,99 +1,145 @@
 /**
- * TicketBoard — top-level Tickets page (Task #20).
+ * TicketBoard — top-level Tickets page.
  *
  * Owns:
- * - The Board/List mode toggle (Finding #1).
- * - The workspace dropdown filter used by both modes (Finding #3 — workspace
- *   is now a per-page filter, not a global sidebar switcher).
+ *  - Board / List mode toggle
+ *  - Filter toolbar: workspace, status (multi), priority (multi), assignee,
+ *    tag, full-text search
+ *  - "+ New ticket" inline composer (slides down from the toolbar)
+ *  - Kanban renderer (this file). List view is delegated to <TicketList>.
  *
- * Board mode renders the existing kanban grouping (NEW / IN PROGRESS / BLOCKED).
- * List mode renders <TicketList> (Workspace > Project > umbrella > children).
- *
- * Cards in Board mode are clickable links to /tickets/:id.
+ * State persisted to localStorage so the operator's view survives reloads.
  */
 import { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { getTicketBoard, listWorkspaces } from '../api';
-import type { BoardColumn, Workspace } from '../types';
+import { Link, useNavigate } from 'react-router-dom';
+import {
+  createTicket,
+  getTicketBoard,
+  listWorkspaces,
+} from '../api';
+import type { BoardColumn, TicketSummary, Workspace } from '../types';
 import TicketList from './TicketList';
 
-const REFRESH_MS = 15000;
+const REFRESH_MS = 15_000;
 type Mode = 'board' | 'list';
 
-const WORKSPACE_STORAGE_KEY = 'console.tickets.workspace';
-const MODE_STORAGE_KEY = 'console.tickets.mode';
+const LS_KEYS = {
+  workspace: 'console.tickets.workspace',
+  mode: 'console.tickets.mode',
+  statuses: 'console.tickets.statuses', // comma-sep status numbers
+  priorities: 'console.tickets.priorities',
+  assignee: 'console.tickets.assignee',
+  tag: 'console.tickets.tag',
+};
 
-function readStoredWorkspace(): number | null {
+const ALL_PRIORITIES = ['urgent', 'high', 'medium', 'low'];
+const ALL_STATUSES: Array<{ value: number; label: string; color: string }> = [
+  { value: 4, label: 'In Progress', color: '#facc15' },
+  { value: 3, label: 'New', color: '#60a5fa' },
+  { value: 1, label: 'Blocked', color: '#f87171' },
+];
+
+function readLS(k: string): string {
   try {
-    const v = localStorage.getItem(WORKSPACE_STORAGE_KEY);
-    if (v === null || v === 'all') return null;
-    const n = Number(v);
-    return Number.isFinite(n) ? n : null;
+    return localStorage.getItem(k) || '';
   } catch {
-    return null;
+    return '';
   }
 }
-
-function readStoredMode(): Mode {
+function writeLS(k: string, v: string) {
   try {
-    const v = localStorage.getItem(MODE_STORAGE_KEY);
-    if (v === 'list') return 'list';
+    localStorage.setItem(k, v);
   } catch {
     // ignore
   }
-  return 'board';
+}
+function readWorkspace(): number | null {
+  const v = readLS(LS_KEYS.workspace);
+  if (!v || v === 'all') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+function readMode(): Mode {
+  return readLS(LS_KEYS.mode) === 'list' ? 'list' : 'board';
+}
+function readStatuses(): number[] {
+  const v = readLS(LS_KEYS.statuses);
+  if (!v) return [3, 4, 1]; // default = all active
+  return v
+    .split(',')
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isFinite(n));
+}
+function readPriorities(): string[] {
+  const v = readLS(LS_KEYS.priorities);
+  if (!v) return ALL_PRIORITIES;
+  return v.split(',').filter(Boolean);
 }
 
 export default function TicketBoard() {
-  const [mode, setMode] = useState<Mode>(readStoredMode);
+  const [mode, setMode] = useState<Mode>(readMode);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
-  const [workspaceId, setWorkspaceId] = useState<number | null>(readStoredWorkspace);
+  const [workspaceId, setWorkspaceId] = useState<number | null>(readWorkspace);
+  const [statuses, setStatuses] = useState<number[]>(readStatuses);
+  const [priorities, setPriorities] = useState<string[]>(readPriorities);
+  const [assigneeFilter, setAssigneeFilter] = useState<string>(() => readLS(LS_KEYS.assignee));
+  const [tagFilter, setTagFilter] = useState<string>(() => readLS(LS_KEYS.tag));
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [showCreate, setShowCreate] = useState(false);
 
-  // Workspaces list (for filter dropdown).
+  // Workspaces dropdown
   useEffect(() => {
     listWorkspaces()
-      .then((r) => {
-        setWorkspaces(r.workspaces);
-        // If we don't have a stored selection, default to the first 'work'
-        // workspace (or the first workspace if no 'work' kind).
-        if (workspaceId === null && r.workspaces.length > 0) {
-          // Don't auto-pick; keep "All" as the default for v1.
-        }
-      })
+      .then((r) => setWorkspaces(r.workspaces))
       .catch(() => {
-        // Non-fatal — filter dropdown just won't be populated.
+        /* non-fatal */
       });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function onChangeWorkspace(v: string) {
     if (v === 'all') {
       setWorkspaceId(null);
-      try {
-        localStorage.setItem(WORKSPACE_STORAGE_KEY, 'all');
-      } catch {
-        // ignore
-      }
+      writeLS(LS_KEYS.workspace, 'all');
       return;
     }
     const n = Number(v);
     if (Number.isFinite(n)) {
       setWorkspaceId(n);
-      try {
-        localStorage.setItem(WORKSPACE_STORAGE_KEY, String(n));
-      } catch {
-        // ignore
-      }
+      writeLS(LS_KEYS.workspace, String(n));
     }
   }
 
   function onChangeMode(m: Mode) {
     setMode(m);
-    try {
-      localStorage.setItem(MODE_STORAGE_KEY, m);
-    } catch {
-      // ignore
-    }
+    writeLS(LS_KEYS.mode, m);
+  }
+
+  function toggleStatus(s: number) {
+    const next = statuses.includes(s)
+      ? statuses.filter((x) => x !== s)
+      : [...statuses, s];
+    setStatuses(next.length ? next : [3, 4, 1]); // never lock to empty
+    writeLS(LS_KEYS.statuses, next.join(','));
+  }
+
+  function togglePriority(p: string) {
+    const next = priorities.includes(p)
+      ? priorities.filter((x) => x !== p)
+      : [...priorities, p];
+    setPriorities(next.length ? next : ALL_PRIORITIES);
+    writeLS(LS_KEYS.priorities, next.join(','));
+  }
+
+  function clearFilters() {
+    setStatuses([3, 4, 1]);
+    setPriorities(ALL_PRIORITIES);
+    setAssigneeFilter('');
+    setTagFilter('');
+    setSearchQuery('');
+    writeLS(LS_KEYS.statuses, '');
+    writeLS(LS_KEYS.priorities, '');
+    writeLS(LS_KEYS.assignee, '');
+    writeLS(LS_KEYS.tag, '');
   }
 
   const workspaceLabel = useMemo(() => {
@@ -101,6 +147,13 @@ export default function TicketBoard() {
     const w = workspaces.find((x) => x.id === workspaceId);
     return w ? w.name : `workspace #${workspaceId}`;
   }, [workspaceId, workspaces]);
+
+  const isFiltered =
+    statuses.length !== 3 ||
+    priorities.length !== ALL_PRIORITIES.length ||
+    !!assigneeFilter ||
+    !!tagFilter ||
+    !!searchQuery;
 
   return (
     <div>
@@ -111,42 +164,122 @@ export default function TicketBoard() {
         </span>
       </div>
 
-      <div
-        className="card"
-        style={{ marginBottom: 12, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}
-      >
-        <div role="tablist" style={{ display: 'inline-flex', gap: 4 }}>
-          <ModeButton
-            active={mode === 'board'}
-            onClick={() => onChangeMode('board')}
-          >
-            Board
-          </ModeButton>
-          <ModeButton
-            active={mode === 'list'}
-            onClick={() => onChangeMode('list')}
-          >
-            List
-          </ModeButton>
-        </div>
-        <label style={{ fontSize: 12, color: 'var(--text-dim)' }}>
-          Workspace:&nbsp;
+      {/* Toolbar */}
+      <div className="card filters-toolbar" style={{ marginBottom: 12 }}>
+        <div className="filters-row-1">
+          <div role="tablist" className="mode-toggle">
+            <ModeButton active={mode === 'board'} onClick={() => onChangeMode('board')}>
+              Board
+            </ModeButton>
+            <ModeButton active={mode === 'list'} onClick={() => onChangeMode('list')}>
+              List
+            </ModeButton>
+          </div>
+
           <select
             value={workspaceId === null ? 'all' : String(workspaceId)}
             onChange={(e) => onChangeWorkspace(e.target.value)}
+            className="filter-select"
           >
-            <option value="all">All</option>
+            <option value="all">All workspaces</option>
             {workspaces.map((w) => (
               <option key={w.id} value={w.id}>
                 {w.name}
               </option>
             ))}
           </select>
-        </label>
+
+          <input
+            type="search"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search headline / id / assignee… (live)"
+            className="filter-search"
+          />
+
+          <button
+            onClick={() => setShowCreate((s) => !s)}
+            className={showCreate ? 'btn-secondary btn-sm' : 'btn-primary btn-sm'}
+            style={{ marginLeft: 'auto' }}
+          >
+            {showCreate ? 'Cancel' : '+ New ticket'}
+          </button>
+        </div>
+
+        <div className="filters-row-2">
+          <FilterGroup label="Status">
+            {ALL_STATUSES.map((s) => (
+              <FilterChip
+                key={s.value}
+                active={statuses.includes(s.value)}
+                onClick={() => toggleStatus(s.value)}
+                color={s.color}
+              >
+                {s.label}
+              </FilterChip>
+            ))}
+          </FilterGroup>
+
+          <FilterGroup label="Priority">
+            {ALL_PRIORITIES.map((p) => (
+              <FilterChip
+                key={p}
+                active={priorities.includes(p)}
+                onClick={() => togglePriority(p)}
+              >
+                {p}
+              </FilterChip>
+            ))}
+          </FilterGroup>
+
+          <input
+            type="search"
+            value={assigneeFilter}
+            onChange={(e) => {
+              setAssigneeFilter(e.target.value);
+              writeLS(LS_KEYS.assignee, e.target.value);
+            }}
+            placeholder="assignee…"
+            className="filter-input-mini"
+          />
+          <input
+            type="search"
+            value={tagFilter}
+            onChange={(e) => {
+              setTagFilter(e.target.value);
+              writeLS(LS_KEYS.tag, e.target.value);
+            }}
+            placeholder="tag…"
+            className="filter-input-mini"
+          />
+
+          {isFiltered && (
+            <button onClick={clearFilters} className="btn-secondary btn-sm">
+              Clear filters
+            </button>
+          )}
+        </div>
+
+        {showCreate && (
+          <CreatePanel
+            workspaceId={workspaceId}
+            onCreated={(id) => {
+              setShowCreate(false);
+              // navigate handled inside CreatePanel
+            }}
+          />
+        )}
       </div>
 
       {mode === 'board' ? (
-        <BoardMode workspaceId={workspaceId} />
+        <BoardMode
+          workspaceId={workspaceId}
+          statuses={statuses}
+          priorities={priorities}
+          assigneeFilter={assigneeFilter}
+          tagFilter={tagFilter}
+          searchQuery={searchQuery}
+        />
       ) : (
         <TicketList workspaceId={workspaceId} />
       )}
@@ -154,7 +287,23 @@ export default function TicketBoard() {
   );
 }
 
-function BoardMode({ workspaceId }: { workspaceId: number | null }) {
+// ── Board mode ────────────────────────────────────────────────────────
+
+function BoardMode({
+  workspaceId,
+  statuses,
+  priorities,
+  assigneeFilter,
+  tagFilter,
+  searchQuery,
+}: {
+  workspaceId: number | null;
+  statuses: number[];
+  priorities: string[];
+  assigneeFilter: string;
+  tagFilter: string;
+  searchQuery: string;
+}) {
   const [columns, setColumns] = useState<BoardColumn[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -187,46 +336,190 @@ function BoardMode({ workspaceId }: { workspaceId: number | null }) {
   if (loading && !columns.length) return <p className="loading">Loading board…</p>;
   if (error) return <div className="error">{error}</div>;
 
-  const totalTickets = columns.reduce((acc, c) => acc + c.tickets.length, 0);
+  const q = searchQuery.trim().toLowerCase();
+  const tagQ = tagFilter.trim().toLowerCase();
+  const assigneeQ = assigneeFilter.trim().toLowerCase();
+
+  function passesFilters(t: TicketSummary): boolean {
+    if (!priorities.includes(t.priority || 'medium')) return false;
+    if (assigneeQ && !(t.assignee || '').toLowerCase().includes(assigneeQ)) return false;
+    if (tagQ && !(t.tags || '').toLowerCase().includes(tagQ)) return false;
+    if (q) {
+      const hit =
+        String(t.id).includes(q) ||
+        (t.headline || '').toLowerCase().includes(q) ||
+        (t.assignee || '').toLowerCase().includes(q) ||
+        (t.tags || '').toLowerCase().includes(q);
+      if (!hit) return false;
+    }
+    return true;
+  }
+
+  // Filter columns by status selection + apply per-card filters.
+  const visibleColumns = columns
+    .filter((c) => statuses.includes(c.status))
+    .map((c) => ({
+      ...c,
+      tickets: c.tickets.filter(passesFilters),
+    }));
+
+  const totalVisible = visibleColumns.reduce((acc, c) => acc + c.tickets.length, 0);
+
+  if (totalVisible === 0) {
+    return (
+      <div className="empty-state">
+        No tickets match the current filters.
+        {workspaceId !== null && ' Try widening to "All workspaces".'}
+      </div>
+    );
+  }
 
   return (
-    <>
-      {totalTickets === 0 && (
-        <div className="empty-state">
-          {workspaceId === null
-            ? 'No active tickets across all workspaces.'
-            : `No active tickets for workspace ${workspaceId}.`}
-        </div>
-      )}
-      <div className="board">
-        {columns.map((c) => (
+    <div className="board">
+      {visibleColumns.map((c) => {
+        const status = ALL_STATUSES.find((s) => s.value === c.status);
+        const accent = status?.color || 'var(--text-muted)';
+        return (
           <div className="board-column" key={c.status}>
-            <h4>
-              {c.label} · {c.tickets.length}
+            <h4 style={{ borderBottom: `2px solid ${accent}` }}>
+              <span style={{ color: accent }}>{c.label}</span>
+              <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: 11 }}>
+                {c.tickets.length}
+              </span>
             </h4>
-            {c.tickets.map((t) => (
-              <Link
-                key={t.id}
-                to={`/tickets/${t.id}`}
-                className="ticket-card"
-                style={{
-                  display: 'block',
-                  textDecoration: 'none',
-                  color: 'inherit',
-                }}
-              >
-                <span className="id">#{t.id}</span>
-                <span className={`pri ${t.priority || 'low'}`}>{t.priority}</span>
-                <div style={{ marginTop: 4 }}>{t.headline}</div>
-                <div className="assignee">→ {t.assignee || 'unassigned'}</div>
-              </Link>
-            ))}
+            {c.tickets.length === 0 ? (
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: 8 }}>
+                <em>(filtered out)</em>
+              </div>
+            ) : (
+              c.tickets.map((t) => <BoardCard key={t.id} ticket={t} accent={accent} />)
+            )}
           </div>
-        ))}
-      </div>
-    </>
+        );
+      })}
+    </div>
   );
 }
+
+// ── Board card ────────────────────────────────────────────────────────
+
+function BoardCard({ ticket, accent }: { ticket: TicketSummary; accent: string }) {
+  const priority = ticket.priority || 'low';
+  return (
+    <Link to={`/tickets/${ticket.id}`} className="ticket-card-v2" style={{ borderLeftColor: accent }}>
+      <div className="ticket-card-row">
+        <span className="ticket-card-id">#{ticket.id}</span>
+        <span className={`pri pri-${priority}`}>{priority}</span>
+        {ticket.type && ticket.type !== 'task' && (
+          <span className="ticket-type-chip">{ticket.type}</span>
+        )}
+      </div>
+      <div className="ticket-card-headline">{ticket.headline || '(no headline)'}</div>
+      <div className="ticket-card-meta">
+        {ticket.assignee ? (
+          <span>→ {ticket.assignee}</span>
+        ) : (
+          <span style={{ color: 'var(--text-muted)' }}>unassigned</span>
+        )}
+        {ticket.workspace_name && (
+          <span className="ticket-card-ws">{ticket.workspace_name}</span>
+        )}
+      </div>
+    </Link>
+  );
+}
+
+// ── Create panel ──────────────────────────────────────────────────────
+
+function CreatePanel({
+  workspaceId,
+  onCreated,
+}: {
+  workspaceId: number | null;
+  onCreated: (id: number) => void;
+}) {
+  const [headline, setHeadline] = useState('');
+  const [description, setDescription] = useState('');
+  const [priority, setPriority] = useState('medium');
+  const [assignee, setAssignee] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const navigate = useNavigate();
+
+  async function onSubmit() {
+    if (!headline.trim() || busy) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await createTicket({
+        headline: headline.trim(),
+        description: description.trim() || undefined,
+        priority,
+        assignee: assignee.trim() || undefined,
+        workspace_id: workspaceId ?? undefined,
+      });
+      onCreated(r.ticket.id);
+      navigate(`/tickets/${r.ticket.id}`);
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="create-panel">
+      <input
+        autoFocus
+        value={headline}
+        onChange={(e) => setHeadline(e.target.value)}
+        onKeyDown={(e) => {
+          if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') onSubmit();
+        }}
+        placeholder="Headline (required)…"
+        className="filter-search"
+        style={{ flex: 1 }}
+      />
+      <textarea
+        value={description}
+        onChange={(e) => setDescription(e.target.value)}
+        placeholder="Description (optional)…"
+        rows={2}
+        className="composer-textarea"
+        style={{ marginTop: 8 }}
+      />
+      <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <select
+          value={priority}
+          onChange={(e) => setPriority(e.target.value)}
+          className="filter-select"
+        >
+          {ALL_PRIORITIES.map((p) => (
+            <option key={p} value={p}>
+              priority: {p}
+            </option>
+          ))}
+        </select>
+        <input
+          value={assignee}
+          onChange={(e) => setAssignee(e.target.value)}
+          placeholder="assignee (optional)"
+          className="filter-input-mini"
+        />
+        <button
+          onClick={onSubmit}
+          disabled={busy || !headline.trim()}
+          className="btn-primary btn-sm"
+        >
+          {busy ? 'Creating…' : 'Create ticket (⌘+Enter)'}
+        </button>
+        {err && <span style={{ color: 'var(--status-blocked)', fontSize: 12 }}>{err}</span>}
+      </div>
+    </div>
+  );
+}
+
+// ── Tiny components ───────────────────────────────────────────────────
 
 function ModeButton({
   active,
@@ -242,16 +535,48 @@ function ModeButton({
       role="tab"
       aria-selected={active}
       onClick={onClick}
-      style={{
-        background: active ? 'var(--bg-panel-hover)' : 'transparent',
-        color: active ? 'var(--text)' : 'var(--text-dim)',
-        border: '1px solid var(--border)',
-        borderRadius: 4,
-        padding: '4px 12px',
-        cursor: 'pointer',
-        fontSize: 12,
-        fontWeight: active ? 600 : 400,
-      }}
+      className={`mode-button ${active ? 'mode-button-active' : ''}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function FilterGroup({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="filter-group">
+      <span className="filter-group-label">{label}:</span>
+      {children}
+    </div>
+  );
+}
+
+function FilterChip({
+  active,
+  onClick,
+  color,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  color?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`filter-chip ${active ? 'filter-chip-active' : ''}`}
+      style={
+        active && color
+          ? { borderColor: color, color: color, background: `${color}15` }
+          : undefined
+      }
     >
       {children}
     </button>
