@@ -582,6 +582,7 @@ class SQLiteTaskClient:
 
         Workspace inheritance (ticket #490):
             - If `workspace_id` is in kwargs and non-zero, use it directly.
+            - Else inherit from project's workspace_id (if projectId is set).
             - Else derive from dependingTicketId parent chain.
             - Else fall back to DEFAULT_WORK_WORKSPACE_ID.
         """
@@ -605,12 +606,29 @@ class SQLiteTaskClient:
 
         # Resolve workspace_id (only if caller didn't pass one explicitly).
         if not values.get("workspace_id"):
-            parent_id = values.get("dependingTicketId") or 0
             ws = 0
-            if parent_id:
-                ws = await self._derive_workspace_id_unsafe(db, parent_id)
+
+            # 1. Try to inherit from project
+            project_id = values.get("projectId")
+            if project_id:
+                async with db.execute(
+                    "SELECT workspace_id FROM tickets WHERE id = ? AND type = 'project'",
+                    (project_id,),
+                ) as cur:
+                    row = await cur.fetchone()
+                    if row and row[0]:
+                        ws = row[0]
+
+            # 2. If no project workspace, try parent chain
+            if not ws:
+                parent_id = values.get("dependingTicketId") or 0
+                if parent_id:
+                    ws = await self._derive_workspace_id_unsafe(db, parent_id)
+
+            # 3. Fall back to default
             if not ws:
                 ws = DEFAULT_WORK_WORKSPACE_ID
+
             values["workspace_id"] = ws
 
         columns = ", ".join(values.keys())
