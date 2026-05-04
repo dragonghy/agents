@@ -590,6 +590,27 @@ def create_orchestration_router(
             )
         return JSONResponse({"rollup": rows, "total": len(rows)})
 
+    async def cost_by_day(request: Request) -> JSONResponse:
+        """``GET /cost/by-day?days=30`` — one row per UTC day.
+
+        Each row: ``date`` (YYYY-MM-DD), ``tokens_in``, ``tokens_out``,
+        ``sessions_count``, ``usd`` (derived). Days with zero sessions
+        are omitted; the UI should fill the gap if it wants a
+        continuous x-axis.
+        """
+        try:
+            days = int(request.query_params.get("days", 30))
+        except (TypeError, ValueError):
+            days = 30
+        s = await _resolve(store)
+        rows = await s.cost_by_day(days=days)
+        for r in rows:
+            r["usd"] = _estimate_usd(
+                r.get("tokens_in") or 0,
+                r.get("tokens_out") or 0,
+            )
+        return JSONResponse({"days": rows, "total": len(rows), "window_days": days})
+
     async def cost_totals(request: Request) -> JSONResponse:
         """``GET /cost/totals`` — today/week/lifetime totals.
 
@@ -1553,6 +1574,7 @@ def create_orchestration_router(
         Route("/sessions/{id}", get_session, methods=["GET"]),
         Route("/cost/by-session", cost_by_session, methods=["GET"]),
         Route("/cost/by-profile", cost_by_profile, methods=["GET"]),
+        Route("/cost/by-day", cost_by_day, methods=["GET"]),
         Route("/cost/by-ticket", cost_by_ticket, methods=["GET"]),
         Route("/cost/totals", cost_totals, methods=["GET"]),
         # Tickets — /tickets/tree must come BEFORE /tickets/{id} so the

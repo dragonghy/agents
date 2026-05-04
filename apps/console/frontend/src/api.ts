@@ -171,6 +171,20 @@ export async function getCostTotals() {
   return get<CostTotalsResponse>('/api/v1/orchestration/cost/totals');
 }
 
+export interface CostByDayRow {
+  date: string;
+  tokens_in: number;
+  tokens_out: number;
+  sessions_count: number;
+  usd: number;
+}
+
+export async function getCostByDay(days = 30) {
+  return get<{ days: CostByDayRow[]; total: number; window_days: number }>(
+    `/api/v1/orchestration/cost/by-day?days=${days}`,
+  );
+}
+
 // ── Session list + history (Task #18 Part B) ──
 
 export async function listSessions(opts: {

@@ -1659,6 +1659,33 @@ class AgentStore:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
 
+    async def cost_by_day(self, days: int = 30) -> list[dict]:
+        """Daily-bucketed token totals for the last ``days`` days.
+
+        Returns one row per UTC day (oldest → newest) so the UI can plot
+        a time series. Days with zero sessions are omitted; the caller
+        should fill the gap if it wants a continuous x-axis. Each row:
+        ``date`` (YYYY-MM-DD), ``tokens_in``, ``tokens_out``,
+        ``sessions_count``.
+        """
+        # Clamp defensively — a giant ``days`` would scan the whole table
+        # which is fine in absolute terms (sessions count is small) but
+        # the UI is designed for ≤90.
+        d = max(1, min(int(days or 30), 365))
+        async with self._db.execute(
+            "SELECT date(created_at) AS date, "
+            "       COALESCE(SUM(cost_tokens_in), 0)  AS tokens_in, "
+            "       COALESCE(SUM(cost_tokens_out), 0) AS tokens_out, "
+            "       COUNT(*)                          AS sessions_count "
+            "FROM session "
+            "WHERE date(created_at) >= date('now', ?) "
+            "GROUP BY date(created_at) "
+            "ORDER BY date ASC",
+            (f"-{d - 1} days",),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
     async def cost_totals(self) -> dict:
         """Compute today / week / lifetime token totals from session rows.
 

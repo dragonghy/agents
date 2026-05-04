@@ -16,11 +16,22 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
+import {
+  getCostByDay,
   getCostBySession,
   getCostByProfile,
   getCostByTicket,
   getCostTotals,
 } from '../api';
+import type { CostByDayRow } from '../api';
 import { sseBus } from '../lib/sseBus';
 import type {
   CostBySessionRow,
@@ -55,6 +66,8 @@ export default function CostDashboard() {
   const [sessionTotal, setSessionTotal] = useState<number>(0);
   const [profileRows, setProfileRows] = useState<CostByProfileRow[]>([]);
   const [ticketRows, setTicketRows] = useState<CostByTicketRow[]>([]);
+  const [byDay, setByDay] = useState<CostByDayRow[]>([]);
+  const [trendDays, setTrendDays] = useState<number>(30);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>('session');
   const [offset, setOffset] = useState<number>(0);
@@ -64,11 +77,12 @@ export default function CostDashboard() {
     let cancelled = false;
     const load = async () => {
       try {
-        const [t, byS, byP, byT] = await Promise.all([
+        const [t, byS, byP, byT, byD] = await Promise.all([
           getCostTotals(),
           getCostBySession({ limit, offset }),
           getCostByProfile(),
           getCostByTicket(),
+          getCostByDay(trendDays),
         ]);
         if (cancelled) return;
         setTotals(t);
@@ -76,6 +90,7 @@ export default function CostDashboard() {
         setSessionTotal(byS.total);
         setProfileRows(byP.rollup);
         setTicketRows(byT.rollup);
+        setByDay(fillTrendGaps(byD.days, trendDays));
         setError(null);
       } catch (e) {
         if (cancelled) return;
@@ -101,7 +116,7 @@ export default function CostDashboard() {
       clearInterval(id);
       offCost();
     };
-  }, [offset]);
+  }, [offset, trendDays]);
 
   const totalPages = useMemo(
     () => Math.max(1, Math.ceil(sessionTotal / limit)),
@@ -146,6 +161,101 @@ export default function CostDashboard() {
             {fmtNum(totals.lifetime.tokens_in)} in / {fmtNum(totals.lifetime.tokens_out)} out
             · {fmtNum(totals.lifetime.sessions_count)} sess
           </div>
+        </div>
+      </div>
+
+      {/* ── Trend chart ── */}
+      <div className="card" style={{ marginTop: 16, marginBottom: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+          <h3 style={{ margin: 0 }}>Daily cost · last {trendDays} days</h3>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+            {[7, 14, 30, 90].map((d) => (
+              <button
+                key={d}
+                onClick={() => setTrendDays(d)}
+                className={`filter-chip ${trendDays === d ? 'filter-chip-active' : ''}`}
+              >
+                {d}d
+              </button>
+            ))}
+          </div>
+        </div>
+        {byDay.length === 0 ? (
+          <div className="empty-state">No cost data in the selected window.</div>
+        ) : (
+          <div style={{ width: '100%', height: 220 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={byDay} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="usdGradient" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#60a5fa" stopOpacity={0.4} />
+                    <stop offset="100%" stopColor="#60a5fa" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid stroke="#232b3d" strokeDasharray="3 3" vertical={false} />
+                <XAxis
+                  dataKey="date"
+                  tickFormatter={(s) => (s as string).slice(5)} // MM-DD
+                  stroke="#64748b"
+                  fontSize={11}
+                  interval="preserveStartEnd"
+                />
+                <YAxis
+                  stroke="#64748b"
+                  fontSize={11}
+                  tickFormatter={(v) => `$${(v as number).toFixed(2)}`}
+                  width={56}
+                />
+                <Tooltip
+                  contentStyle={{
+                    background: '#131826',
+                    border: '1px solid #232b3d',
+                    borderRadius: 6,
+                    fontSize: 12,
+                  }}
+                  labelStyle={{ color: '#e2e8f0' }}
+                  formatter={(v: number, name: string) =>
+                    name === 'usd'
+                      ? [`$${v.toFixed(2)}`, 'USD']
+                      : name === 'sessions_count'
+                      ? [v.toLocaleString(), 'sessions']
+                      : [v.toLocaleString(), name]
+                  }
+                />
+                <Area
+                  type="monotone"
+                  dataKey="usd"
+                  stroke="#60a5fa"
+                  strokeWidth={2}
+                  fill="url(#usdGradient)"
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+        <div style={{ marginTop: 8, display: 'flex', gap: 16, fontSize: 11, color: 'var(--text-muted)' }}>
+          <span>
+            window total ${' '}
+            <strong style={{ color: 'var(--text)' }}>
+              {fmtUsd(byDay.reduce((acc, d) => acc + d.usd, 0))}
+            </strong>
+          </span>
+          <span>
+            avg/day ${' '}
+            <strong style={{ color: 'var(--text)' }}>
+              {fmtUsd(
+                byDay.length === 0
+                  ? 0
+                  : byDay.reduce((acc, d) => acc + d.usd, 0) / byDay.length,
+              )}
+            </strong>
+          </span>
+          <span>
+            peak ${' '}
+            <strong style={{ color: 'var(--text)' }}>
+              {fmtUsd(byDay.reduce((acc, d) => Math.max(acc, d.usd), 0))}
+            </strong>
+          </span>
         </div>
       </div>
 
@@ -379,3 +489,28 @@ const tdStyle: React.CSSProperties = {
   padding: '6px 8px',
   borderBottom: '1px solid var(--border)',
 };
+
+// ── Helpers ───────────────────────────────────────────────────────────
+
+/** Fill missing days with zero rows so the chart x-axis stays continuous. */
+function fillTrendGaps(rows: CostByDayRow[], windowDays: number): CostByDayRow[] {
+  const byDate = new Map(rows.map((r) => [r.date, r]));
+  const out: CostByDayRow[] = [];
+  const today = new Date();
+  for (let i = windowDays - 1; i >= 0; i--) {
+    const d = new Date(today);
+    d.setUTCDate(today.getUTCDate() - i);
+    const key = d.toISOString().slice(0, 10); // YYYY-MM-DD
+    const existing = byDate.get(key);
+    out.push(
+      existing || {
+        date: key,
+        tokens_in: 0,
+        tokens_out: 0,
+        sessions_count: 0,
+        usd: 0,
+      },
+    );
+  }
+  return out;
+}
