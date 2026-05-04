@@ -398,8 +398,12 @@ def create_orchestration_router(
 
         Query params:
             ``status`` (active|closed), ``profile`` (profile_name),
-            ``ticket`` (ticket_id), ``limit`` (default 50, max 500),
-            ``offset`` (default 0).
+            ``ticket`` (ticket_id), ``channel_id`` (e.g. ``telegram:<chat>``),
+            ``limit`` (default 50, max 500), ``offset`` (default 0).
+
+        Channel-adapter callers (Phase 4 Telegram bot) use the
+        ``channel_id`` filter to look up the active human-channel session
+        for an incoming message before deciding whether to spawn a new one.
         """
         try:
             limit = min(int(request.query_params.get("limit", 50)), 500)
@@ -421,6 +425,7 @@ def create_orchestration_router(
                 )
         else:
             ticket_id = None
+        channel_id = request.query_params.get("channel_id") or None
 
         s = await _resolve(store)
         try:
@@ -428,6 +433,7 @@ def create_orchestration_router(
                 status=status,
                 profile_name=profile,
                 ticket_id=ticket_id,
+                channel_id=channel_id,
                 limit=limit,
                 offset=offset,
             )

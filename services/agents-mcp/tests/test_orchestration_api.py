@@ -76,6 +76,7 @@ class _FakeStore:
         status=None,
         profile_name=None,
         ticket_id=None,
+        channel_id=None,
         limit=50,
         offset=0,
     ):
@@ -84,6 +85,7 @@ class _FakeStore:
                 "status": status,
                 "profile_name": profile_name,
                 "ticket_id": ticket_id,
+                "channel_id": channel_id,
                 "limit": limit,
                 "offset": offset,
             }
@@ -718,9 +720,22 @@ class TestListSessions:
             "status": "closed",
             "profile_name": "tpm",
             "ticket_id": 42,
+            "channel_id": None,
             "limit": 20,
             "offset": 10,
         }
+
+    def test_with_channel_filter(self, harness):
+        """Channel adapters (Phase 4) filter by channel_id to find the
+        active human-channel session for an inbound Telegram message."""
+        client, store, _ = harness
+        store.paginated_response = ([], 0)
+        client.get(
+            "/api/v1/orchestration/sessions"
+            "?channel_id=telegram%3A12345&status=active"
+        )
+        assert store.paginated_calls[0]["channel_id"] == "telegram:12345"
+        assert store.paginated_calls[0]["status"] == "active"
 
     def test_invalid_ticket_400(self, harness):
         client, _, _ = harness
@@ -801,6 +816,7 @@ class TestCostBySession:
                 "status": None,
                 "profile_name": None,
                 "ticket_id": None,
+                "channel_id": None,
                 "limit": 50,
                 "offset": 0,
             }
@@ -842,6 +858,7 @@ class TestCostBySession:
             "status": "active",
             "profile_name": "tpm",
             "ticket_id": 42,
+            "channel_id": None,
             "limit": 10,
             "offset": 20,
         }

@@ -2138,13 +2138,28 @@ async def _start_auto_dispatch_async():
     )
     logger.info(f"Usage collection background task started for {all_agents}")
 
-    # Morning Brief: daily digest generation
+    # Morning Brief: daily digest generation.
+    #
+    # The brief_loop also drives the Phase 4 secretary-delivery path: when
+    # both a SessionManager is available AND ``HUMAN_TELEGRAM_CHAT_ID``
+    # (or legacy ``TELEGRAM_HUMAN_CHAT_ID``) is set, the loop spawns a
+    # secretary session bound to the Human's Telegram channel and prompts
+    # it to compose + send the brief; the bot's SSE listener relays the
+    # assistant turn back to Telegram. When either is missing, the loop
+    # falls back to the legacy admin-notify path.
     from agents_mcp.morning_brief import brief_loop
     global _brief_task
     briefs_dir = os.path.join(root_dir, "briefs")
     _brief_task = asyncio.create_task(
-        brief_loop(client, store, config=cfg, target_hour=7, target_minute=0,
-                   output_dir=briefs_dir)
+        brief_loop(
+            client,
+            store,
+            config=cfg,
+            target_hour=7,
+            target_minute=0,
+            output_dir=briefs_dir,
+            session_manager=_get_session_manager(),
+        )
     )
     logger.info(f"Morning Brief loop started (daily at 07:00, output: {briefs_dir}/)")
 
