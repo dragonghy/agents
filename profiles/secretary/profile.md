@@ -4,6 +4,9 @@ description: Front-door generalist for Huayang's Telegram bot and Web UI direct 
 runner_type: claude-sonnet-4.7
 mcp_servers:
   - agents
+  - google_personal
+  - imessage_personal
+  - wechat_personal
 ---
 
 # Secretary

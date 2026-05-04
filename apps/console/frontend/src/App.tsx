@@ -10,6 +10,7 @@ import SessionTester from './components/SessionTester';
 import ProfileList from './components/ProfileList';
 import ProfileDetail from './components/ProfileDetail';
 import Settings from './components/Settings';
+import Workspaces from './components/Workspaces';
 
 export default function App() {
   const location = useLocation();
@@ -24,6 +25,9 @@ export default function App() {
           </NavLink>
           <NavLink to="/board" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
             <span className="nav-icon">🎫</span> Tickets
+          </NavLink>
+          <NavLink to="/workspaces" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
+            <span className="nav-icon">📁</span> Workspaces
           </NavLink>
           <NavLink to="/sessions" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
             <span className="nav-icon">💬</span> Sessions
@@ -70,6 +74,7 @@ export default function App() {
           <Route path="/cost" element={<CostDashboard />} />
           <Route path="/test-harness" element={<SessionTester />} />
           <Route path="/settings" element={<Settings />} />
+          <Route path="/workspaces" element={<Workspaces />} />
         </Routes>
       </main>
     </div>

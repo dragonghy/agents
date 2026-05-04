@@ -117,3 +117,56 @@ class TestBuildResolver:
         servers, allowed = resolver(["google_personal"])
         assert servers == {}
         assert allowed == []
+
+    def test_resolves_global_mcp_from_top_level(self):
+        """Profiles can request global MCPs (e.g. ``agents``,
+        ``microsoft``) declared under the top-level ``mcp_servers:`` key
+        — not just personal MCPs under
+        ``agents.assistant-aria.extra_mcp_servers``.
+        """
+        cfg = {
+            "mcp_servers": {
+                "agents": {
+                    "command": "uv",
+                    "args": ["run", "agents-mcp-proxy"],
+                    "env": {"AGENTS_DAEMON_URL": "http://127.0.0.1:8765/sse"},
+                },
+            },
+            "agents": {"assistant-aria": {"extra_mcp_servers": {}}},
+        }
+        resolver = build_resolver(lambda: cfg)
+        servers, allowed = resolver(["agents"])
+        assert "agents" in servers
+        assert servers["agents"]["command"] == "uv"
+        # Tool allowlist for the orchestration MCP
+        assert "mcp__agents__list_tickets" in allowed
+        assert "mcp__agents__add_comment" in allowed
+        assert "mcp__agents__spawn_session" in allowed
+
+    def test_personal_shadows_global_on_name_collision(self):
+        """If the same logical name appears in both blocks, the personal
+        (assistant-aria) entry wins — that's the right thing if a
+        personal MCP later gets promoted to global scope and the user
+        forgets to delete the old global entry.
+        """
+        cfg = {
+            "mcp_servers": {
+                "google_personal": {
+                    "command": "old_global",
+                    "args": [],
+                },
+            },
+            "agents": {
+                "assistant-aria": {
+                    "extra_mcp_servers": {
+                        "google_personal": {
+                            "command": "new_personal",
+                            "args": [],
+                        },
+                    },
+                }
+            },
+        }
+        resolver = build_resolver(lambda: cfg)
+        servers, _ = resolver(["google_personal"])
+        assert servers["google_personal"]["command"] == "new_personal"

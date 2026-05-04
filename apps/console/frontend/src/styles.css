@@ -1239,6 +1239,101 @@ select.pill-select:hover:not(:disabled) {
   font-style: italic;
 }
 
+/* ── Workspaces page ───────────────────────────────────────────────── */
+
+.workspace-card {
+  padding: 16px 20px;
+}
+.workspace-card-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.ws-kind-badge {
+  font-size: 10px;
+  color: var(--text-muted);
+  background: var(--bg-panel-hover);
+  border-radius: 3px;
+  padding: 2px 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.ws-summary-stats {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-left: 8px;
+}
+
+.ws-status-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.ws-status-chip {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--text-muted);
+  border-radius: 4px;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ws-status-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  flex: 1;
+}
+.ws-status-n {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.ws-projects {
+  border-top: 1px dashed var(--border);
+  padding-top: 12px;
+}
+.ws-projects-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+.ws-project-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+  transition: background 0.12s ease;
+}
+.ws-project-row:hover {
+  background: var(--bg-panel-hover);
+}
+.ws-project-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-project-counts {
+  display: flex;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.ws-project-counts strong {
+  color: var(--text);
+}
+
 .ticket-card-row {
   display: flex;
   align-items: center;
