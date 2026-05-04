@@ -1,53 +1,41 @@
 /**
- * TicketDetail — drill-in view for a single ticket (Task #20 Finding #2).
+ * TicketDetail — drill-in view for a single ticket.
  *
- * Shows:
- * - Header: id, headline, status badge (with edit dropdown), priority, workspace,
- *   project, assignee, tags
- * - Dependencies: small "Depends on" / "Required by" sections
- * - Comments: read-only list (authoring deferred)
- * - Sessions bound to this ticket: TPM first (parent_session_id IS NULL +
- *   profile_name='tpm'), then descendants. Each row links to /sessions/:id.
+ * Now actually editable (Wave 2 — Human review 2026-05-04):
+ * - Inline headline edit (click → input + save/cancel)
+ * - Description rendered as markdown-ish text + collapsed editor
+ * - Comment composer at the bottom (POST /tickets/{id}/comments)
+ * - Sessions list with TPM badge + click-through
+ * - Status / priority / assignee inline editors
  *
- * Read-only mutations supported in v1: status, priority, headline only.
- * Comment authoring + ticket creation are out of scope.
+ * SSE-aware: ticket-comment events for THIS ticket trigger a refresh
+ * so a comment posted from another tab shows up live.
  */
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
+  addTicketComment,
   getTicketComments,
   getTicketDetail,
   getTicketSessions,
   patchTicket,
 } from '../api';
+import { sseBus } from '../lib/sseBus';
 import type {
   Session,
   TicketComment,
   TicketDetail as TicketDetailType,
 } from '../types';
 
-const STATUS_OPTIONS: { value: number; label: string }[] = [
-  { value: 3, label: '3 — New' },
-  { value: 4, label: '4 — In Progress' },
-  { value: 1, label: '1 — Blocked' },
-  { value: 0, label: '0 — Done' },
-  { value: -1, label: '-1 — Archived' },
+const STATUS_OPTIONS: { value: number; label: string; color: string }[] = [
+  { value: 3, label: 'New', color: '#60a5fa' },
+  { value: 4, label: 'In Progress', color: '#facc15' },
+  { value: 1, label: 'Blocked', color: '#f87171' },
+  { value: 0, label: 'Done', color: '#4ade80' },
+  { value: -1, label: 'Archived', color: '#64748b' },
 ];
 
-const STATUS_LABEL: Record<number, string> = {
-  4: 'IN PROGRESS',
-  3: 'NEW',
-  1: 'BLOCKED',
-  0: 'DONE',
-  [-1]: 'ARCHIVED',
-};
-const STATUS_COLOR: Record<number, string> = {
-  4: '#facc15',
-  3: '#60a5fa',
-  1: '#f87171',
-  0: '#94a3b8',
-  [-1]: '#64748b',
-};
+const PRIORITY_OPTIONS = ['urgent', 'high', 'medium', 'low'];
 
 export default function TicketDetail() {
   const { id } = useParams<{ id: string }>();
@@ -58,6 +46,18 @@ export default function TicketDetail() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // Edit modes
+  const [editingHeadline, setEditingHeadline] = useState(false);
+  const [headlineDraft, setHeadlineDraft] = useState('');
+  const [editingDesc, setEditingDesc] = useState(false);
+  const [descDraft, setDescDraft] = useState('');
+  const [editingAssignee, setEditingAssignee] = useState(false);
+  const [assigneeDraft, setAssigneeDraft] = useState('');
+
+  // Comment composer
+  const [commentDraft, setCommentDraft] = useState('');
+  const [commenting, setCommenting] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!Number.isFinite(ticketId) || ticketId <= 0) {
@@ -94,17 +94,94 @@ export default function TicketDetail() {
     return () => clearInterval(t);
   }, [refresh]);
 
-  async function onChangeStatus(newStatus: number) {
+  // SSE: refresh on session events bound to this ticket so the bound
+  // sessions list stays live.
+  useEffect(() => {
+    if (!ticketId) return;
+    const handler = () => {
+      // Cheap: refresh ticket + sessions; debounced naturally by the
+      // 250ms minimum between SSE events on a single ticket.
+      refresh();
+    };
+    const offCreated = sseBus.subscribe('session.created', handler);
+    const offClosed = sseBus.subscribe('session.closed', handler);
+    return () => {
+      offCreated();
+      offClosed();
+    };
+  }, [ticketId, refresh]);
+
+  async function patch(body: Parameters<typeof patchTicket>[1]) {
     if (!ticket || busy) return;
     setBusy(true);
+    setError(null);
     try {
-      await patchTicket(ticket.id, { status: newStatus });
+      await patchTicket(ticket.id, body);
       await refresh();
     } catch (e) {
       setError(String(e));
     } finally {
       setBusy(false);
     }
+  }
+
+  async function onPostComment() {
+    const body = commentDraft.trim();
+    if (!body || !ticket || commenting) return;
+    setCommenting(true);
+    setError(null);
+    try {
+      await addTicketComment(ticket.id, body);
+      setCommentDraft('');
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setCommenting(false);
+    }
+  }
+
+  function startHeadlineEdit() {
+    if (!ticket) return;
+    setHeadlineDraft(ticket.headline || '');
+    setEditingHeadline(true);
+  }
+  async function saveHeadline() {
+    const next = headlineDraft.trim();
+    if (!next || next === ticket?.headline) {
+      setEditingHeadline(false);
+      return;
+    }
+    await patch({ headline: next });
+    setEditingHeadline(false);
+  }
+
+  function startDescEdit() {
+    if (!ticket) return;
+    setDescDraft(ticket.description || '');
+    setEditingDesc(true);
+  }
+  async function saveDesc() {
+    if (descDraft === (ticket?.description || '')) {
+      setEditingDesc(false);
+      return;
+    }
+    await patch({ description: descDraft });
+    setEditingDesc(false);
+  }
+
+  function startAssigneeEdit() {
+    if (!ticket) return;
+    setAssigneeDraft(ticket.assignee || '');
+    setEditingAssignee(true);
+  }
+  async function saveAssignee() {
+    if (assigneeDraft.trim() === (ticket?.assignee || '')) {
+      setEditingAssignee(false);
+      return;
+    }
+    await patch({ assignee: assigneeDraft.trim() });
+    setEditingAssignee(false);
   }
 
   if (loading && !ticket) return <p className="loading">Loading ticket…</p>;
@@ -129,7 +206,7 @@ export default function TicketDetail() {
     );
   }
 
-  // Sort sessions: TPM root first (parent_session_id null + profile=tpm), then others by created_at desc.
+  // Sessions: TPM root first, then children by created_at desc.
   const sortedSessions = [...sessions].sort((a, b) => {
     const aIsTpm =
       a.parent_session_id == null && a.profile_name === 'tpm' ? 0 : 1;
@@ -140,15 +217,44 @@ export default function TicketDetail() {
   });
 
   const status = ticket.status ?? 0;
-  const statusLabel = STATUS_LABEL[status] || String(status);
-  const statusColor = STATUS_COLOR[status] || 'var(--text-muted)';
+  const statusOpt =
+    STATUS_OPTIONS.find((o) => o.value === status) || STATUS_OPTIONS[0];
 
   return (
-    <div>
+    <div className="ticket-detail">
+      {/* Breadcrumb + back */}
       <div className="page-header">
-        <h2 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <h2 style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}>
           <code style={{ fontSize: 16, color: 'var(--text-dim)' }}>#{ticket.id}</code>
-          <span>{ticket.headline}</span>
+          {editingHeadline ? (
+            <span style={{ display: 'flex', gap: 6, alignItems: 'center', flex: 1 }}>
+              <input
+                value={headlineDraft}
+                onChange={(e) => setHeadlineDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') saveHeadline();
+                  if (e.key === 'Escape') setEditingHeadline(false);
+                }}
+                autoFocus
+                disabled={busy}
+                className="inline-input inline-input-large"
+              />
+              <button onClick={saveHeadline} disabled={busy} className="btn-primary btn-sm">
+                Save
+              </button>
+              <button onClick={() => setEditingHeadline(false)} disabled={busy} className="btn-secondary btn-sm">
+                Cancel
+              </button>
+            </span>
+          ) : (
+            <span
+              onClick={startHeadlineEdit}
+              className="editable-heading"
+              title="click to edit"
+            >
+              {ticket.headline || <em style={{ color: 'var(--text-muted)' }}>no headline</em>}
+            </span>
+          )}
         </h2>
         <span className="subtitle">
           <Link to="/board">← all tickets</Link>
@@ -157,81 +263,151 @@ export default function TicketDetail() {
 
       {error && <div className="error" style={{ marginBottom: 8 }}>{error}</div>}
 
-      {/* Metadata + status edit */}
+      {/* Status chip row + inline metadata edit */}
       <div className="card" style={{ marginBottom: 12 }}>
-        <div className="grid grid-3">
-          <Meta
-            label="Status"
-            value={
-              <span style={{ color: statusColor, fontWeight: 600 }}>{statusLabel}</span>
-            }
+        <div className="metadata-row">
+          <StatusPill status={status} onChange={(v) => patch({ status: v })} disabled={busy} />
+          <PriorityPill
+            priority={ticket.priority || 'medium'}
+            onChange={(v) => patch({ priority: v })}
+            disabled={busy}
           />
-          <Meta label="Priority" value={ticket.priority || '—'} />
-          <Meta label="Type" value={ticket.type || '—'} />
-          <Meta
+          <Pill label="Type" value={ticket.type || '—'} muted />
+          <Pill
             label="Workspace"
             value={
               ticket.workspace_name
-                ? `${ticket.workspace_name} (#${ticket.workspace_id})`
+                ? `${ticket.workspace_name}`
                 : ticket.workspace_id != null
                 ? `#${ticket.workspace_id}`
                 : '—'
             }
+            muted
           />
-          <Meta
+          <Pill
             label="Project"
             value={
               ticket.project_name
-                ? `${ticket.project_name} (#${ticket.projectId})`
+                ? `${ticket.project_name}`
                 : ticket.projectId != null
                 ? `#${ticket.projectId}`
                 : '—'
             }
+            muted
           />
-          <Meta label="Assignee" value={ticket.assignee || 'unassigned'} />
+          <div className="pill-group">
+            <span className="pill-label">Assignee</span>
+            {editingAssignee ? (
+              <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <input
+                  value={assigneeDraft}
+                  onChange={(e) => setAssigneeDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') saveAssignee();
+                    if (e.key === 'Escape') setEditingAssignee(false);
+                  }}
+                  autoFocus
+                  disabled={busy}
+                  placeholder="(empty for unassigned)"
+                  className="inline-input"
+                  style={{ width: 140 }}
+                />
+                <button onClick={saveAssignee} disabled={busy} className="btn-primary btn-sm">
+                  Save
+                </button>
+                <button onClick={() => setEditingAssignee(false)} disabled={busy} className="btn-secondary btn-sm">
+                  ✕
+                </button>
+              </span>
+            ) : (
+              <span
+                onClick={startAssigneeEdit}
+                className="pill-value editable"
+                title="click to edit"
+              >
+                {ticket.assignee || <em style={{ color: 'var(--text-muted)' }}>unassigned</em>}
+              </span>
+            )}
+          </div>
         </div>
-        <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
-          <label style={{ fontSize: 12, color: 'var(--text-dim)' }}>
-            Change status:&nbsp;
-            <select
-              value={status}
-              onChange={(e) => onChangeStatus(Number(e.target.value))}
-              disabled={busy}
-            >
-              {STATUS_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          {ticket.tags && (
-            <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
-              tags: {ticket.tags}
-            </span>
+
+        {ticket.tags && (
+          <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-dim)' }}>
+            <span style={{ marginRight: 6, color: 'var(--text-muted)' }}>tags:</span>
+            {ticket.tags.split(',').map((tag, i) => (
+              <span key={i} className="tag">
+                {tag.trim()}
+              </span>
+            ))}
+          </div>
+        )}
+        {/* status legend chip color reference */}
+        <div style={{ marginTop: 10, fontSize: 10, color: 'var(--text-muted)' }}>
+          Status: <span style={{ color: statusOpt.color, fontWeight: 600 }}>{statusOpt.label.toUpperCase()}</span>
+        </div>
+      </div>
+
+      {/* Description */}
+      <div className="card" style={{ marginBottom: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+          <h3 style={{ margin: 0 }}>Description</h3>
+          {!editingDesc && (
+            <button onClick={startDescEdit} className="btn-secondary btn-sm" style={{ marginLeft: 'auto' }}>
+              Edit
+            </button>
           )}
         </div>
+        {editingDesc ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <textarea
+              value={descDraft}
+              onChange={(e) => setDescDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                  e.preventDefault();
+                  saveDesc();
+                }
+                if (e.key === 'Escape') setEditingDesc(false);
+              }}
+              disabled={busy}
+              rows={8}
+              placeholder="What's this ticket about? Markdown supported, plain text rendered as-is."
+              className="composer-textarea"
+            />
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={saveDesc} disabled={busy} className="btn-primary btn-sm">
+                {busy ? 'Saving…' : 'Save (⌘+Enter)'}
+              </button>
+              <button onClick={() => setEditingDesc(false)} disabled={busy} className="btn-secondary btn-sm">
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : ticket.description ? (
+          <div className="ticket-description">{ticket.description}</div>
+        ) : (
+          <div className="empty-state" style={{ padding: 16 }}>
+            <em>No description.</em>{' '}
+            <button onClick={startDescEdit} className="btn-secondary btn-sm" style={{ marginLeft: 8 }}>
+              Add one
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Dependencies */}
       <div className="card" style={{ marginBottom: 12 }}>
         <h3 style={{ marginTop: 0 }}>Dependencies</h3>
         <div className="grid grid-2">
-          <DepList
-            label="Depends on"
-            items={ticket.dependencies?.depends_on || []}
-          />
-          <DepList
-            label="Required by"
-            items={ticket.dependencies?.dependents || []}
-          />
+          <DepList label="Depends on" items={ticket.dependencies?.depends_on || []} />
+          <DepList label="Required by" items={ticket.dependencies?.dependents || []} />
         </div>
       </div>
 
       {/* Sessions */}
       <div className="card" style={{ marginBottom: 12 }}>
         <h3 style={{ marginTop: 0, display: 'flex', alignItems: 'center' }}>
-          Sessions
+          Bound sessions
           <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>
             {sortedSessions.length} total
           </span>
@@ -239,15 +415,15 @@ export default function TicketDetail() {
         {sortedSessions.length === 0 ? (
           <div className="empty-state">No sessions bound to this ticket.</div>
         ) : (
-          <table style={tableStyle}>
+          <table className="data-table">
             <thead>
               <tr>
-                <th style={thStyle}>Session</th>
-                <th style={thStyle}>Profile</th>
-                <th style={thStyle}>Status</th>
-                <th style={thStyle}>Parent</th>
-                <th style={{ ...thStyle, textAlign: 'right' }}>Tokens</th>
-                <th style={thStyle}>Created</th>
+                <th>Session</th>
+                <th>Profile</th>
+                <th>Status</th>
+                <th>Parent</th>
+                <th style={{ textAlign: 'right' }}>Tokens (in / out)</th>
+                <th>Created</th>
               </tr>
             </thead>
             <tbody>
@@ -255,57 +431,37 @@ export default function TicketDetail() {
                 const isTpm =
                   s.parent_session_id == null && s.profile_name === 'tpm';
                 return (
-                  <tr
-                    key={s.id}
-                    style={{
-                      background: isTpm ? 'var(--bg-panel-hover)' : undefined,
-                    }}
-                  >
-                    <td style={tdStyle}>
+                  <tr key={s.id} className={isTpm ? 'data-row-tpm' : ''}>
+                    <td>
                       <Link
                         to={`/sessions/${encodeURIComponent(s.id)}`}
-                        style={{ color: 'var(--text)', textDecoration: 'underline' }}
+                        className="session-link"
                       >
-                        <code style={{ fontSize: 11 }}>{s.id}</code>
+                        <code>{s.id}</code>
                       </Link>
-                      {isTpm && (
-                        <span
-                          style={{
-                            marginLeft: 6,
-                            fontSize: 10,
-                            color: '#4ade80',
-                            border: '1px solid #4ade80',
-                            borderRadius: 3,
-                            padding: '0 4px',
-                          }}
-                        >
-                          TPM
-                        </span>
-                      )}
+                      {isTpm && <span className="tpm-badge">TPM</span>}
                     </td>
-                    <td style={tdStyle}>{s.profile_name}</td>
-                    <td style={tdStyle}>{s.status}</td>
-                    <td style={tdStyle}>
+                    <td>{s.profile_name}</td>
+                    <td>
+                      <span className={`session-status status-${s.status}`}>{s.status}</span>
+                    </td>
+                    <td>
                       {s.parent_session_id ? (
-                        <code style={{ fontSize: 10, color: 'var(--text-dim)' }}>
-                          {s.parent_session_id}
-                        </code>
+                        <Link
+                          to={`/sessions/${encodeURIComponent(s.parent_session_id)}`}
+                          className="session-link-dim"
+                        >
+                          <code>{s.parent_session_id.slice(0, 16)}…</code>
+                        </Link>
                       ) : (
                         <span style={{ color: 'var(--text-muted)' }}>—</span>
                       )}
                     </td>
-                    <td
-                      style={{
-                        ...tdStyle,
-                        textAlign: 'right',
-                        fontFamily: 'monospace',
-                        fontSize: 11,
-                      }}
-                    >
+                    <td style={{ textAlign: 'right', fontFamily: 'monospace', fontSize: 11 }}>
                       {(s.cost_tokens_in || 0).toLocaleString()} /{' '}
                       {(s.cost_tokens_out || 0).toLocaleString()}
                     </td>
-                    <td style={tdStyle}>{(s.created_at || '').slice(0, 16)}</td>
+                    <td>{(s.created_at || '').slice(0, 16)}</td>
                   </tr>
                 );
               })}
@@ -323,65 +479,125 @@ export default function TicketDetail() {
           </span>
         </h3>
         {comments.length === 0 ? (
-          <div className="empty-state">No comments yet.</div>
+          <div className="empty-state">No comments yet — be the first.</div>
         ) : (
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 8,
-              maxHeight: 480,
-              overflowY: 'auto',
-            }}
-          >
+          <div className="comments-list">
             {comments.map((c) => (
-              <div
-                key={c.id}
-                style={{
-                  background: 'var(--bg-panel)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 4,
-                  padding: 8,
-                }}
-              >
-                <div
-                  style={{
-                    fontSize: 10,
-                    color: 'var(--text-muted)',
-                    marginBottom: 4,
-                  }}
-                >
-                  <span style={{ fontWeight: 600 }}>{c.author || 'unknown'}</span>
-                  <span> · </span>
-                  <span>{(c.date || '').slice(0, 19)}</span>
+              <div key={c.id} className="comment">
+                <div className="comment-meta">
+                  <span className="comment-author">{c.author || 'unknown'}</span>
+                  <span className="comment-time">{(c.date || '').slice(0, 19)}</span>
                 </div>
-                <div style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>{c.text}</div>
+                <div className="comment-body">{c.text}</div>
               </div>
             ))}
           </div>
         )}
+
+        {/* Composer */}
+        <div className="comment-composer">
+          <textarea
+            value={commentDraft}
+            onChange={(e) => setCommentDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                e.preventDefault();
+                onPostComment();
+              }
+            }}
+            disabled={commenting}
+            placeholder="Add a comment…  (⌘+Enter to post)"
+            rows={3}
+            className="composer-textarea"
+          />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
+            <button
+              onClick={onPostComment}
+              disabled={commenting || !commentDraft.trim()}
+              className="btn-primary btn-sm"
+            >
+              {commenting ? 'Posting…' : 'Post comment'}
+            </button>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              Comments fire the TPM dispatch hook — bound TPM session will see this.
+            </span>
+          </div>
+        </div>
       </div>
     </div>
   );
 }
 
-function Meta({ label, value }: { label: string; value: React.ReactNode }) {
+// ── Status / Priority pills ────────────────────────────────────────────
+
+function StatusPill({
+  status,
+  onChange,
+  disabled,
+}: {
+  status: number;
+  onChange: (v: number) => void;
+  disabled: boolean;
+}) {
+  const opt = STATUS_OPTIONS.find((o) => o.value === status) || STATUS_OPTIONS[0];
   return (
-    <div>
-      <div
-        style={{
-          fontSize: 10,
-          color: 'var(--text-muted)',
-          textTransform: 'uppercase',
-          marginBottom: 2,
-        }}
+    <div className="pill-group">
+      <span className="pill-label">Status</span>
+      <select
+        value={status}
+        onChange={(e) => onChange(Number(e.target.value))}
+        disabled={disabled}
+        className="pill-select"
+        style={{ color: opt.color, fontWeight: 600 }}
       >
-        {label}
-      </div>
-      <div style={{ fontSize: 13 }}>{value}</div>
+        {STATUS_OPTIONS.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }
+
+function PriorityPill({
+  priority,
+  onChange,
+  disabled,
+}: {
+  priority: string;
+  onChange: (v: string) => void;
+  disabled: boolean;
+}) {
+  return (
+    <div className="pill-group">
+      <span className="pill-label">Priority</span>
+      <select
+        value={priority}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        className="pill-select"
+      >
+        {PRIORITY_OPTIONS.map((p) => (
+          <option key={p} value={p}>
+            {p}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+function Pill({ label, value, muted }: { label: string; value: React.ReactNode; muted?: boolean }) {
+  return (
+    <div className="pill-group">
+      <span className="pill-label">{label}</span>
+      <span className={`pill-value ${muted ? 'muted' : ''}`}>{value}</span>
+    </div>
+  );
+}
+
+// ── Dependency list ───────────────────────────────────────────────────
 
 function DepList({
   label,
@@ -392,31 +608,15 @@ function DepList({
 }) {
   return (
     <div>
-      <div
-        style={{
-          fontSize: 11,
-          color: 'var(--text-dim)',
-          textTransform: 'uppercase',
-          marginBottom: 4,
-          fontWeight: 600,
-        }}
-      >
-        {label}
-      </div>
+      <div className="dep-list-label">{label}</div>
       {items.length === 0 ? (
         <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>none</div>
       ) : (
-        <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+        <ul className="dep-list">
           {items.map((d) => (
-            <li key={d.id} style={{ marginBottom: 2 }}>
-              <Link
-                to={`/tickets/${d.id}`}
-                style={{ color: 'var(--text)', fontSize: 12 }}
-              >
-                <code style={{ fontSize: 11, color: 'var(--text-dim)' }}>
-                  #{d.id}
-                </code>{' '}
-                {d.headline || '(no headline)'}
+            <li key={d.id}>
+              <Link to={`/tickets/${d.id}`} className="dep-link">
+                <code>#{d.id}</code> {d.headline || '(no headline)'}
               </Link>
             </li>
           ))}
@@ -425,22 +625,3 @@ function DepList({
     </div>
   );
 }
-
-const tableStyle: React.CSSProperties = {
-  width: '100%',
-  borderCollapse: 'collapse',
-  fontSize: 13,
-};
-const thStyle: React.CSSProperties = {
-  textAlign: 'left',
-  padding: '6px 8px',
-  borderBottom: '1px solid var(--border)',
-  color: 'var(--text-dim)',
-  fontWeight: 600,
-  fontSize: 11,
-  textTransform: 'uppercase',
-};
-const tdStyle: React.CSSProperties = {
-  padding: '6px 8px',
-  borderBottom: '1px solid var(--border)',
-};

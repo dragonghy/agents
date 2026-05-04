@@ -252,3 +252,29 @@ export async function patchTicket(id: number, body: PatchTicketBody) {
     body,
   );
 }
+
+export async function addTicketComment(id: number, body: string, author?: string) {
+  return post<{ ok: boolean; comment_id: number }>(
+    `/api/v1/orchestration/tickets/${id}/comments`,
+    author ? { body, author } : { body },
+  );
+}
+
+export interface CreateTicketBody {
+  headline: string;
+  description?: string;
+  assignee?: string;
+  tags?: string;
+  priority?: string;
+  parent_id?: number;
+  workspace_id?: number;
+  project_id?: number;
+  type?: string;
+}
+
+export async function createTicket(body: CreateTicketBody) {
+  return post<{ ok: boolean; ticket: TicketDetail }>(
+    '/api/v1/orchestration/tickets',
+    body,
+  );
+}

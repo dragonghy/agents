@@ -284,4 +284,7 @@ export interface PatchTicketBody {
   status?: number;
   priority?: string;
   headline?: string;
+  description?: string;
+  assignee?: string;
+  tags?: string;
 }

@@ -889,7 +889,8 @@ def create_orchestration_router(
         )
 
     async def patch_ticket(request: Request) -> JSONResponse:
-        """``PATCH /tickets/{id}`` — minimal status / priority / headline edit.
+        """``PATCH /tickets/{id}`` — edit status / priority / headline /
+        description / assignee / tags.
 
         After delegating to the task client, fires the orchestration TPM
         hooks (auto-spawn on 3→4, auto-close on terminal) when status
@@ -937,10 +938,35 @@ def create_orchestration_router(
                     {"error": "headline must be a string"}, status_code=400
                 )
             kwargs["headline"] = body["headline"]
+        if "description" in body and body["description"] is not None:
+            if not isinstance(body["description"], str):
+                return JSONResponse(
+                    {"error": "description must be a string"}, status_code=400
+                )
+            kwargs["description"] = body["description"]
+        if "assignee" in body and body["assignee"] is not None:
+            # Accept "" to clear the assignee.
+            if not isinstance(body["assignee"], str):
+                return JSONResponse(
+                    {"error": "assignee must be a string"}, status_code=400
+                )
+            kwargs["assignee"] = body["assignee"]
+        if "tags" in body and body["tags"] is not None:
+            if not isinstance(body["tags"], str):
+                return JSONResponse(
+                    {"error": "tags must be a string (comma-separated)"},
+                    status_code=400,
+                )
+            kwargs["tags"] = body["tags"]
 
         if not kwargs:
             return JSONResponse(
-                {"error": "no editable fields supplied (status/priority/headline)"},
+                {
+                    "error": (
+                        "no editable fields supplied "
+                        "(status/priority/headline/description/assignee/tags)"
+                    )
+                },
                 status_code=400,
             )
 
