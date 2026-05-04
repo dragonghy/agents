@@ -1141,12 +1141,102 @@ select.pill-select:hover:not(:disabled) {
   margin-bottom: 8px;
   text-decoration: none;
   color: var(--text);
-  transition: background 0.12s ease, transform 0.12s ease, border-color 0.12s ease;
+  transition: background 0.12s ease, transform 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
 }
 .ticket-card-v2:hover {
   background: var(--bg-panel-hover);
   text-decoration: none;
   transform: translateY(-1px);
+}
+.ticket-card-v2-selected {
+  box-shadow: 0 0 0 1px var(--accent);
+  background: rgba(96, 165, 250, 0.05);
+}
+
+.ticket-card-checkbox {
+  margin: 0 4px 0 0;
+  cursor: pointer;
+  width: 13px;
+  height: 13px;
+  accent-color: var(--accent);
+}
+.ticket-card-id-link,
+.ticket-card-body-link {
+  text-decoration: none;
+  color: inherit;
+}
+.ticket-card-id-link:hover .ticket-card-id {
+  color: var(--accent);
+}
+.ticket-card-body-link {
+  display: block;
+}
+
+/* ── Bulk action bar ───────────────────────────────────────────────── */
+
+.bulk-action-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  background: var(--bg-panel);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 8px 14px;
+  margin-bottom: 12px;
+  box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.2);
+}
+.bulk-count {
+  font-size: 13px;
+  color: var(--text);
+}
+.bulk-count strong {
+  color: var(--accent);
+  font-size: 15px;
+}
+.bulk-divider {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+  margin: 0 2px;
+}
+.bulk-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.bulk-btn {
+  font: inherit;
+  font-size: 11px;
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 10px;
+  cursor: pointer;
+  text-transform: capitalize;
+  transition: background 0.12s ease;
+}
+.bulk-btn:hover:not(:disabled) {
+  background: var(--bg-panel-hover);
+}
+.bulk-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.bulk-btn-danger {
+  color: var(--status-blocked);
+  border-color: rgba(248, 113, 113, 0.4);
+}
+.bulk-btn-danger:hover:not(:disabled) {
+  background: rgba(248, 113, 113, 0.08);
+}
+.bulk-progress {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-style: italic;
 }
 
 .ticket-card-row {

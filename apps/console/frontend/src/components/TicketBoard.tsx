@@ -16,6 +16,7 @@ import {
   createTicket,
   getTicketBoard,
   listWorkspaces,
+  patchTicket,
 } from '../api';
 import type { BoardColumn, TicketSummary, Workspace } from '../types';
 import TicketList from './TicketList';
@@ -295,23 +296,37 @@ function BoardMode({
   const [columns, setColumns] = useState<BoardColumn[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<string>('');
+
+  const refresh = () =>
+    getTicketBoard(workspaceId)
+      .then((r) => {
+        setColumns(r.columns);
+        setError(null);
+        setLoading(false);
+      })
+      .catch((e) => {
+        setError(String(e));
+        setLoading(false);
+      });
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    const load = () => {
-      getTicketBoard(workspaceId)
-        .then((r) => {
-          if (cancelled) return;
-          setColumns(r.columns);
-          setError(null);
-          setLoading(false);
-        })
-        .catch((e) => {
-          if (cancelled) return;
-          setError(String(e));
-          setLoading(false);
-        });
+    const load = async () => {
+      try {
+        const r = await getTicketBoard(workspaceId);
+        if (cancelled) return;
+        setColumns(r.columns);
+        setError(null);
+      } catch (e) {
+        if (cancelled) return;
+        setError(String(e));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     };
     load();
     const t = setInterval(load, REFRESH_MS);
@@ -321,8 +336,60 @@ function BoardMode({
     };
   }, [workspaceId]);
 
+  // Drop selections that no longer exist (e.g. moved out of view by
+  // workspace switch or bulk-status into a hidden column).
+  useEffect(() => {
+    const visibleIds = new Set<number>();
+    for (const c of columns) for (const t of c.tickets) visibleIds.add(t.id);
+    setSelected((prev) => {
+      const next = new Set([...prev].filter((id) => visibleIds.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [columns]);
+
+  function toggleOne(id: number) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function clearSelection() {
+    setSelected(new Set());
+  }
+
+  async function bulkPatch(
+    body: Parameters<typeof patchTicket>[1],
+    label: string,
+  ) {
+    if (bulkBusy || selected.size === 0) return;
+    setBulkBusy(true);
+    setError(null);
+    const ids = [...selected];
+    try {
+      let done = 0;
+      for (const id of ids) {
+        setBulkProgress(`${label}: ${++done} / ${ids.length}`);
+        try {
+          await patchTicket(id, body);
+        } catch (e) {
+          // Don't abort the batch — capture and continue. Errors get
+          // shown collectively at the end.
+          setError(`#${id}: ${String(e)}`);
+        }
+      }
+      setBulkProgress('');
+      clearSelection();
+      await refresh();
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
   if (loading && !columns.length) return <p className="loading">Loading board…</p>;
-  if (error) return <div className="error">{error}</div>;
+  if (error && !columns.length) return <div className="error">{error}</div>;
 
   const q = searchQuery.trim().toLowerCase();
   const tagQ = tagFilter.trim().toLowerCase();
@@ -360,40 +427,91 @@ function BoardMode({
   }
 
   return (
-    <div className="board">
-      {visibleColumns.map((c) => {
-        const status = ALL_STATUSES.find((s) => s.value === c.status);
-        const accent = status?.color || 'var(--text-muted)';
-        return (
-          <div className="board-column" key={c.status}>
-            <h4 style={{ borderBottom: `2px solid ${accent}` }}>
-              <span style={{ color: accent }}>{c.label}</span>
-              <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: 11 }}>
-                {c.tickets.length}
-              </span>
-            </h4>
-            {c.tickets.length === 0 ? (
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: 8 }}>
-                <em>(filtered out)</em>
-              </div>
-            ) : (
-              c.tickets.map((t) => <BoardCard key={t.id} ticket={t} accent={accent} />)
-            )}
-          </div>
-        );
-      })}
-    </div>
+    <>
+      {selected.size > 0 && (
+        <BulkActionBar
+          count={selected.size}
+          busy={bulkBusy}
+          progress={bulkProgress}
+          onClear={clearSelection}
+          onChangeStatus={(s) =>
+            bulkPatch({ status: s }, `Setting status to ${s}`)
+          }
+          onChangePriority={(p) =>
+            bulkPatch({ priority: p }, `Setting priority to ${p}`)
+          }
+          onArchive={() =>
+            bulkPatch({ status: -1 }, 'Archiving')
+          }
+        />
+      )}
+      <div className="board">
+        {visibleColumns.map((c) => {
+          const status = ALL_STATUSES.find((s) => s.value === c.status);
+          const accent = status?.color || 'var(--text-muted)';
+          return (
+            <div className="board-column" key={c.status}>
+              <h4 style={{ borderBottom: `2px solid ${accent}` }}>
+                <span style={{ color: accent }}>{c.label}</span>
+                <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: 11 }}>
+                  {c.tickets.length}
+                </span>
+              </h4>
+              {c.tickets.length === 0 ? (
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: 8 }}>
+                  <em>(filtered out)</em>
+                </div>
+              ) : (
+                c.tickets.map((t) => (
+                  <BoardCard
+                    key={t.id}
+                    ticket={t}
+                    accent={accent}
+                    selected={selected.has(t.id)}
+                    onToggle={() => toggleOne(t.id)}
+                  />
+                ))
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </>
   );
 }
 
 // ── Board card ────────────────────────────────────────────────────────
 
-function BoardCard({ ticket, accent }: { ticket: TicketSummary; accent: string }) {
+function BoardCard({
+  ticket,
+  accent,
+  selected,
+  onToggle,
+}: {
+  ticket: TicketSummary;
+  accent: string;
+  selected: boolean;
+  onToggle: () => void;
+}) {
   const priority = ticket.priority || 'low';
   return (
-    <Link to={`/tickets/${ticket.id}`} className="ticket-card-v2" style={{ borderLeftColor: accent }}>
+    <div
+      className={`ticket-card-v2 ${selected ? 'ticket-card-v2-selected' : ''}`}
+      style={{ borderLeftColor: accent }}
+    >
       <div className="ticket-card-row">
-        <span className="ticket-card-id">#{ticket.id}</span>
+        {/* Checkbox is its own click target — clicking it doesn't navigate. */}
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={onToggle}
+          onClick={(e) => e.stopPropagation()}
+          className="ticket-card-checkbox"
+          aria-label={`Select ticket #${ticket.id}`}
+        />
+        <Link to={`/tickets/${ticket.id}`} className="ticket-card-id-link">
+          <span className="ticket-card-id">#{ticket.id}</span>
+        </Link>
         <span className={`pri pri-${priority}`}>{priority}</span>
         {ticket.type && ticket.type !== 'task' && (
           <span className="ticket-type-chip">{ticket.type}</span>
@@ -404,21 +522,102 @@ function BoardCard({ ticket, accent }: { ticket: TicketSummary; accent: string }
           </span>
         )}
       </div>
-      <div className="ticket-card-headline">{ticket.headline || '(no headline)'}</div>
-      {ticket.tags && (
-        <div className="ticket-card-tags">
-          {ticket.tags
-            .split(',')
-            .filter((t) => t.trim() && !t.trim().startsWith('agent:'))
-            .slice(0, 3)
-            .map((t, i) => (
-              <span key={i} className="tag-mini">
-                {t.trim()}
-              </span>
-            ))}
-        </div>
+      <Link to={`/tickets/${ticket.id}`} className="ticket-card-body-link">
+        <div className="ticket-card-headline">{ticket.headline || '(no headline)'}</div>
+        {ticket.tags && (
+          <div className="ticket-card-tags">
+            {ticket.tags
+              .split(',')
+              .filter((t) => t.trim() && !t.trim().startsWith('agent:'))
+              .slice(0, 3)
+              .map((t, i) => (
+                <span key={i} className="tag-mini">
+                  {t.trim()}
+                </span>
+              ))}
+          </div>
+        )}
+      </Link>
+    </div>
+  );
+}
+
+// ── Bulk action bar ───────────────────────────────────────────────────
+
+function BulkActionBar({
+  count,
+  busy,
+  progress,
+  onClear,
+  onChangeStatus,
+  onChangePriority,
+  onArchive,
+}: {
+  count: number;
+  busy: boolean;
+  progress: string;
+  onClear: () => void;
+  onChangeStatus: (s: number) => void;
+  onChangePriority: (p: string) => void;
+  onArchive: () => void;
+}) {
+  return (
+    <div className="bulk-action-bar">
+      <span className="bulk-count">
+        <strong>{count}</strong> selected
+      </span>
+      <span className="bulk-divider" />
+      <span className="bulk-label">Status:</span>
+      {[
+        { v: 4, label: 'In Progress', color: '#facc15' },
+        { v: 3, label: 'New', color: '#60a5fa' },
+        { v: 1, label: 'Blocked', color: '#f87171' },
+        { v: 0, label: 'Done', color: '#4ade80' },
+      ].map((s) => (
+        <button
+          key={s.v}
+          onClick={() => onChangeStatus(s.v)}
+          disabled={busy}
+          className="bulk-btn"
+          style={{ color: s.color, borderColor: s.color }}
+        >
+          {s.label}
+        </button>
+      ))}
+      <span className="bulk-divider" />
+      <span className="bulk-label">Priority:</span>
+      {ALL_PRIORITIES.map((p) => (
+        <button
+          key={p}
+          onClick={() => onChangePriority(p)}
+          disabled={busy}
+          className="bulk-btn"
+        >
+          {p}
+        </button>
+      ))}
+      <span className="bulk-divider" />
+      <button
+        onClick={onArchive}
+        disabled={busy}
+        className="bulk-btn bulk-btn-danger"
+      >
+        Archive
+      </button>
+      <button
+        onClick={onClear}
+        disabled={busy}
+        className="btn-secondary btn-sm"
+        style={{ marginLeft: 'auto' }}
+      >
+        Clear
+      </button>
+      {busy && (
+        <span className="bulk-progress">
+          {progress || 'working…'}
+        </span>
       )}
-    </Link>
+    </div>
   );
 }
 
