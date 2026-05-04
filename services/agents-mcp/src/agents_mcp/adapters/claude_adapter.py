@@ -26,11 +26,14 @@ Mapping table:
 
 Notes:
 
-- **MCP wiring is deferred to Task #11.** ``profile.mcp_servers`` is a list
-  of *logical* names ("agents", "agent-hub", ...). Resolving those to
-  concrete transport configs (stdio command + args, HTTP URL, ...) is the
-  Session Manager's job. For now we log non-empty mcp_server lists and
-  continue without wiring; tests pass an empty list.
+- **MCP wiring**: callers (the Session Manager) pass concrete
+  ``McpSdkServerConfig`` dicts via the ``mcp_servers`` kwarg, which we
+  forward verbatim to ``ClaudeAgentOptions.mcp_servers``. Phase 2.5
+  (orchestration_tools) uses this to bind the per-ticket TPM tool surface.
+  ``profile.mcp_servers`` (the *logical name list* declared in
+  ``profile.md``) is metadata only — it is surfaced in the Web Console
+  registry and read by callers that want to resolve the names themselves;
+  the adapter never auto-resolves it.
 - **Permission mode** defaults to ``"bypassPermissions"`` because the
   daemon is the only operator; there is no human in the loop to approve
   individual tool calls. This will be revisited when channel adapters land.
@@ -144,16 +147,11 @@ class ClaudeAdapter:
             from ``~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`` and
             appends the new turn.
         """
-        if profile.mcp_servers:
-            # TODO(Task #11): resolve logical names to McpServerConfig dicts
-            # via the Session Manager and pass through ClaudeAgentOptions.
-            logger.info(
-                "ClaudeAdapter: profile=%s requested mcp_servers=%s but "
-                "MCP wiring is not yet implemented (Task #11). Continuing "
-                "without MCP servers.",
-                profile.name,
-                list(profile.mcp_servers),
-            )
+        # Note: ``profile.mcp_servers`` (the logical-name list declared in
+        # profile.md) is metadata only — the adapter does not auto-resolve
+        # it. Concrete server configs arrive via the ``mcp_servers`` kwarg
+        # below, populated by the Session Manager (e.g. orchestration_tools
+        # builds the per-ticket TPM tool surface and passes it explicitly).
 
         opts_kwargs: dict[str, Any] = dict(
             system_prompt=profile.system_prompt,
