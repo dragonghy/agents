@@ -225,6 +225,7 @@ async def _ensure_orchestration_ready(root_dir: str) -> None:
         from pathlib import Path
 
         from .orchestration_session_manager import SessionManager
+        from .personal_mcp_registry import build_resolver as build_mcp_resolver
         from .profile_loader import ProfileLoader
         from .web.orchestration_events import get_event_bus
 
@@ -235,6 +236,7 @@ async def _ensure_orchestration_ready(root_dir: str) -> None:
             profiles_dir,
             task_client=get_client(),
             event_bus=_event_bus,
+            mcp_server_resolver=build_mcp_resolver(get_config),
         )
         if profiles_dir.exists():
             try:

@@ -106,6 +106,7 @@ class SessionManager:
         *,
         task_client: Any = None,
         event_bus: Any = None,
+        mcp_server_resolver: Any = None,
     ):
         """Construct a SessionManager.
 
@@ -125,11 +126,25 @@ class SessionManager:
                 stream can show live updates without polling. Bus failures
                 are caught and logged; they never break the primary
                 operation.
+            mcp_server_resolver: Optional callable
+                ``(logical_names: Iterable[str]) -> tuple[dict, list[str]]``
+                that maps a Profile's declared ``mcp_servers`` (logical
+                names like ``"google_personal"``) into a pair of (a) the
+                ``mcp_servers`` dict the Claude SDK expects (each value
+                is an ``McpSdkServerConfig`` with ``type=stdio``,
+                ``command``, ``args``, optional ``env``), and (b) the
+                explicit ``allowed_tools`` list (entries like
+                ``"mcp__google_personal__send_gmail_message"``). When
+                ``None``, profile.mcp_servers is treated as metadata
+                only — same as before this hook was added. Failures in
+                the resolver are caught and logged so a missing config
+                can't kill the spawn.
         """
         self._store = store
         self._profiles_dir = Path(profiles_dir)
         self._task_client = task_client
         self._event_bus = event_bus
+        self._mcp_server_resolver = mcp_server_resolver
 
     def _publish(self, kind: str, payload: dict) -> None:
         """Best-effort publish to the event bus.
@@ -294,9 +309,30 @@ class SessionManager:
         # If this Profile asks for the orchestration tool surface (TPM),
         # build an in-process MCP server bound to this session + ticket
         # and pass it to the Adapter. Other Profiles get plain text-only
-        # turns. The tool server is rebuilt every turn — cheap (no IPC,
-        # no subprocess) and means TPM-ticket binding is always fresh.
+        # turns by default — but if the Profile declares logical
+        # ``mcp_servers`` and a ``mcp_server_resolver`` is wired, those
+        # personal MCPs (Gmail / iMessage / WeChat / etc.) get plumbed
+        # through the same kwargs.
         adapter_kwargs: dict[str, Any] = {}
+
+        # Resolve personal MCP servers declared by the Profile (if any).
+        if profile.mcp_servers and self._mcp_server_resolver is not None:
+            try:
+                personal_servers, personal_allowed = self._mcp_server_resolver(
+                    profile.mcp_servers
+                )
+            except Exception:
+                logger.exception(
+                    "SessionManager: mcp_server_resolver raised for profile "
+                    "%s; continuing without personal MCPs",
+                    profile.name,
+                )
+                personal_servers, personal_allowed = ({}, [])
+            if personal_servers:
+                adapter_kwargs["mcp_servers"] = dict(personal_servers)
+            if personal_allowed:
+                adapter_kwargs["allowed_tools"] = list(personal_allowed)
+
         if profile.orchestration_tools:
             ticket_id = session_row["ticket_id"]
             if ticket_id is None:
@@ -326,13 +362,19 @@ class SessionManager:
                 bound_ticket_id=int(ticket_id),
             )
             server_name = f"orchestration_tpm_{ticket_id}"
-            adapter_kwargs["mcp_servers"] = {server_name: mcp_server}
+            # Merge into any personal MCPs already populated above so a
+            # Profile can in principle have both orchestration_tools=True
+            # AND declare personal mcp_servers. (No current profile does,
+            # but the merge is the right shape.)
+            existing_servers = adapter_kwargs.get("mcp_servers") or {}
+            adapter_kwargs["mcp_servers"] = {**existing_servers, server_name: mcp_server}
             # Claude Code addresses MCP tools as
             # ``mcp__<server_name>__<tool_name>``. Pre-allow them so the
             # session can call them without an interactive permission
             # prompt (which never resolves in headless daemon mode even
             # with bypassPermissions for some SDK versions).
-            adapter_kwargs["allowed_tools"] = [
+            existing_allowed = adapter_kwargs.get("allowed_tools") or []
+            adapter_kwargs["allowed_tools"] = list(existing_allowed) + [
                 f"mcp__{server_name}__{tn}" for tn in TPM_TOOL_NAMES
             ]
 
