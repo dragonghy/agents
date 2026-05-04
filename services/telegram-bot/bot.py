@@ -876,6 +876,7 @@ def _parse_sse_block(block: str) -> Optional[dict]:
 async def _stream_sse(
     session: aiohttp.ClientSession,
     last_event_id: Optional[int],
+    health: dict,
 ):
     """Async generator yielding parsed events from the SSE endpoint.
 
@@ -889,7 +890,13 @@ async def _stream_sse(
     outer reconnect loop in :func:`outbound_sse_loop`. Without this
     timeout, an EOF on the daemon side leaves the socket half-open and
     ``iter_any()`` waits forever (#43).
+
+    ``health`` is a shared dict the caller mutates with ``last_byte_at``
+    on every chunk arrival (including raw keepalive comments). The
+    outer loop's watchdog uses this to decide if the connection has
+    gone silent and should be force-recycled (#56).
     """
+    import time as _time
     headers = {"Accept": "text/event-stream"}
     if last_event_id is not None and last_event_id > 0:
         headers["Last-Event-ID"] = str(last_event_id)
@@ -904,10 +911,16 @@ async def _stream_sse(
             raise RuntimeError(
                 f"SSE connect failed: {resp.status} {text[:200]}"
             )
+        # Mark the connection as healthy as soon as headers come back.
+        health["last_byte_at"] = _time.time()
         buffer = ""
         async for chunk in resp.content.iter_any():
             if not chunk:
                 continue
+            # Bump on every byte arrival — keepalive comments count
+            # because they're proof the daemon is alive even when there
+            # are no events to deliver.
+            health["last_byte_at"] = _time.time()
             buffer += chunk.decode("utf-8", errors="replace")
             # SSE frames are separated by a blank line ("\n\n").
             while "\n\n" in buffer:
@@ -915,6 +928,45 @@ async def _stream_sse(
                 event = _parse_sse_block(block)
                 if event is not None:
                     yield event
+
+
+# How long the SSE connection can sit silent (no bytes, including
+# keepalives) before we declare it stale and force-reconnect. The daemon
+# emits a keepalive every 20s, so 90s allows 4 missed keepalives before
+# we pull the plug. Tuned tighter than sock_read=60 so the watchdog wins
+# any race with aiohttp's read timeout (which sometimes doesn't fire on
+# half-open sockets — the actual symptom of #56).
+SSE_STALE_THRESHOLD_S = 90.0
+SSE_HEALTH_CHECK_INTERVAL_S = 15.0
+
+
+async def _sse_watchdog(
+    health: dict,
+    target_task: asyncio.Task,
+) -> None:
+    """Co-routine: cancels ``target_task`` if no bytes arrive within
+    SSE_STALE_THRESHOLD_S. The cancel propagates an asyncio.CancelledError
+    into whichever ``iter_any`` / ``send_telegram`` await is in flight,
+    which the outer except catches and reconnects from. Plain ``kill``
+    flags don't work here because they can't interrupt a blocked socket
+    read inside aiohttp.
+    """
+    import time as _time
+    while not target_task.done():
+        await asyncio.sleep(SSE_HEALTH_CHECK_INTERVAL_S)
+        if target_task.done():
+            return
+        last = health.get("last_byte_at") or 0.0
+        if last == 0.0:
+            continue  # not connected yet
+        gap = _time.time() - last
+        if gap > SSE_STALE_THRESHOLD_S:
+            logger.warning(
+                f"SSE watchdog: {gap:.0f}s since last byte (>"
+                f"{SSE_STALE_THRESHOLD_S:.0f}s) — cancelling stream task"
+            )
+            target_task.cancel()
+            return
 
 
 async def outbound_sse_loop(session: aiohttp.ClientSession) -> None:
@@ -927,6 +979,10 @@ async def outbound_sse_loop(session: aiohttp.ClientSession) -> None:
       ``telegram:<chat>``, sends the text to that chat.
     - On disconnect / error: exponential backoff + reconnect with the
       last seen event id so we don't miss anything in the replay window.
+    - A watchdog runs alongside each connection and forces a reconnect
+      if no bytes (events OR keepalives) arrive within
+      ``SSE_STALE_THRESHOLD_S`` (#56). aiohttp's sock_read is the first
+      line of defence; the watchdog is the second for half-open sockets.
 
     A small in-process cache maps session_id → channel_id so we don't
     re-fetch the session row for every message turn.
@@ -937,59 +993,84 @@ async def outbound_sse_loop(session: aiohttp.ClientSession) -> None:
     # Bounded by daemon session count which is small. No eviction needed for v1.
     channel_cache: dict[str, str] = {}
 
-    while True:
-        try:
-            logger.info(
-                f"SSE: connecting (last_event_id={last_event_id})"
-            )
-            async for event in _stream_sse(session, last_event_id):
-                # Reset backoff on a successfully consumed event.
-                backoff = SSE_MIN_BACKOFF
+    async def _consume_one_connection(
+        last_event_id_arg: Optional[int],
+        health: dict,
+    ) -> Optional[int]:
+        """Consume one SSE connection; return the highest event_id seen
+        on graceful exit (or raise on error / cancellation)."""
+        nonlocal backoff, channel_cache
+        local_last_id = last_event_id_arg
+        async for event in _stream_sse(session, local_last_id, health):
+            backoff = SSE_MIN_BACKOFF
+            if event.get("id") is not None:
+                local_last_id = event["id"]
 
-                if event.get("id") is not None:
-                    last_event_id = event["id"]
+            kind = event.get("kind")
+            payload = event.get("payload") or {}
 
-                kind = event.get("kind")
-                payload = event.get("payload") or {}
+            if kind != "session.message_appended":
+                continue
+            if payload.get("role") != "assistant":
+                continue
+            session_id = payload.get("session_id")
+            text = payload.get("text") or ""
+            if not session_id or not text:
+                continue
 
-                if kind != "session.message_appended":
-                    continue
-                if payload.get("role") != "assistant":
-                    continue
-                session_id = payload.get("session_id")
-                text = payload.get("text") or ""
-                if not session_id or not text:
-                    continue
+            channel_id = channel_cache.get(session_id)
+            if channel_id is None:
+                meta = await get_session_meta(session_id, session)
+                channel_id = (meta or {}).get("channel_id") or ""
+                channel_cache[session_id] = channel_id
 
-                channel_id = channel_cache.get(session_id)
-                if channel_id is None:
-                    meta = await get_session_meta(session_id, session)
-                    channel_id = (meta or {}).get("channel_id") or ""
-                    channel_cache[session_id] = channel_id
-
-                chat_id = _chat_id_from_channel_id(channel_id)
-                if not chat_id:
-                    continue
-                if ALLOWED_CHAT_IDS and chat_id not in ALLOWED_CHAT_IDS:
-                    # Some other tenant's chat — don't relay.
-                    logger.debug(
-                        f"SSE: skipping non-allowlisted chat {chat_id}"
-                    )
-                    continue
-
-                logger.info(
-                    f"SSE: relaying assistant turn from {session_id} "
-                    f"to chat {chat_id} ({len(text)} chars)"
+            chat_id = _chat_id_from_channel_id(channel_id)
+            if not chat_id:
+                continue
+            if ALLOWED_CHAT_IDS and chat_id not in ALLOWED_CHAT_IDS:
+                logger.debug(
+                    f"SSE: skipping non-allowlisted chat {chat_id}"
                 )
-                await send_telegram(chat_id, text, session)
+                continue
 
-            # If the generator returns cleanly, the server closed the stream
-            # gracefully; reconnect after the minimum backoff.
+            logger.info(
+                f"SSE: relaying assistant turn from {session_id} "
+                f"to chat {chat_id} ({len(text)} chars)"
+            )
+            await send_telegram(chat_id, text, session)
+        return local_last_id
+
+    while True:
+        health = {"last_byte_at": 0.0}
+        try:
+            logger.info(f"SSE: connecting (last_event_id={last_event_id})")
+            stream_task = asyncio.create_task(
+                _consume_one_connection(last_event_id, health)
+            )
+            watchdog_task = asyncio.create_task(
+                _sse_watchdog(health, stream_task)
+            )
+            try:
+                last_event_id = await stream_task
+            finally:
+                watchdog_task.cancel()
+                try:
+                    await watchdog_task
+                except (asyncio.CancelledError, Exception):
+                    pass
             logger.info("SSE: stream ended cleanly; reconnecting")
             await asyncio.sleep(SSE_MIN_BACKOFF)
             backoff = SSE_MIN_BACKOFF
         except asyncio.CancelledError:
-            raise
+            # The watchdog cancelled the stream task — treat as a normal
+            # error so the outer loop reconnects with backoff. We do NOT
+            # re-raise because we want to keep the bot running.
+            logger.warning(
+                f"SSE: stream cancelled by watchdog; "
+                f"reconnecting in {backoff:.1f}s"
+            )
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2.0, SSE_MAX_BACKOFF)
         except Exception as e:
             logger.warning(
                 f"SSE: stream error ({type(e).__name__}: {e}); "
