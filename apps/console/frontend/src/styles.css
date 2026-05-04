@@ -189,6 +189,51 @@ a:hover { text-decoration: underline; }
 .brief-list li:last-child { border-bottom: none; }
 .brief-list a { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
 
+.brief-list-v2 {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.brief-list-btn {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  color: var(--text-dim);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s ease;
+}
+.brief-list-btn:hover {
+  background: var(--bg-panel-hover);
+  color: var(--text);
+}
+.brief-list-btn-active {
+  background: var(--bg-panel-hover);
+  color: var(--accent);
+  font-weight: 600;
+}
+.brief-content-v2 {
+  background: #06090f;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 16px 20px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+  max-height: 75vh;
+  overflow-y: auto;
+}
+
 .brief-content {
   background: #06090f;
   border: 1px solid var(--border);
