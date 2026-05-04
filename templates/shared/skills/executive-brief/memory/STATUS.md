@@ -1,7 +1,7 @@
 # Executive Status — Agent Harness
 
-> Last updated: 2026-04-24
-> Updated by: admin
+> Last updated: 2026-05-03
+> Updated by: admin (admin-fork)
 
 ## What We're Building
 
@@ -11,9 +11,21 @@
 
 ## Current Phase
 
-**Post-v2 stabilization → Executing on 3 strategic tracks**
+**Orchestration v1 in flight (Phases 1–5a + Phase 4 landed; Phase 5+ pending)**
 
-V2 infrastructure fully operational. V1 artifacts cleaned up (9 PRs merged). Now executing the real work.
+Major architectural pivot largely complete: v2 named-tmux-window dispatch model has been replaced by a Profile + Session + TPM in-process runtime. State as of 2026-05-03 evening:
+
+- **Phase 1+2** (orchestration core, soft-dep DAG, 5 Profiles) — merged in PR #28.
+- **Ticket UI rework** — merged in PR #29.
+- **SSE live streaming + replay buffer** — merged in PR #30.
+- **Phase 5a v1 infrastructure cleanup** — merged in PR #33 (-2,950 / +94 LOC; deleted dispatcher_v2, session_manager v2, templates/v2/, setup-agents.py, both launchd watchdogs).
+- **Phase 4** (Telegram bot → secretary channel adapter) — merged in PR #32. Bot is live, hooked into Telegram, round-trip verified (Human ↔ secretary session ↔ Telegram).
+- **Project-root marker regression fix** (caused by Phase 5a cleanup) — merged in PR #34.
+- **Dogfood findings doc** — PR #31 awaiting Human review.
+- **Phase 5** (OpenAI / Gemini adapters) — blocked on API keys not present in env.
+- **Phase 5b** (`web/bridge.py` legacy route deletion) — unblocked now that PR #32 is merged.
+
+Design doc: `projects/agent-hub/design/agent-orchestration-v1-2026-05-02.md`. Progress journal: `projects/agent-hub/orchestration-v1-progress.md`.
 
 ---
 

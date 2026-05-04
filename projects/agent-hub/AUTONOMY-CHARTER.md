@@ -66,6 +66,27 @@ If none of these apply, **don't escalate. Decide.**
 - Never `git push --force` to `feat/orchestration-v1` once it's shared.
 - Co-author trailer: `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>`
 
+## Parallel subagents: ALWAYS use isolated worktrees
+
+When firing 2+ subagents concurrently to work on different branches, give each its own `git worktree`. **Do not share the main checkout** — concurrent subagents racing on `git checkout` / `git stash` / `git switch` corrupt each other's work mid-flight. Symptom (observed 2026-05-03): one subagent reports "I keep getting stashed and switched to the other guy's branch."
+
+Pattern (one worktree per subagent):
+
+```bash
+# Before spawning subagent for branch chore/foo:
+git worktree add /private/tmp/agents-foo -b chore/foo origin/main
+
+# Then spawn the subagent with cwd=/private/tmp/agents-foo
+# When it's done and PR is merged:
+git worktree remove /private/tmp/agents-foo
+```
+
+Reserve the main `/Users/huayang/code/agents` checkout for: (a) the admin session itself (you), (b) sequential one-at-a-time subagent work, (c) reading/inspecting state without writing.
+
+Single-subagent runs may use the main checkout if it's clean — but if you might fire a second subagent later in the same session, just use a worktree from the start. The cost of a worktree is ~0; the cost of branch-race corruption is rerunning a 30-min subagent.
+
+Tooling note: the `Agent` tool's `isolation: "worktree"` parameter does this automatically — prefer it over manual `git worktree add` when the agent definition supports it.
+
 ## When you finish Phase 1
 
 Don't ask "should I start Phase 2?" — just start. The phases are linear in the design doc; finishing one means starting the next. Same for Phase 2 → 3, etc.

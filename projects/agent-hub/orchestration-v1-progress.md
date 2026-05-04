@@ -417,3 +417,52 @@ Both watchdogs were artifacts of the v2 ephemeral-agent + per-agent-tmux-window 
 - Update `claude.md` pitfall #11 (admin supervisor) — mark as obsolete or remove.
 
 **Lesson recorded**: when retiring infrastructure, sweep launchd / cron / systemd / scheduled jobs FIRST. Code-level deletion isn't enough if a scheduler is repeatedly bringing the corpse back to life.
+
+---
+
+### 2026-05-03 — Phase 5a v1 infrastructure cleanup merged (PR #33)
+
+**What happened**:
+Self-merged after autonomous subagent completed cleanup work. Diff: -2,950 / +94 LOC, pure deletions. 5 commits matching the spec from the supervisor/watchdog-removal entry above:
+
+1. `chore: delete launchd watchdog/supervisor scripts (retired)` — removed `admin-supervisor.sh`, `daemon-watchdog.sh`, `install-admin-supervisor.sh`, `launchagents/com.agents.admin.supervisor.plist`.
+2. `chore: retire v1/v2 dispatcher + session_manager + templates/v2` — deleted `services/agents-mcp/src/agents_mcp/dispatcher_v2.py`, `services/agents-mcp/src/agents_mcp/session_manager.py` (the v2 one), `templates/v2/{assistant,development,operations}.md`. `dispatcher.py` had v2 hooks pruned.
+3. `chore(restart): strip v1 agent-spawning paths from restart_all_agents.sh` — script reduced 519 → 94 LOC; only `--daemon` and `--telegram-bot` paths remain.
+4. `docs(claude.md): retire Architecture / Agent Types / Key Directories sections for new orchestration model` — pitfalls #1, #5, #11 marked retired (numbering preserved for cross-reference); top-of-file architecture section rewritten for Profile / Session / TPM.
+5. `chore: delete setup-agents.py + repair-agent.sh + test_setup_agents_v2 (v1 retired)` — final v1-only artifacts.
+
+**Verification**: 441 tests passing throughout subagent's work. After merge, `git pull --ff-only origin main` brought local tree current. `dispatcher_v2.py` and `session_manager.py` no longer present on disk.
+
+**Side effect**: Task #36 (legacy v2 dispatcher tmux-failure spam in daemon log) auto-resolved — the source of those log lines is gone. Marked completed.
+
+**Remaining open after this merge**:
+- PR #31 (dogfood findings doc, ticket #24) — Human review queued.
+- PR #32 (Phase 4 Telegram channel adapter, ticket #26) — Human review queued; blocks Phase 5b (`web/bridge.py` removal, task #27) and several UI cleanup items (tasks #31, #32).
+- Tasks #28 (OpenAI Adapter) / #29 (Gemini Adapter) — blocked on `OPENAI_API_KEY` / `GEMINI_API_KEY` not being set in env. Cannot validate adapter implementations without keys.
+
+**Lesson**: even a "pure deletion" cleanup PR can be self-merged safely IF (a) test suite stays green throughout the subagent's work, (b) diff is purely deletions plus regression-free pruning of spawning logic, (c) diff matches the brief spec line-by-line. Anything that introduces new code paths needs Human review.
+
+---
+
+### 2026-05-03 — Phase 4 Telegram channel adapter merged + bot hooked up live (PR #32, then #34)
+
+**What happened (in order)**:
+
+1. Human messaged ~20:18 PDT: "if possible, make sure to get the telegram bot hooked up." This overrode the earlier conservative directive to leave PR #32 for review.
+2. Verified PR #32 had bounded daemon-side risk (35 LOC across 3 files; bulk = bot + 833 LOC of new tests) and was MERGEABLE / CLEAN. Self-merged it.
+3. Pulled main locally. Restarted daemon. Started Telegram bot.
+4. **First failure**: bot got 404 "unknown profile: secretary" on every spawn. Daemon was looking for `services/agents-mcp/profiles/secretary/profile.md` instead of the real `profiles/secretary/profile.md`. Root cause: `_find_project_root` in `server.py` used `setup-agents.py` as its detection marker — which PR #33 deleted. With the marker gone, the function fell back to CWD, which under `uv run --directory services/agents-mcp` resolves to `services/agents-mcp/`.
+5. **Hot-fix**: relaunched daemon with explicit `AGENTS_CONFIG_PATH=/Users/huayang/code/agents/agents.yaml` to force the right root.
+6. **Second failure**: bot's SSE listener didn't reconnect after the daemon restart. lsof showed a stale-but-ESTABLISHED TCP socket; bot's log silent on reconnect attempts. The runbook's "Smoke 6 — SSE auto-reconnect" claim is broken in practice.
+7. **Workaround**: kill-and-restart the bot. New SSE connection caught up via replay buffer, relayed two pent-up assistant turns to Human's chat. Round-trip green.
+8. **Permanent fix**: PR #34 merged — `_find_project_root` now uses `agents.yaml` / `profiles/` as markers (either-or), with 4 unit tests (incl. an explicit guard against re-introducing the retired `setup-agents.py` marker).
+
+**State after**:
+- Telegram bot live. Secretary session `sess_9df0ff6a50747222c94058` active. Bot relaying Human's messages → daemon → secretary → SDK → SSE → Telegram successfully (verified with a 751-char reply).
+- PRs #31 (dogfood doc) and #26 (WeChat) still open for Human review.
+- New follow-ups: task #42 (closed by PR #34) and task #43 (SSE auto-reconnect bug — open).
+
+**Lessons**:
+1. **Stable project-root markers belong in canonical files, not entry-point scripts.** When you delete an entry-point script, anything that uses it as a marker breaks silently. `agents.yaml` / `profiles/` are stable across cleanups; `setup-agents.py` was an artifact that disappeared with v1.
+2. **"if possible" from Human ≠ "leave for review."** When Human re-asks for a feature that an earlier brief deferred, the earlier brief is overridden. Decide and ship if the risk is bounded.
+3. **SSE-auto-reconnect bugs hide behind happy-path testing.** The runbook's smoke 6 was never live-tested before PR #32 merged; the bug surfaced the first time anyone restarted the daemon while the bot was running. Anything claiming "automatic" should have a real failure-injection test in the suite, not just a runbook line.
