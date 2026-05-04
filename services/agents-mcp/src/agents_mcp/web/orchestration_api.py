@@ -611,6 +611,99 @@ def create_orchestration_router(
             )
         return JSONResponse({"days": rows, "total": len(rows), "window_days": days})
 
+    async def get_system_info(request: Request) -> JSONResponse:
+        """``GET /system`` — snapshot for the Settings page.
+
+        Returns daemon process info + profile registry summary + MCP
+        server names + Telegram allow-list (read-only). Cheap; intended
+        to be polled by the Settings page on a slow cadence.
+        """
+        del request
+        import os as _os
+        import time as _time
+        info: dict[str, Any] = {}
+        # Process info
+        info["pid"] = _os.getpid()
+        if not hasattr(get_system_info, "_started_at"):
+            get_system_info._started_at = _time.time()  # type: ignore[attr-defined]
+        info["started_at"] = float(get_system_info._started_at)  # type: ignore[attr-defined]
+        info["uptime_seconds"] = int(_time.time() - info["started_at"])
+
+        # Profile registry summary
+        s = await _resolve(store)
+        try:
+            profiles = await s.list_profile_registry() if s is not None else []
+            info["profiles_loaded"] = len(profiles)
+            info["profiles"] = [
+                {
+                    "name": p.get("name"),
+                    "runner_type": p.get("runner_type"),
+                    "last_used_at": p.get("last_used_at"),
+                }
+                for p in profiles
+            ]
+        except Exception:
+            logger.exception("get_system_info: list_profile_registry failed")
+            info["profiles_loaded"] = None
+            info["profiles"] = []
+
+        # Session counts
+        try:
+            counts = await s.cost_totals() if s is not None else {}
+            info["sessions_lifetime"] = (counts.get("lifetime") or {}).get(
+                "sessions_count", 0
+            )
+        except Exception:
+            info["sessions_lifetime"] = None
+
+        # DB size on disk (best-effort)
+        try:
+            db_path = getattr(s, "_db_path", None) if s is not None else None
+            if db_path and _os.path.exists(db_path):
+                info["db_size_bytes"] = _os.path.getsize(db_path)
+            else:
+                info["db_size_bytes"] = None
+        except Exception:
+            info["db_size_bytes"] = None
+
+        # MCP server registry from agents.yaml
+        try:
+            from agents_mcp.server import get_config as _get_cfg
+
+            cfg = _get_cfg() or {}
+            mcp_servers: list[dict] = []
+            top = cfg.get("mcp_servers") or {}
+            for name, raw in top.items():
+                mcp_servers.append({
+                    "name": name,
+                    "scope": "global",
+                    "command": (raw or {}).get("command"),
+                })
+            host = (cfg.get("agents") or {}).get("assistant-aria") or {}
+            for name, raw in (host.get("extra_mcp_servers") or {}).items():
+                mcp_servers.append({
+                    "name": name,
+                    "scope": "personal",
+                    "command": (raw or {}).get("command"),
+                })
+            info["mcp_servers"] = mcp_servers
+        except Exception:
+            logger.exception("get_system_info: mcp registry assemble failed")
+            info["mcp_servers"] = []
+
+        # Telegram allow-list (read from env; bot reads the same)
+        raw = (
+            _os.environ.get("TELEGRAM_HUMAN_CHAT_ID")
+            or ""
+        )
+        chat_ids = [s.strip() for s in raw.split(",") if s.strip()]
+        info["telegram"] = {
+            "allowed_chat_ids": chat_ids,
+            "primary_chat_id": chat_ids[0] if chat_ids else None,
+        }
+
+        return JSONResponse(info)
+
     async def cost_totals(request: Request) -> JSONResponse:
         """``GET /cost/totals`` — today/week/lifetime totals.
 
@@ -1577,6 +1670,7 @@ def create_orchestration_router(
         Route("/cost/by-day", cost_by_day, methods=["GET"]),
         Route("/cost/by-ticket", cost_by_ticket, methods=["GET"]),
         Route("/cost/totals", cost_totals, methods=["GET"]),
+        Route("/system", get_system_info, methods=["GET"]),
         # Tickets — /tickets/tree must come BEFORE /tickets/{id} so the
         # literal "tree" path doesn't get matched as id.
         Route("/tickets/tree", get_ticket_tree, methods=["GET"]),

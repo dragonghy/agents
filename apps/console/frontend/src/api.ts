@@ -185,6 +185,22 @@ export async function getCostByDay(days = 30) {
   );
 }
 
+export interface SystemInfo {
+  pid: number;
+  started_at: number;
+  uptime_seconds: number;
+  profiles_loaded: number | null;
+  profiles: Array<{ name: string; runner_type: string; last_used_at: string | null }>;
+  sessions_lifetime: number | null;
+  db_size_bytes: number | null;
+  mcp_servers: Array<{ name: string; scope: 'global' | 'personal'; command: string | null }>;
+  telegram: { allowed_chat_ids: string[]; primary_chat_id: string | null };
+}
+
+export async function getSystemInfo() {
+  return get<SystemInfo>('/api/v1/orchestration/system');
+}
+
 // ── Session list + history (Task #18 Part B) ──
 
 export async function listSessions(opts: {

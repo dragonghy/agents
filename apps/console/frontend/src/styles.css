@@ -1167,6 +1167,40 @@ select.pill-select:hover:not(:disabled) {
   font-size: 10px;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
 }
+.tag-mini.tag-group {
+  color: var(--accent-warm);
+  border-color: rgba(251, 191, 36, 0.3);
+  background: rgba(251, 191, 36, 0.08);
+}
+.tag-mini.tag-private {
+  color: var(--accent);
+  border-color: rgba(96, 165, 250, 0.3);
+  background: rgba(96, 165, 250, 0.08);
+}
+
+.allowlist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.allowlist li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 12px;
+}
+.allowlist li code {
+  font-size: 11px;
+  color: var(--text);
+  font-weight: 500;
+}
 
 /* ── List view tree ────────────────────────────────────────────────── */
 

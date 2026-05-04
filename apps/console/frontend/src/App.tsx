@@ -9,6 +9,7 @@ import SessionDetail from './components/SessionDetail';
 import SessionTester from './components/SessionTester';
 import ProfileList from './components/ProfileList';
 import ProfileDetail from './components/ProfileDetail';
+import Settings from './components/Settings';
 
 export default function App() {
   const location = useLocation();
@@ -39,6 +40,9 @@ export default function App() {
           <NavLink to="/test-harness" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
             <span className="nav-icon">🧪</span> Test Harness
           </NavLink>
+          <NavLink to="/settings" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
+            <span className="nav-icon">⚙️</span> Settings
+          </NavLink>
         </nav>
 
         <div style={{ marginTop: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>
@@ -65,6 +69,7 @@ export default function App() {
           <Route path="/briefs" element={<BriefHistory />} />
           <Route path="/cost" element={<CostDashboard />} />
           <Route path="/test-harness" element={<SessionTester />} />
+          <Route path="/settings" element={<Settings />} />
         </Routes>
       </main>
     </div>
