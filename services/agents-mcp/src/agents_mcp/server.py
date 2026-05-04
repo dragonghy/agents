@@ -274,6 +274,41 @@ def _get_session_manager():
     return _session_manager
 
 
+# Strong refs to background tasks spawned via _spawn_background — without
+# this set the event loop's only ref is weak and tasks can be GC'd
+# mid-flight. asyncio docs recommend keeping a strong ref until done().
+_BACKGROUND_TASKS: set = set()
+
+
+def _spawn_background(coro, *, label: str):
+    """Fire-and-forget an awaitable; log exceptions when it finishes.
+
+    Used to decouple the primary tool return path from slow side effects
+    (e.g. forwarding a comment into a TPM session, which triggers an LLM
+    turn). The caller does NOT await this; the task completes whenever
+    the side effect completes — typically long after the MCP response
+    has already been returned to the client.
+
+    The ``label`` shows up in the exception log so a stuck dispatch is
+    easy to identify in daemon logs.
+    """
+    task = asyncio.create_task(coro, name=label)
+    _BACKGROUND_TASKS.add(task)
+
+    def _on_done(t: asyncio.Task) -> None:
+        _BACKGROUND_TASKS.discard(t)
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is not None:
+            logger.exception(
+                "Background task %r failed: %s", label, exc, exc_info=exc
+            )
+
+    task.add_done_callback(_on_done)
+    return task
+
+
 def _get_event_bus():
     """Return the orchestration v1 OrchestrationEventBus, or None if unavailable.
 
@@ -722,51 +757,82 @@ async def add_comment(
     result = await client.add_comment(module, module_id, comment, author=author)
 
     # Orchestration v1: forward new ticket comments into the active TPM
-    # session for the same ticket, if any. Failures are caught + logged so
-    # the primary add_comment return path is never affected.
+    # session for the same ticket, if any. The dispatch triggers an
+    # Adapter turn (LLM call) which can take many seconds; we run it in
+    # the background so the caller doesn't pay that latency. The comment
+    # has already been persisted at this point, so the caller's "comment
+    # added" promise is honoured even if the TPM wake is slow / fails.
     if module in ("ticket", "tickets"):
         sm = _get_session_manager()
         if sm is not None:
-            try:
-                from .orchestration_comment_dispatch import (
-                    dispatch_comment_to_tpm,
-                )
-
-                store = await get_store()
-                # add_comment returns the new comment_id (lastrowid) from
-                # the SQLite client. Be defensive in case of None / dict
-                # shape from a future Leantime backend.
-                comment_id = result if isinstance(result, int) else (
-                    result.get("id") if isinstance(result, dict) else 0
-                )
-                await dispatch_comment_to_tpm(
-                    sm,
-                    store,
-                    ticket_id=module_id,
-                    comment_id=comment_id or 0,
-                    comment_body=comment,
-                    author_session_id=author_session_id,
-                )
-            except Exception:
-                logger.exception(
-                    f"TPM comment dispatch failed for ticket {module_id} "
-                    f"comment {result}"
-                )
-                # Do NOT re-raise.
-
-    # Pub/Sub: notify subscribers on ticket comment
-    try:
-        if module in ("ticket", "tickets"):
-            await _notify_subscribers(
-                ticket_id=module_id,
-                type="ticket_comment",
-                title=f"New comment on #{module_id}",
-                body=comment[:200] if comment else "",
-                source_agent_id=author,
-                exclude_agents=[author] if author else [],
+            # Resolve comment_id eagerly (no I/O — just type-shape
+            # normalization) so the background task captures a value,
+            # not a future.
+            comment_id = result if isinstance(result, int) else (
+                result.get("id") if isinstance(result, dict) else 0
             )
-    except Exception as e:
-        logger.debug(f"Notification on add_comment #{module_id} failed: {e}")
+
+            async def _dispatch_in_background(
+                _sm=sm,
+                _ticket_id=module_id,
+                _comment_id=comment_id,
+                _comment=comment,
+                _author_session_id=author_session_id,
+            ):
+                try:
+                    from .orchestration_comment_dispatch import (
+                        dispatch_comment_to_tpm,
+                    )
+
+                    store = await get_store()
+                    await dispatch_comment_to_tpm(
+                        _sm,
+                        store,
+                        ticket_id=_ticket_id,
+                        comment_id=_comment_id or 0,
+                        comment_body=_comment,
+                        author_session_id=_author_session_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        f"TPM comment dispatch failed for ticket {_ticket_id}"
+                    )
+                    # Do NOT re-raise — best effort.
+
+            _spawn_background(
+                _dispatch_in_background(),
+                label=f"add_comment.dispatch_tpm(ticket={module_id})",
+            )
+
+    # Pub/Sub: notify subscribers on ticket comment. Also backgrounded —
+    # subscriber fan-out is independent of the comment's persistence and
+    # historically only logs at debug on failure, so latency-coupling it
+    # to the caller has no upside.
+    if module in ("ticket", "tickets"):
+        async def _notify_in_background(
+            _ticket_id=module_id,
+            _comment=comment,
+            _author=author,
+        ):
+            try:
+                await _notify_subscribers(
+                    ticket_id=_ticket_id,
+                    type="ticket_comment",
+                    title=f"New comment on #{_ticket_id}",
+                    body=_comment[:200] if _comment else "",
+                    source_agent_id=_author,
+                    exclude_agents=[_author] if _author else [],
+                )
+            except Exception as e:
+                logger.debug(
+                    f"Notification on add_comment #{_ticket_id} failed: {e}"
+                )
+
+        _spawn_background(
+            _notify_in_background(),
+            label=f"add_comment.notify_subscribers(ticket={module_id})",
+        )
+
     return _json_dumps(result, indent=2)
 
 

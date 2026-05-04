@@ -46,6 +46,20 @@ def _raw(tool):
     return getattr(tool, "fn", tool)
 
 
+async def _drain_background_tasks():
+    """Wait for any fire-and-forget tasks spawned via ``_spawn_background``.
+
+    After PR #33 (decouple add_comment from event dispatch), the TPM
+    dispatch + subscriber notification side effects run as background
+    tasks so the primary tool return path doesn't pay their latency.
+    Tests that assert on those side effects must drain the tasks first
+    or they'd race with loop teardown.
+    """
+    pending = list(srv._BACKGROUND_TASKS)
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
 # ── update_ticket → maybe_spawn_tpm_for_status_change wiring ─────────────
 
 
@@ -273,6 +287,7 @@ class TestAddCommentDispatch:
                     author="dev-alex",
                     author_session_id="sess_alex",
                 )
+                await _drain_background_tasks()
 
             assert dispatch_mock.await_count == 1
             kwargs = dispatch_mock.call_args.kwargs
@@ -307,6 +322,7 @@ class TestAddCommentDispatch:
                 await _raw(srv.add_comment)(
                     module="ticket", module_id=5, comment="from human"
                 )
+                await _drain_background_tasks()
 
             assert dispatch_mock.await_count == 1
             assert dispatch_mock.call_args.kwargs["author_session_id"] is None
@@ -335,6 +351,7 @@ class TestAddCommentDispatch:
                 await _raw(srv.add_comment)(
                     module="milestone", module_id=1, comment="not a ticket"
                 )
+                await _drain_background_tasks()
 
             assert dispatch_mock.await_count == 0
 
@@ -366,6 +383,7 @@ class TestAddCommentDispatch:
                 result = await _raw(srv.add_comment)(
                     module="ticket", module_id=11, comment="will explode dispatch"
                 )
+                await _drain_background_tasks()
 
             assert dispatch_mock.await_count == 1
             # Primary path still returned the comment id from the client.
@@ -393,9 +411,162 @@ class TestAddCommentDispatch:
                 await _raw(srv.add_comment)(
                     module="ticket", module_id=4, comment="no orchestration"
                 )
+                await _drain_background_tasks()
 
             assert dispatch_mock.await_count == 0
             assert mock_client.add_comment.await_count == 1
+
+        run(_t())
+
+
+# ── add_comment latency: dispatch must NOT block the caller ───────────
+
+
+class TestAddCommentNonBlocking:
+    """Regression: ticket #33.
+
+    Before the fix, ``add_comment`` awaited
+    :func:`dispatch_comment_to_tpm` synchronously. That function calls
+    ``SessionManager.append_message``, which spawns an LLM turn — easily
+    >30s, the configured timeout. The caller saw "timed out" while the
+    SDK subprocess kept running invisibly and the comment was already
+    persisted. Bad UX: caller can't tell whether to retry.
+
+    Post-fix: dispatch + subscriber notification are scheduled with
+    ``asyncio.create_task``. The caller returns as soon as the SQLite
+    write completes. We assert the response time is sub-second even
+    when the dispatch hook would block for 60s.
+    """
+
+    def test_returns_fast_when_dispatch_blocks(self):
+        """add_comment must return in <1s even if TPM dispatch hangs 60s."""
+        async def _t():
+            import time
+
+            mock_client = MagicMock()
+            mock_client.add_comment = AsyncMock(return_value=999)
+
+            mock_store = MagicMock()
+            mock_sm = MagicMock(name="session_manager")
+
+            # Simulate a slow LLM turn inside the dispatch hook.
+            slow_dispatch = AsyncMock(
+                side_effect=lambda *a, **kw: asyncio.sleep(60),
+            )
+            slow_notify = AsyncMock(
+                side_effect=lambda *a, **kw: asyncio.sleep(60),
+            )
+
+            with patch.object(srv, "get_client", return_value=mock_client), \
+                 patch.object(srv, "get_store", AsyncMock(return_value=mock_store)), \
+                 patch.object(srv, "_get_session_manager", return_value=mock_sm), \
+                 patch(
+                    "agents_mcp.orchestration_comment_dispatch."
+                    "dispatch_comment_to_tpm",
+                    slow_dispatch,
+                 ), \
+                 patch.object(srv, "_notify_subscribers", slow_notify):
+                t0 = time.monotonic()
+                result = await _raw(srv.add_comment)(
+                    module="ticket",
+                    module_id=33,
+                    comment="this should return fast",
+                    author="dev-emma",
+                    author_session_id="sess_emma",
+                )
+                elapsed = time.monotonic() - t0
+
+            # Must be far below the 30s tool timeout AND below the 60s
+            # we made the dispatch sleep. If the dispatch still blocks
+            # the caller, this would be ~60s.
+            assert elapsed < 1.0, (
+                f"add_comment took {elapsed:.2f}s, "
+                f"expected <1s (dispatch should be backgrounded)"
+            )
+            # Comment id from the client still flows back through.
+            assert "999" in result
+            # Cancel the still-pending background tasks so we don't
+            # leak them across tests. ``gather(return_exceptions=True)``
+            # awaits the cancellation so the loop teardown that follows
+            # doesn't see pending tasks.
+            pending = list(srv._BACKGROUND_TASKS)
+            for t in pending:
+                t.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+
+        run(_t())
+
+    def test_dispatch_runs_in_background(self):
+        """The dispatch hook still fires, just asynchronously."""
+        async def _t():
+            mock_client = MagicMock()
+            mock_client.add_comment = AsyncMock(return_value=42)
+
+            mock_store = MagicMock()
+            mock_sm = MagicMock(name="session_manager")
+
+            dispatch_mock = AsyncMock(return_value="sess_tpm")
+
+            with patch.object(srv, "get_client", return_value=mock_client), \
+                 patch.object(srv, "get_store", AsyncMock(return_value=mock_store)), \
+                 patch.object(srv, "_get_session_manager", return_value=mock_sm), \
+                 patch(
+                    "agents_mcp.orchestration_comment_dispatch."
+                    "dispatch_comment_to_tpm",
+                    dispatch_mock,
+                 ), \
+                 patch.object(srv, "_notify_subscribers", AsyncMock()):
+                # Caller returns immediately…
+                await _raw(srv.add_comment)(
+                    module="ticket",
+                    module_id=33,
+                    comment="async dispatch",
+                    author="dev-emma",
+                    author_session_id="sess_emma",
+                )
+                # …and only after we drain do we see the dispatch ran.
+                assert dispatch_mock.await_count == 0, (
+                    "dispatch should not have run synchronously"
+                )
+                await _drain_background_tasks()
+
+            assert dispatch_mock.await_count == 1
+            assert dispatch_mock.call_args.kwargs["ticket_id"] == 33
+            assert dispatch_mock.call_args.kwargs["comment_id"] == 42
+
+        run(_t())
+
+    def test_dispatch_exception_in_background_does_not_propagate(self):
+        """Even if the backgrounded dispatch raises, the caller never sees it."""
+        async def _t():
+            mock_client = MagicMock()
+            mock_client.add_comment = AsyncMock(return_value=7)
+
+            mock_store = MagicMock()
+            mock_sm = MagicMock()
+
+            dispatch_mock = AsyncMock(side_effect=RuntimeError("background boom"))
+
+            with patch.object(srv, "get_client", return_value=mock_client), \
+                 patch.object(srv, "get_store", AsyncMock(return_value=mock_store)), \
+                 patch.object(srv, "_get_session_manager", return_value=mock_sm), \
+                 patch(
+                    "agents_mcp.orchestration_comment_dispatch."
+                    "dispatch_comment_to_tpm",
+                    dispatch_mock,
+                 ), \
+                 patch.object(srv, "_notify_subscribers", AsyncMock()):
+                # No raise — caller doesn't even await the failing task.
+                result = await _raw(srv.add_comment)(
+                    module="ticket", module_id=8, comment="will background-explode"
+                )
+                # Drain to let the task's exception fire its done-callback
+                # (which logs but does not propagate).
+                await _drain_background_tasks()
+
+            assert "7" in result
+            assert dispatch_mock.await_count == 1
 
         run(_t())
 
