@@ -292,6 +292,33 @@ def build_tpm_tool_server(
             )
             return _err(f"mark_ticket_status: {exc}")
 
+        # Orchestration v1: TPM auto-close on terminal status. The MCP /
+        # PATCH ticket-update paths call ``maybe_close_tpm_for_status_change``
+        # for us; this tool bypasses both (writes directly through
+        # ``task_client.update_ticket``) so it has to invoke the hook
+        # itself, otherwise a TPM that closes its own ticket via this tool
+        # would stay alive forever (ticket #35 / dogfood findings #24).
+        # The hook is a no-op for non-terminal statuses, so we always call
+        # it — keeps the code path simple and matches the helper's
+        # idempotency contract. Failures are caught + logged so they
+        # never poison the primary update return value.
+        try:
+            from .orchestration_tpm_dispatch import (
+                maybe_close_tpm_for_status_change,
+            )
+
+            await maybe_close_tpm_for_status_change(
+                store, ticket_id=ticket_id, new_status=status
+            )
+        except Exception:  # pragma: no cover — defensive
+            logger.exception(
+                "mark_ticket_status: TPM auto-close hook failed "
+                "(ticket=%s status=%s); update succeeded, hook is "
+                "best-effort",
+                ticket_id,
+                status,
+            )
+
         return _ok(
             json.dumps(
                 {"ticket_id": ticket_id, "status": status, "ok": True},
