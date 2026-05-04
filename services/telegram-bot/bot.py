@@ -77,6 +77,99 @@ SSE_MAX_BACKOFF = 60.0
 # ── Telegram I/O helpers ─────────────────────────────────────────────────
 
 
+# Where downloaded photos / documents land on disk. Agents read them via
+# their Read tool. Cleared lazily — no automatic GC for v1.
+TELEGRAM_INBOX_DIR = "/tmp/agents-telegram-inbox"
+
+
+async def download_telegram_file(
+    file_id: str,
+    save_to: str,
+    session: aiohttp.ClientSession,
+) -> Optional[str]:
+    """Resolve a Telegram file_id and download the bytes to ``save_to``.
+
+    Returns the full save path on success or None on any failure
+    (logged). Callers typically prepend ``[image: <path>]`` to the
+    user's text so the agent's Read tool can pick up the file.
+    """
+    try:
+        async with session.get(
+            f"{TELEGRAM_API}/getFile",
+            params={"file_id": file_id},
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            if resp.status != 200:
+                logger.warning(f"getFile {file_id}: {resp.status}")
+                return None
+            data = await resp.json()
+        file_path = (data.get("result") or {}).get("file_path")
+        if not file_path:
+            logger.warning(f"getFile {file_id}: no file_path in response")
+            return None
+        url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+        async with session.get(
+            url, timeout=aiohttp.ClientTimeout(total=30)
+        ) as resp:
+            if resp.status != 200:
+                logger.warning(f"file download {file_id}: {resp.status}")
+                return None
+            content = await resp.read()
+        os.makedirs(os.path.dirname(save_to), exist_ok=True)
+        with open(save_to, "wb") as f:
+            f.write(content)
+        logger.info(
+            f"telegram file {file_id} → {save_to} ({len(content)} bytes)"
+        )
+        return save_to
+    except (aiohttp.ClientError, OSError) as e:
+        logger.warning(f"download_telegram_file({file_id}) failed: {e}")
+        return None
+
+
+async def collect_attachments(
+    update_id: int,
+    message: dict,
+    session: aiohttp.ClientSession,
+) -> list[str]:
+    """Download any attached photos / documents on a message; return the
+    list of local file paths (oldest-style longest-side photo first).
+
+    Telegram exposes multiple sizes for ``photo``; we always pick the
+    largest. ``document`` (sent via the paperclip menu) is downloaded
+    verbatim. Voice / video / audio aren't downloaded yet (no
+    transcription pipeline).
+    """
+    paths: list[str] = []
+    photos = message.get("photo")
+    if isinstance(photos, list) and photos:
+        # Telegram orders photo sizes ascending; the last entry is the
+        # original/largest. file_id is unique per size.
+        largest = photos[-1]
+        file_id = largest.get("file_id")
+        if file_id:
+            ext = ".jpg"  # Telegram photos are JPEG
+            save_to = os.path.join(
+                TELEGRAM_INBOX_DIR, f"{update_id}-photo{ext}"
+            )
+            p = await download_telegram_file(file_id, save_to, session)
+            if p:
+                paths.append(p)
+    document = message.get("document")
+    if isinstance(document, dict):
+        file_id = document.get("file_id")
+        original_name = document.get("file_name") or "doc"
+        if file_id:
+            save_to = os.path.join(
+                TELEGRAM_INBOX_DIR, f"{update_id}-{original_name}"
+            )
+            p = await download_telegram_file(file_id, save_to, session)
+            if p:
+                paths.append(p)
+    return paths
+
+
+
 async def send_telegram(
     chat_id: str,
     text: str,
@@ -85,9 +178,16 @@ async def send_telegram(
     """Send a message to a Telegram chat (4096-char chunked, markdown-safe).
 
     Telegram limits messages to 4096 chars; we chunk at 4000 to leave room.
-    Markdown is best-effort: if Telegram rejects with a parse error we retry
-    once without markdown. All failures are logged but never raise — the bot
-    must keep running through transient Telegram outages.
+
+    Markdown is best-effort: agent-generated text often has unbalanced ``*``
+    or ``_`` (e.g. mid-word emphasis on identifiers like ``sess_abc_def``)
+    which Telegram's parser rejects with a 400. On any parser-related 400
+    we retry the same chunk once with ``parse_mode`` omitted, and only
+    log ERROR if BOTH attempts fail. This avoids the noisy
+    "Telegram send failed → silently recovered" pattern in logs.
+
+    All failures are logged but never raise — the bot must keep running
+    through transient Telegram outages.
     """
     if not text:
         return
@@ -98,19 +198,45 @@ async def send_telegram(
                 f"{TELEGRAM_API}/sendMessage",
                 json={"chat_id": chat_id, "text": chunk, "parse_mode": "Markdown"},
             ) as resp:
-                if resp.status != 200:
-                    body = await resp.text()
+                if resp.status == 200:
+                    continue
+                body = await resp.text()
+                # Detect parser-related 400s broadly: "can't parse",
+                # "can't find end of entity", "unmatched", "unsupported
+                # start tag" etc. all indicate Markdown formatting that
+                # the agent generated but Telegram rejects. Fall back to
+                # plain text once.
+                lowered = body.lower()
+                is_parse_error = (
+                    resp.status == 400
+                    and any(
+                        s in lowered
+                        for s in (
+                            "can't parse",
+                            "can't find end",
+                            "unmatched",
+                            "unsupported start tag",
+                            "byte offset",
+                        )
+                    )
+                )
+                if not is_parse_error:
                     logger.error(f"Telegram send failed: {resp.status} {body}")
-                    if "can't parse" in body.lower():
-                        async with session.post(
-                            f"{TELEGRAM_API}/sendMessage",
-                            json={"chat_id": chat_id, "text": chunk},
-                        ) as resp2:
-                            if resp2.status != 200:
-                                logger.error(
-                                    f"Telegram send retry failed: "
-                                    f"{await resp2.text()}"
-                                )
+                    continue
+                # Plain-text retry — log the recovery as info only.
+                logger.info(
+                    f"Telegram markdown rejected (offset visible in body); "
+                    f"retrying as plain text: {body[:120]}"
+                )
+                async with session.post(
+                    f"{TELEGRAM_API}/sendMessage",
+                    json={"chat_id": chat_id, "text": chunk},
+                ) as resp2:
+                    if resp2.status != 200:
+                        logger.error(
+                            f"Telegram plain-text retry also failed: "
+                            f"{resp2.status} {await resp2.text()}"
+                        )
         except aiohttp.ClientError as e:
             logger.error(f"Telegram send transport error: {e}")
 
@@ -604,20 +730,88 @@ async def handle_updates(session: aiohttp.ClientSession) -> None:
 
             for update in data.get("result", []):
                 offset = update["update_id"] + 1
-                message = update.get("message", {})
-                text = message.get("text", "") or ""
+                # Telegram sends photo/document captions in `caption`, not
+                # `text`. We accept either as the user's intent, falling
+                # back to caption when a photo+caption arrives. Also handle
+                # `edited_message` so a Human edit re-routes through our
+                # processing pipeline.
+                message = (
+                    update.get("message")
+                    or update.get("edited_message")
+                    or {}
+                )
+                text = (message.get("text") or message.get("caption") or "")
                 chat_id = str(message.get("chat", {}).get("id", ""))
 
                 # Allow-list the configured chat. Multiple chats / users are
                 # a future extension; v1 is single-tenant.
                 if ALLOWED_CHAT_IDS and chat_id not in ALLOWED_CHAT_IDS:
-                    logger.warning(f"Ignoring message from unknown chat: {chat_id}")
+                    logger.warning(
+                        f"Ignoring message from unknown chat: {chat_id} "
+                        f"(update_id={update.get('update_id')})"
+                    )
                     continue
-                if not chat_id or not text:
+                if not chat_id:
+                    logger.warning(
+                        f"Update without chat_id: {update.get('update_id')} "
+                        f"keys={list(update.keys())}"
+                    )
+                    continue
+                # Detect what extra payload (if any) is on this update.
+                payload_kind = next(
+                    (
+                        k
+                        for k in (
+                            "voice",
+                            "photo",
+                            "video",
+                            "audio",
+                            "sticker",
+                            "document",
+                            "location",
+                            "contact",
+                            "animation",
+                            "video_note",
+                        )
+                        if k in message
+                    ),
+                    None,
+                )
+
+                if not text and payload_kind is None:
+                    # Truly empty update — skip silently.
                     continue
 
+                # Download any image / document attachments so the agent
+                # can read them via its filesystem Read tool. Voice /
+                # video aren't downloaded — no transcription pipeline yet.
+                attachment_paths: list[str] = []
+                if payload_kind in ("photo", "document"):
+                    try:
+                        attachment_paths = await collect_attachments(
+                            update.get("update_id") or 0,
+                            message,
+                            session,
+                        )
+                    except Exception as e:
+                        logger.warning(f"attachment download failed: {e}")
+
+                if not text:
+                    # No caption + non-attachment payload kind (voice,
+                    # sticker, etc) — surface a stub so the agent at
+                    # least knows something arrived.
+                    text = f"[Human sent a {payload_kind} — no caption attached]"
+
+                # Prepend image / document references so the agent can
+                # call Read on them. Multi-line keeps the agent's
+                # parsing easy.
+                if attachment_paths:
+                    refs = "\n".join(f"[attached: {p}]" for p in attachment_paths)
+                    text = f"{refs}\n\n{text}" if text else refs
+
                 logger.info(
-                    f"Received from {chat_id}: {text[:80]}"
+                    f"Received from {chat_id} ({payload_kind or 'text'}, "
+                    f"{len(attachment_paths)} attachment(s)): {text[:80]}"
                     f"{'...' if len(text) > 80 else ''}"
                 )
 
