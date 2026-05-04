@@ -76,6 +76,7 @@ class _FakeStore:
         status=None,
         profile_name=None,
         ticket_id=None,
+        channel_id=None,
         limit=50,
         offset=0,
     ):
@@ -84,6 +85,7 @@ class _FakeStore:
                 "status": status,
                 "profile_name": profile_name,
                 "ticket_id": ticket_id,
+                "channel_id": channel_id,
                 "limit": limit,
                 "offset": offset,
             }
@@ -128,6 +130,13 @@ class _FakeTaskClient:
         self.update_calls: list[dict] = []
         self.update_error: BaseException | None = None
         self.list_error: BaseException | None = None
+        # POST /tickets, POST /tickets/{id}/comments — call recorders.
+        self.create_ticket_calls: list[dict] = []
+        self.create_ticket_error: BaseException | None = None
+        self.add_comment_calls: list[dict] = []
+        self.add_comment_error: BaseException | None = None
+        self._next_ticket_id: int = 1
+        self._next_comment_id: int = 1
 
     async def list_workspaces(self, kind: str | None = None) -> list[dict]:
         if kind is None:
@@ -184,6 +193,80 @@ class _FakeTaskClient:
         if int(ticket_id) in self.tickets:
             self.tickets[int(ticket_id)].update(kwargs)
         return True
+
+    async def create_ticket(
+        self,
+        headline: str,
+        project_id: int | None = None,
+        user_id: int = 1,
+        tags: str | None = None,
+        assignee: str | None = None,
+        **kwargs,
+    ) -> int:
+        if self.create_ticket_error is not None:
+            raise self.create_ticket_error
+        # Auto-increment id, sidestepping any seeded ids in self.tickets.
+        while self._next_ticket_id in self.tickets:
+            self._next_ticket_id += 1
+        new_id = self._next_ticket_id
+        self._next_ticket_id += 1
+        record = {
+            "headline": headline,
+            "project_id": project_id,
+            "user_id": user_id,
+            "tags": tags,
+            "assignee": assignee,
+            **kwargs,
+        }
+        self.create_ticket_calls.append(record)
+        # Persist a row so the post-create get_ticket round-trip succeeds.
+        self.tickets[new_id] = {
+            "id": new_id,
+            "headline": headline,
+            "status": kwargs.get("status", 3),
+            "type": "task",
+            "priority": kwargs.get("priority", "medium"),
+            "workspace_id": kwargs.get("workspace_id", 1),
+            "projectId": project_id or 100,
+            "tags": tags or "",
+            "assignee": assignee or "",
+            "phase": "",
+            "date": "2026-05-03",
+            "description": kwargs.get("description", ""),
+            "dependingTicketId": kwargs.get("dependingTicketId"),
+        }
+        return new_id
+
+    async def add_comment(
+        self,
+        module: str,
+        module_id: int,
+        comment: str,
+        author: str | None = None,
+    ) -> int:
+        if self.add_comment_error is not None:
+            raise self.add_comment_error
+        new_id = self._next_comment_id
+        self._next_comment_id += 1
+        row = {
+            "id": new_id,
+            "text": comment,
+            "userId": 1,
+            "date": "2026-05-03 12:00:00",
+            "moduleId": int(module_id),
+            "author": author or "",
+        }
+        self.add_comment_calls.append(
+            {
+                "module": module,
+                "module_id": int(module_id),
+                "comment": comment,
+                "author": author,
+                "id": new_id,
+            }
+        )
+        self.comments.setdefault(int(module_id), []).append(row)
+        return new_id
 
 
 class _FakeSessionManager:
@@ -718,9 +801,22 @@ class TestListSessions:
             "status": "closed",
             "profile_name": "tpm",
             "ticket_id": 42,
+            "channel_id": None,
             "limit": 20,
             "offset": 10,
         }
+
+    def test_with_channel_filter(self, harness):
+        """Channel adapters (Phase 4) filter by channel_id to find the
+        active human-channel session for an inbound Telegram message."""
+        client, store, _ = harness
+        store.paginated_response = ([], 0)
+        client.get(
+            "/api/v1/orchestration/sessions"
+            "?channel_id=telegram%3A12345&status=active"
+        )
+        assert store.paginated_calls[0]["channel_id"] == "telegram:12345"
+        assert store.paginated_calls[0]["status"] == "active"
 
     def test_invalid_ticket_400(self, harness):
         client, _, _ = harness
@@ -801,6 +897,7 @@ class TestCostBySession:
                 "status": None,
                 "profile_name": None,
                 "ticket_id": None,
+                "channel_id": None,
                 "limit": 50,
                 "offset": 0,
             }
@@ -842,6 +939,7 @@ class TestCostBySession:
             "status": "active",
             "profile_name": "tpm",
             "ticket_id": 42,
+            "channel_id": None,
             "limit": 10,
             "offset": 20,
         }
@@ -1235,6 +1333,225 @@ class TestPatchTicket:
             json={"status": 4},
         )
         assert r.status_code == 500
+
+
+class TestCreateTicket:
+    """POST /tickets — task #34 (dogfood-driven; see services/agents-mcp/PR #34)."""
+
+    def test_minimal_happy_path(self, ticket_harness):
+        client, _, _, tc = ticket_harness
+        _seed_workspaces(tc)
+        r = client.post(
+            "/api/v1/orchestration/tickets",
+            json={"headline": "ship rest endpoints"},
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        # New id surfaced + headline echoed back via get_ticket round-trip.
+        assert isinstance(body["id"], int)
+        assert body["headline"] == "ship rest endpoints"
+        assert tc.create_ticket_calls
+        last = tc.create_ticket_calls[-1]
+        assert last["headline"] == "ship rest endpoints"
+        # No optional fields → no description / parent / etc.
+        assert last["assignee"] is None
+        assert last.get("dependingTicketId") is None
+
+    def test_full_args_round_trip(self, ticket_harness):
+        client, _, _, tc = ticket_harness
+        _seed_workspaces(tc)
+        # Seed an existing parent so the parent_id check passes.
+        tc.tickets[100] = _make_ticket(100, "umbrella", status=4, project_id=100)
+        r = client.post(
+            "/api/v1/orchestration/tickets",
+            json={
+                "headline": "child task",
+                "description": "the long form description",
+                "assignee": "dev",
+                "tags": ["needs-review", "infra"],
+                "priority": "high",
+                "parent_id": 100,
+            },
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["headline"] == "child task"
+        # Round-trip via GET to confirm persistence.
+        get = client.get(f"/api/v1/orchestration/tickets/{body['id']}")
+        assert get.status_code == 200
+        got = get.json()
+        assert got["headline"] == "child task"
+        assert got["dependingTicketId"] == 100
+        # tags list joined with commas, assignee passed through.
+        last = tc.create_ticket_calls[-1]
+        assert last["tags"] == "needs-review,infra"
+        assert last["assignee"] == "dev"
+        assert last["description"] == "the long form description"
+        assert last["priority"] == "high"
+        assert last["dependingTicketId"] == 100
+
+    def test_priority_int_coerced_to_string(self, ticket_harness):
+        client, _, _, tc = ticket_harness
+        _seed_workspaces(tc)
+        r = client.post(
+            "/api/v1/orchestration/tickets",
+            json={"headline": "x", "priority": 2},
+        )
+        assert r.status_code == 201
+        assert tc.create_ticket_calls[-1]["priority"] == "2"
+
+    def test_missing_headline_400(self, ticket_harness):
+        client, _, _, tc = ticket_harness
+        r = client.post(
+            "/api/v1/orchestration/tickets",
+            json={"description": "no headline here"},
+        )
+        assert r.status_code == 400
+        assert "headline" in r.json()["error"]
+        assert tc.create_ticket_calls == []
+
+    def test_empty_headline_400(self, ticket_harness):
+        client, _, _, tc = ticket_harness
+        r = client.post(
+            "/api/v1/orchestration/tickets",
+            json={"headline": ""},
+        )
+        assert r.status_code == 400
+        assert tc.create_ticket_calls == []
+
+    def test_invalid_json_400(self, ticket_harness):
+        client, *_ = ticket_harness
+        r = client.post(
+            "/api/v1/orchestration/tickets",
+            content=b"<not json>",
+            headers={"content-type": "application/json"},
+        )
+        assert r.status_code == 400
+
+    def test_unknown_parent_id_404(self, ticket_harness):
+        client, _, _, tc = ticket_harness
+        _seed_workspaces(tc)
+        # No ticket #999 seeded → parent lookup yields {} → 404.
+        r = client.post(
+            "/api/v1/orchestration/tickets",
+            json={"headline": "orphaned child", "parent_id": 999},
+        )
+        assert r.status_code == 404
+        assert "999" in r.json()["error"]
+        # Did NOT call create_ticket on the underlying client.
+        assert tc.create_ticket_calls == []
+
+    def test_invalid_tags_type_400(self, ticket_harness):
+        client, *_ = ticket_harness
+        r = client.post(
+            "/api/v1/orchestration/tickets",
+            json={"headline": "x", "tags": 42},
+        )
+        assert r.status_code == 400
+
+    def test_no_task_client_500(self):
+        # Build a router without a task_client to confirm 500.
+        store = _FakeStore()
+        mgr = _FakeSessionManager()
+        routes = create_orchestration_router(store, mgr)
+        app = Starlette(
+            routes=[Mount("/api/v1/orchestration", app=Router(routes=routes))]
+        )
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orchestration/tickets",
+            json={"headline": "x"},
+        )
+        assert r.status_code == 500
+
+
+class TestCreateTicketComment:
+    """POST /tickets/{id}/comments — task #34."""
+
+    def test_happy_path(self, ticket_harness):
+        client, _, _, tc = ticket_harness
+        _seed_workspaces(tc)
+        tc.tickets[5] = _make_ticket(5, "host ticket")
+        r = client.post(
+            "/api/v1/orchestration/tickets/5/comments",
+            json={"body": "looks good to me", "author": "dev-alex"},
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["text"] == "looks good to me"
+        assert body["author"] == "dev-alex"
+        assert isinstance(body["id"], int)
+        # Visible in subsequent GET.
+        get = client.get("/api/v1/orchestration/tickets/5/comments")
+        assert get.status_code == 200
+        comments = get.json()["comments"]
+        assert any(c["text"] == "looks good to me" for c in comments)
+
+    def test_anonymous_author_ok(self, ticket_harness):
+        client, _, _, tc = ticket_harness
+        _seed_workspaces(tc)
+        tc.tickets[5] = _make_ticket(5)
+        r = client.post(
+            "/api/v1/orchestration/tickets/5/comments",
+            json={"body": "human comment, no author"},
+        )
+        assert r.status_code == 201
+        # Author defaulted to "" downstream.
+        assert tc.add_comment_calls[-1]["author"] is None
+
+    def test_missing_body_400(self, ticket_harness):
+        client, _, _, tc = ticket_harness
+        _seed_workspaces(tc)
+        tc.tickets[5] = _make_ticket(5)
+        r = client.post(
+            "/api/v1/orchestration/tickets/5/comments",
+            json={"author": "qa-lucy"},
+        )
+        assert r.status_code == 400
+        assert "body" in r.json()["error"]
+        assert tc.add_comment_calls == []
+
+    def test_empty_body_400(self, ticket_harness):
+        client, _, _, tc = ticket_harness
+        _seed_workspaces(tc)
+        tc.tickets[5] = _make_ticket(5)
+        r = client.post(
+            "/api/v1/orchestration/tickets/5/comments",
+            json={"body": ""},
+        )
+        assert r.status_code == 400
+        assert tc.add_comment_calls == []
+
+    def test_unknown_ticket_404(self, ticket_harness):
+        client, _, _, tc = ticket_harness
+        _seed_workspaces(tc)
+        # No ticket #777 → 404 before insert.
+        r = client.post(
+            "/api/v1/orchestration/tickets/777/comments",
+            json={"body": "nope"},
+        )
+        assert r.status_code == 404
+        assert "777" in r.json()["error"]
+        assert tc.add_comment_calls == []
+
+    def test_invalid_id_400(self, ticket_harness):
+        client, *_ = ticket_harness
+        r = client.post(
+            "/api/v1/orchestration/tickets/not-an-int/comments",
+            json={"body": "hi"},
+        )
+        assert r.status_code == 400
+
+    def test_invalid_json_400(self, ticket_harness):
+        client, _, _, tc = ticket_harness
+        _seed_workspaces(tc)
+        tc.tickets[5] = _make_ticket(5)
+        r = client.post(
+            "/api/v1/orchestration/tickets/5/comments",
+            content=b"not json",
+            headers={"content-type": "application/json"},
+        )
+        assert r.status_code == 400
 
 
 class TestGetTicketTree:
