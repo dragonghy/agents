@@ -19,6 +19,7 @@ import pytest
 from agents_mcp.orchestration_session_manager import SessionManager
 from agents_mcp.orchestration_tpm_dispatch import (
     maybe_close_tpm_for_status_change,
+    maybe_spawn_tpm_for_new_ticket,
     maybe_spawn_tpm_for_status_change,
 )
 from agents_mcp.store import AgentStore
@@ -192,6 +193,90 @@ class TestMaybeSpawnTpm:
             assert statuses[first] == "closed"
             assert statuses[second] == "active"
 
+            await store.close()
+
+        run(_t())
+
+
+# ── maybe_spawn_tpm_for_new_ticket ─────────────────────────────────────────
+
+
+class TestMaybeSpawnTpmForNewTicket:
+    """Spawn-on-creation hook so newly-created tickets get triaged
+    immediately (not just on the 3→4 transition).
+    """
+
+    def test_new_ticket_in_status_3_spawns(self, db_path, profiles_dir):
+        async def _t():
+            store = await _make_store(db_path)
+            _write_tpm_profile(profiles_dir)
+            mgr = SessionManager(store, profiles_dir)
+
+            session_id = await maybe_spawn_tpm_for_new_ticket(
+                mgr, store, ticket_id=100, status=3
+            )
+            assert session_id is not None
+            assert session_id.startswith("sess_")
+            row = await store.get_session(session_id)
+            assert row["profile_name"] == "tpm"
+            assert row["binding_kind"] == "ticket-subagent"
+            assert row["ticket_id"] == 100
+            await store.close()
+
+        run(_t())
+
+    def test_new_ticket_in_status_4_also_spawns(self, db_path, profiles_dir):
+        """Tickets created directly in In-Progress (skipping the 3→4
+        hop) still get a TPM. This was the production bug — ticket #557
+        was created at status=4 and the old 3→4-only hook missed it.
+        """
+        async def _t():
+            store = await _make_store(db_path)
+            _write_tpm_profile(profiles_dir)
+            mgr = SessionManager(store, profiles_dir)
+
+            session_id = await maybe_spawn_tpm_for_new_ticket(
+                mgr, store, ticket_id=557, status=4
+            )
+            assert session_id is not None
+            await store.close()
+
+        run(_t())
+
+    @pytest.mark.parametrize("status", [0, -1])
+    def test_terminal_status_no_op(self, db_path, profiles_dir, status):
+        async def _t():
+            store = await _make_store(db_path)
+            _write_tpm_profile(profiles_dir)
+            mgr = SessionManager(store, profiles_dir)
+
+            result = await maybe_spawn_tpm_for_new_ticket(
+                mgr, store, ticket_id=200, status=status
+            )
+            assert result is None
+            assert await store.list_sessions() == []
+            await store.close()
+
+        run(_t())
+
+    def test_idempotent_on_existing_tpm(self, db_path, profiles_dir):
+        async def _t():
+            store = await _make_store(db_path)
+            _write_tpm_profile(profiles_dir)
+            mgr = SessionManager(store, profiles_dir)
+
+            first = await maybe_spawn_tpm_for_new_ticket(
+                mgr, store, ticket_id=300, status=3
+            )
+            assert first is not None
+            second = await maybe_spawn_tpm_for_new_ticket(
+                mgr, store, ticket_id=300, status=3
+            )
+            assert second is None  # idempotent
+            assert (
+                len([s for s in await store.list_sessions() if s["ticket_id"] == 300])
+                == 1
+            )
             await store.close()
 
         run(_t())

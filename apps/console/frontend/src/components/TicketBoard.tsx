@@ -648,8 +648,9 @@ function CreatePanel({
         priority,
         workspace_id: workspaceId ?? undefined,
       });
-      onCreated(r.ticket.id);
-      navigate(`/tickets/${r.ticket.id}`);
+      const newId = r.id;
+      onCreated(newId);
+      navigate(`/tickets/${newId}`);
     } catch (e) {
       setErr(String(e));
     } finally {

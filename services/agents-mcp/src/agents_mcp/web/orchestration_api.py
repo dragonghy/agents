@@ -1629,6 +1629,39 @@ def create_orchestration_router(
                 status_code=500,
             )
 
+        # Auto-spawn TPM so a newly-created ticket gets triaged
+        # immediately. Best-effort: if SessionManager isn't wired or
+        # spawn fails, we log and still return the ticket — the user's
+        # primary action (creation) shouldn't be blocked by orchestration
+        # plumbing.
+        sm = await _resolve(session_manager)
+        s = await _resolve(store)
+        if sm is not None and s is not None:
+            try:
+                from ..orchestration_tpm_dispatch import (
+                    maybe_spawn_tpm_for_new_ticket,
+                )
+                # Determine status — caller can override but defaults to
+                # whatever ``c.create_ticket`` settled on.
+                ticket_row = await c.get_ticket(int(new_id), prune=True)
+                init_status = (
+                    int(ticket_row["status"])
+                    if ticket_row and ticket_row.get("status") is not None
+                    else 3
+                )
+                await maybe_spawn_tpm_for_new_ticket(
+                    sm,
+                    s,
+                    ticket_id=int(new_id),
+                    status=init_status,
+                )
+            except Exception:
+                logger.exception(
+                    "TPM auto-spawn hook failed for new ticket %s "
+                    "(POST /tickets endpoint)",
+                    new_id,
+                )
+
         # Re-fetch so the response mirrors GET /tickets/{id} shape (incl. id).
         try:
             row = await c.get_ticket(int(new_id), prune=False)

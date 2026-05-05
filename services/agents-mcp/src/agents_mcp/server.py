@@ -599,6 +599,30 @@ async def create_ticket(
             )
     except Exception as e:
         logger.debug(f"Notification on create_ticket #{result} failed: {e}")
+
+    # Auto-spawn a TPM so the newly-created ticket gets triaged
+    # immediately. Mirrors the REST POST /tickets behaviour. Best-effort.
+    try:
+        sm = _get_session_manager()
+        s = await get_store()
+        if sm is not None and s is not None:
+            from .orchestration_tpm_dispatch import (
+                maybe_spawn_tpm_for_new_ticket,
+            )
+
+            init_status = int(status) if status is not None else 3
+            await maybe_spawn_tpm_for_new_ticket(
+                sm,
+                s,
+                ticket_id=int(result),
+                status=init_status,
+            )
+    except Exception:
+        logger.exception(
+            "TPM auto-spawn hook failed for new ticket %s (MCP tool)",
+            result,
+        )
+
     return _json_dumps(result, indent=2)
 
 

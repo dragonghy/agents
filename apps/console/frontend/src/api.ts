@@ -340,7 +340,9 @@ export interface CreateTicketBody {
 }
 
 export async function createTicket(body: CreateTicketBody) {
-  return post<{ ok: boolean; ticket: TicketDetail }>(
+  // Server returns the ticket fields directly (matches GET /tickets/{id}
+  // shape) with HTTP 201 — NOT wrapped in {ok, ticket}.
+  return post<TicketDetail>(
     '/api/v1/orchestration/tickets',
     body,
   );

@@ -119,6 +119,65 @@ async def maybe_spawn_tpm_for_status_change(
     return row["id"]
 
 
+async def maybe_spawn_tpm_for_new_ticket(
+    session_manager: SessionManager,
+    store: AgentStore,
+    *,
+    ticket_id: int,
+    status: int,
+) -> Optional[str]:
+    """Spawn a TPM immediately when a new ticket is created.
+
+    Per Human directive 2026-05-04 ("every newly-created ticket should
+    auto-trigger TPM triage"): any newly-created non-terminal ticket
+    gets a TPM right away so it can analyse the description, decide
+    sub-tasks, and either spawn a developer / housekeeper or post a
+    clarifying comment. Avoids the "ticket sits with no owner for hours"
+    failure mode the old 3→4-only policy created.
+
+    No-op if:
+    - The ticket is already in a terminal state (Done / Archived) — no
+      point analysing something already closed.
+    - A TPM is already bound to the ticket — idempotent so callers can
+      retry safely (e.g. on POST + immediate PATCH back-to-back).
+
+    Args:
+        session_manager: Used to spawn the TPM session.
+        store: Used to check whether an active TPM already exists.
+        ticket_id: Newly inserted ticket id.
+        status: The ticket's current status. Skipped if terminal.
+
+    Returns:
+        The new TPM session id if one was spawned, else ``None``.
+    """
+    if status in _TERMINAL_STATUSES:
+        logger.debug(
+            "TPM auto-spawn (new ticket): #%s starts in terminal status=%s; skipping",
+            ticket_id,
+            status,
+        )
+        return None
+    existing = await store.get_active_tpm_for_ticket(ticket_id)
+    if existing is not None:
+        logger.info(
+            "TPM auto-spawn (new ticket): #%s already has active TPM %s; no-op",
+            ticket_id,
+            existing["id"],
+        )
+        return None
+    row = await session_manager.spawn(
+        profile_name="tpm",
+        binding_kind="ticket-subagent",
+        ticket_id=ticket_id,
+    )
+    logger.info(
+        "TPM auto-spawn (new ticket): #%s → spawned TPM session %s",
+        ticket_id,
+        row["id"],
+    )
+    return row["id"]
+
+
 async def maybe_close_tpm_for_status_change(
     store: AgentStore,
     *,
@@ -183,5 +242,6 @@ async def maybe_close_tpm_for_status_change(
 
 __all__ = [
     "maybe_close_tpm_for_status_change",
+    "maybe_spawn_tpm_for_new_ticket",
     "maybe_spawn_tpm_for_status_change",
 ]
